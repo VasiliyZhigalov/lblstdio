@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>lblstdio — студия разметки</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              canvas: "#0a0a0c",
+            },
+          },
+        },
+      };
+    </script>
+    <link rel="stylesheet" href="/css/styles.css" />
+    <script src="https://unpkg.com/lucide@latest"></script>
+  </head>
+  <body class="bg-zinc-950 text-zinc-100">
+    <div id="app" class="h-screen w-screen overflow-hidden">
+      <!-- DASHBOARD -->
+      <section id="view-dashboard" class="h-full flex flex-col">
+        <header class="h-14 shrink-0 border-b border-zinc-800 bg-zinc-900/70 px-4 flex items-center justify-between">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center">
+              <i data-lucide="box" class="w-4 h-4"></i>
+            </div>
+            <div class="min-w-0">
+              <div class="text-sm font-semibold tracking-tight">lblstdio</div>
+              <div class="text-[11px] text-zinc-500">Ручная разметка · YOLO</div>
+            </div>
+            <div class="h-6 w-px bg-zinc-800 mx-1"></div>
+            <label class="text-[11px] text-zinc-500 uppercase tracking-wider">Проект</label>
+            <select
+              id="project-select"
+              class="bg-zinc-900 border border-zinc-700 rounded-md text-sm px-2 py-1 min-w-[180px] max-w-[280px]"
+            ></select>
+            <button
+              id="btn-new-project"
+              class="text-xs px-2.5 py-1 rounded-md border border-zinc-700 hover:bg-zinc-800 text-zinc-300"
+            >
+              + Новый
+            </button>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              id="btn-export"
+              class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700"
+            >
+              <i data-lucide="download" class="w-3.5 h-3.5"></i>
+              Export Dataset
+            </button>
+            <button
+              id="btn-open-upload"
+              class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-indigo-600 hover:bg-indigo-500 text-white"
+            >
+              <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+              Загрузить фото
+            </button>
+          </div>
+        </header>
+
+        <div class="flex-1 overflow-hidden flex flex-col px-5 py-4 gap-4">
+          <div class="flex items-center justify-between gap-4 flex-wrap">
+            <div class="flex items-center gap-2" id="split-filters">
+              <span class="text-[11px] uppercase tracking-wider text-zinc-500 mr-1">Сплит</span>
+            </div>
+            <div class="flex items-center gap-2" id="status-filters">
+              <span class="text-[11px] uppercase tracking-wider text-zinc-500 mr-1">Статус</span>
+            </div>
+            <div id="gallery-count" class="text-xs text-zinc-500 ml-auto font-mono"></div>
+          </div>
+          <div
+            id="gallery-grid"
+            class="flex-1 overflow-y-auto scrollbar-thin grid gap-3 content-start"
+            style="grid-template-columns: repeat(auto-fill, minmax(180px, 1fr))"
+          ></div>
+          <div id="gallery-empty" class="hidden flex-1 items-center justify-center text-center text-zinc-500">
+            <div>
+              <i data-lucide="image" class="w-10 h-10 mx-auto mb-3 text-zinc-600"></i>
+              <p class="text-sm">Нет изображений. Загрузите пачку JPG / PNG / WebP.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STUDIO -->
+      <section id="view-studio" class="hidden h-full flex">
+        <aside class="w-14 shrink-0 flex flex-col items-center py-4 border-r border-zinc-800 bg-zinc-900/50 space-y-2 z-10">
+          <button
+            id="tool-select"
+            class="p-2.5 rounded-lg hover:bg-zinc-800 text-indigo-400 bg-zinc-800/80 transition"
+            title="Выбор / Изменение (V)"
+          >
+            <i data-lucide="mouse-pointer-2" class="w-5 h-5"></i>
+          </button>
+          <button
+            id="tool-draw"
+            class="p-2.5 rounded-lg hover:bg-zinc-800 text-zinc-400 transition"
+            title="Новая рамка (W)"
+          >
+            <i data-lucide="square" class="w-5 h-5"></i>
+          </button>
+          <div class="w-8 h-px bg-zinc-800 my-2"></div>
+          <button
+            id="tool-fit"
+            class="p-2.5 rounded-lg hover:bg-zinc-800 text-zinc-400 transition"
+            title="Сбросить зум (F)"
+          >
+            <i data-lucide="maximize" class="w-5 h-5"></i>
+          </button>
+          <button
+            id="btn-back-gallery"
+            class="mt-auto p-2.5 rounded-lg hover:bg-zinc-800 text-zinc-400 transition"
+            title="К галерее"
+          >
+            <i data-lucide="layout-grid" class="w-5 h-5"></i>
+          </button>
+        </aside>
+
+        <main class="flex-1 flex flex-col min-w-0 relative">
+          <header class="h-12 border-b border-zinc-800 bg-zinc-900/30 flex items-center justify-between px-4 z-10">
+            <div class="flex items-center gap-3 min-w-0">
+              <span id="image-filename" class="font-mono text-xs text-zinc-400 truncate">—</span>
+              <span
+                id="badge-split"
+                class="px-2 py-0.5 text-[10px] font-semibold tracking-wide rounded bg-blue-950 text-blue-400 border border-blue-800/50"
+                >TRAIN</span
+              >
+              <span id="save-indicator" class="flex items-center text-[11px] text-zinc-500 gap-1.5">
+                <span class="save-dot saved"></span>
+                <span id="save-indicator-text">Сохранено</span>
+              </span>
+            </div>
+            <button
+              id="btn-export-studio"
+              class="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700"
+            >
+              <i data-lucide="download" class="w-3.5 h-3.5"></i>
+              Export Dataset
+            </button>
+          </header>
+
+          <div id="canvas-container" class="flex-1 relative overflow-hidden bg-canvas cursor-crosshair">
+            <canvas id="annotation-canvas"></canvas>
+          </div>
+
+          <footer class="h-14 border-t border-zinc-800 bg-zinc-900/80 px-6 flex items-center justify-between z-10">
+            <div class="flex items-center gap-4">
+              <button
+                id="btn-prev"
+                class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 flex items-center gap-1"
+              >
+                <i data-lucide="chevron-left" class="w-4 h-4"></i>
+                <span>A</span>
+              </button>
+              <span class="text-xs text-zinc-400 font-mono"
+                >Кадр <span id="current-idx">0</span> из <span id="total-idx">0</span></span
+              >
+              <button
+                id="btn-next"
+                class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 flex items-center gap-1"
+              >
+                <span>D</span>
+                <i data-lucide="chevron-right" class="w-4 h-4"></i>
+              </button>
+            </div>
+            <div class="text-[11px] text-zinc-500 hidden md:flex items-center gap-3">
+              <span><kbd class="px-1 bg-zinc-800 rounded">W</kbd> рамка</span>
+              <span><kbd class="px-1 bg-zinc-800 rounded">V</kbd> выбор</span>
+              <span><kbd class="px-1 bg-zinc-800 rounded">Space</kbd> pan</span>
+              <span><kbd class="px-1 bg-zinc-800 rounded">F</kbd> fit</span>
+              <span><kbd class="px-1 bg-zinc-800 rounded">1–9</kbd> класс</span>
+              <span><kbd class="px-1 bg-zinc-800 rounded">Del</kbd> удалить</span>
+            </div>
+          </footer>
+        </main>
+
+        <aside class="w-72 shrink-0 border-l border-zinc-800 bg-zinc-900/40 flex flex-col z-10">
+          <div class="p-4 border-b border-zinc-800">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">Классы (1–9)</h3>
+              <button id="btn-add-class" class="text-xs text-indigo-400 hover:text-indigo-300">+ Новый</button>
+            </div>
+            <form id="add-class-form" class="hidden mb-3 flex gap-2">
+              <input
+                id="add-class-input"
+                type="text"
+                maxlength="40"
+                placeholder="Имя класса"
+                class="flex-1 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-sm"
+              />
+              <button type="submit" class="text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500">OK</button>
+            </form>
+            <div id="classes-list" class="space-y-1 max-h-56 overflow-y-auto scrollbar-thin"></div>
+          </div>
+          <div class="flex-1 overflow-y-auto p-4 scrollbar-thin">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-3">Объекты на кадре</h3>
+            <div id="annotations-list" class="space-y-1.5"></div>
+          </div>
+        </aside>
+      </section>
+    </div>
+
+    <!-- Upload modal -->
+    <div id="upload-modal" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/70 p-4">
+      <div class="w-full max-w-lg rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl">
+        <div class="flex items-center justify-between px-5 py-4 border-b border-zinc-800">
+          <h2 class="text-sm font-semibold">Загрузка изображений</h2>
+          <button id="btn-close-upload" class="text-zinc-400 hover:text-white">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+        <div class="p-5 space-y-4">
+          <div
+            id="dropzone"
+            class="border-2 border-dashed border-zinc-700 rounded-lg p-8 text-center text-sm text-zinc-400 cursor-pointer hover:border-zinc-500 transition"
+          >
+            <i data-lucide="image-plus" class="w-8 h-8 mx-auto mb-2 text-zinc-500"></i>
+            <p>Перетащите JPG, PNG или WebP сюда</p>
+            <p class="text-[11px] text-zinc-500 mt-1">или нажмите, чтобы выбрать файлы</p>
+            <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple class="hidden" />
+          </div>
+          <div id="file-count" class="text-xs text-zinc-500"></div>
+          <div class="space-y-3 text-xs">
+            <div>
+              <div class="flex justify-between mb-1"><span>Train</span><span id="split-train-val">70%</span></div>
+              <input id="split-train" type="range" min="0" max="100" value="70" />
+            </div>
+            <div>
+              <div class="flex justify-between mb-1"><span>Valid</span><span id="split-valid-val">20%</span></div>
+              <input id="split-valid" type="range" min="0" max="100" value="20" />
+            </div>
+            <div>
+              <div class="flex justify-between mb-1"><span>Test</span><span id="split-test-val">10%</span></div>
+              <input id="split-test" type="range" min="0" max="100" value="10" />
+            </div>
+          </div>
+          <div class="h-2 rounded-full bg-zinc-800 overflow-hidden">
+            <div id="upload-progress" class="h-full w-0 bg-indigo-500 transition-[width]"></div>
+          </div>
+        </div>
+        <div class="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2">
+          <button id="btn-cancel-upload" class="px-3 py-1.5 text-xs rounded-md border border-zinc-700 hover:bg-zinc-800">
+            Отмена
+          </button>
+          <button id="btn-submit-upload" class="px-3 py-1.5 text-xs rounded-md bg-indigo-600 hover:bg-indigo-500 text-white">
+            Загрузить
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- New project modal -->
+    <div id="project-modal" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/70 p-4">
+      <form id="project-form" class="w-full max-w-sm rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-3">
+        <h2 class="text-sm font-semibold">Новый проект</h2>
+        <input
+          id="project-name"
+          required
+          placeholder="Название"
+          class="w-full bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-sm"
+        />
+        <div class="flex justify-end gap-2">
+          <button type="button" id="btn-cancel-project" class="px-3 py-1.5 text-xs rounded-md border border-zinc-700">
+            Отмена
+          </button>
+          <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-indigo-600 hover:bg-indigo-500">Создать</button>
+        </div>
+      </form>
+    </div>
+
+    <div
+      id="toast"
+      class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-full bg-zinc-900 border border-zinc-700 text-xs shadow-xl"
+    ></div>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>

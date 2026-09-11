@@ -1,0 +1,42 @@
+[project]
+name = "lblstdio"
+version = "0.1.0"
+description = "Roboflow-Lite labeling platform — core MVP backend"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20.0",
+    "pillow>=11.0.0",
+    "pyyaml>=6.0.2",
+    "python-multipart>=0.0.17",
+    "pydantic>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.27.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated",
+]
+
+[tool.coverage.run]
+source = ["app.domain", "app.application"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_empty = true
