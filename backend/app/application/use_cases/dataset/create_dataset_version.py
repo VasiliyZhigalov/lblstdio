@@ -4,6 +4,7 @@ from collections import defaultdict
 from uuid import UUID, uuid4
 
 import yaml
+from sqlalchemy.exc import IntegrityError
 
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
 from app.application.ports.repositories.class_repository import IClassRepository
@@ -16,6 +17,7 @@ from app.application.ports.services.augmentation import IAugmentationService, La
 from app.application.ports.storage.file_storage import IFileStorage
 from app.application.ports.unit_of_work import IUnitOfWork
 from app.domain.entities.dataset_version import (
+    DEFAULT_MIN_VERIFIED_IMAGES,
     AugmentationConfig,
     DatasetItem,
     DatasetVersion,
@@ -28,7 +30,7 @@ from app.domain.exceptions import (
     UnverifiedDataException,
 )
 
-DEFAULT_MIN_VERIFIED_IMAGES = 10
+_MAX_VERSION_ALLOC_ATTEMPTS = 5
 
 
 class CreateDatasetVersionUseCase:
@@ -105,136 +107,148 @@ class CreateDatasetVersionUseCase:
         class_by_id = {item.id: item for item in classes}
         names = {item.index_id: item.name for item in classes}
 
-        version_number = await self._versions.next_version_number(project_id)
-        version = DatasetVersion.create(
-            project_id=project_id,
-            version_number=version_number,
-            name=name,
-            augmentation=config,
-        )
-        await self._versions.add(version)
-        await self._uow.commit()
-
-        relative_root = f"projects/{project_id}/datasets/v{version_number}"
-        try:
-            items: list[DatasetItem] = []
-            train_files = 0
-            valid_files = 0
-            test_files = 0
-
-            for image in verified_images:
-                verified_boxes = [
-                    box
-                    for box in by_image.get(image.id, [])
-                    if box.verification_status == VerificationStatus.VERIFIED
-                    and box.class_id in class_by_id
-                ]
-                snapshot = [
-                    SnapshotAnnotation(
-                        class_id=box.class_id,
-                        class_index=class_by_id[box.class_id].index_id,
-                        x_center=box.bbox.x_center,
-                        y_center=box.bbox.y_center,
-                        width=box.bbox.width,
-                        height=box.bbox.height,
-                    )
-                    for box in verified_boxes
-                ]
-                items.append(
-                    DatasetItem(
-                        id=uuid4(),
-                        dataset_version_id=version.id,
-                        image_id=image.id,
-                        split=image.split,
-                        snapshot_annotations=snapshot,
-                        source_file_name=image.file_name,
-                    )
-                )
-
-                labeled = [
-                    LabeledBox(
-                        x_center=item.x_center,
-                        y_center=item.y_center,
-                        width=item.width,
-                        height=item.height,
-                        class_index=item.class_index,
-                    )
-                    for item in snapshot
-                ]
-                raw = await self._storage.read(image.file_path)
-                apply_aug = image.split == SplitType.TRAIN
-                samples = self._augmentation.generate_samples(
-                    raw,
-                    labeled,
-                    config,
-                    apply_augmentation=apply_aug,
-                )
-
-                split = image.split.value
-                for sample in samples:
-                    stem = f"{image.id}{sample.suffix}"
-                    image_name = f"{stem}.jpg"
-                    label_name = f"{stem}.txt"
-                    await self._storage.save(
-                        f"{relative_root}/{split}/images",
-                        image_name,
-                        sample.image_bytes,
-                    )
-                    label_body = "\n".join(
-                        f"{box.class_index} {box.x_center:.6f} {box.y_center:.6f} "
-                        f"{box.width:.6f} {box.height:.6f}"
-                        for box in sample.boxes
-                    )
-                    await self._storage.save(
-                        f"{relative_root}/{split}/labels",
-                        label_name,
-                        label_body.encode("utf-8"),
-                    )
-
-                count = len(samples)
-                if image.split == SplitType.TRAIN:
-                    train_files += count
-                elif image.split == SplitType.VALID:
-                    valid_files += count
-                else:
-                    test_files += count
-
-            yaml_payload = {
-                "path": self._storage.get_absolute_path(relative_root),
-                "train": "train/images",
-                "val": "valid/images",
-                "test": "test/images",
-                "nc": len(names),
-                "names": names,
-            }
-            yaml_relative = f"{relative_root}/data.yaml"
-            await self._storage.save(
-                relative_root,
-                "data.yaml",
-                yaml.safe_dump(
-                    yaml_payload, sort_keys=False, allow_unicode=True
-                ).encode("utf-8"),
+        last_error: Exception | None = None
+        for _attempt in range(_MAX_VERSION_ALLOC_ATTEMPTS):
+            version_number = await self._versions.next_version_number(project_id)
+            version = DatasetVersion.create(
+                project_id=project_id,
+                version_number=version_number,
+                name=name,
+                augmentation=config,
             )
-
-            version.mark_ready(
-                train_count=train_files,
-                valid_count=valid_files,
-                test_count=test_files,
-                yaml_path=yaml_relative,
-                items=items,
-            )
-            await self._versions.update(version)
-            await self._uow.commit()
-            return version
-        except Exception:
-            version.mark_failed()
+            relative_root = f"projects/{project_id}/datasets/v{version_number}"
             try:
-                await self._versions.update(version)
-                await self._uow.commit()
+                items: list[DatasetItem] = []
+                train_frames = 0
+                valid_frames = 0
+                test_frames = 0
+                train_files = 0
+                valid_files = 0
+                test_files = 0
+
+                for image in verified_images:
+                    verified_boxes = [
+                        box
+                        for box in by_image.get(image.id, [])
+                        if box.verification_status == VerificationStatus.VERIFIED
+                        and box.class_id in class_by_id
+                    ]
+                    snapshot = [
+                        SnapshotAnnotation(
+                            class_id=box.class_id,
+                            class_index=class_by_id[box.class_id].index_id,
+                            x_center=box.bbox.x_center,
+                            y_center=box.bbox.y_center,
+                            width=box.bbox.width,
+                            height=box.bbox.height,
+                        )
+                        for box in verified_boxes
+                    ]
+                    items.append(
+                        DatasetItem(
+                            id=uuid4(),
+                            dataset_version_id=version.id,
+                            image_id=image.id,
+                            split=image.split,
+                            snapshot_annotations=snapshot,
+                            source_file_name=image.file_name,
+                        )
+                    )
+
+                    labeled = [
+                        LabeledBox(
+                            x_center=item.x_center,
+                            y_center=item.y_center,
+                            width=item.width,
+                            height=item.height,
+                            class_index=item.class_index,
+                        )
+                        for item in snapshot
+                    ]
+                    raw = await self._storage.read(image.file_path)
+                    apply_aug = image.split == SplitType.TRAIN
+                    samples = self._augmentation.generate_samples(
+                        raw,
+                        labeled,
+                        config,
+                        apply_augmentation=apply_aug,
+                    )
+
+                    split = image.split.value
+                    for sample in samples:
+                        stem = f"{image.id}{sample.suffix}"
+                        await self._storage.save(
+                            f"{relative_root}/{split}/images",
+                            f"{stem}.jpg",
+                            sample.image_bytes,
+                        )
+                        label_body = "\n".join(
+                            f"{box.class_index} {box.x_center:.6f} {box.y_center:.6f} "
+                            f"{box.width:.6f} {box.height:.6f}"
+                            for box in sample.boxes
+                        )
+                        await self._storage.save(
+                            f"{relative_root}/{split}/labels",
+                            f"{stem}.txt",
+                            label_body.encode("utf-8"),
+                        )
+
+                    count = len(samples)
+                    if image.split == SplitType.TRAIN:
+                        train_frames += 1
+                        train_files += count
+                    elif image.split == SplitType.VALID:
+                        valid_frames += 1
+                        valid_files += count
+                    else:
+                        test_frames += 1
+                        test_files += count
+
+                yaml_payload = {
+                    "path": self._storage.get_absolute_path(relative_root),
+                    "train": "train/images",
+                    "val": "valid/images",
+                    "test": "test/images",
+                    "nc": len(names),
+                    "names": names,
+                }
+                yaml_relative = f"{relative_root}/data.yaml"
+                await self._storage.save(
+                    relative_root,
+                    "data.yaml",
+                    yaml.safe_dump(
+                        yaml_payload, sort_keys=False, allow_unicode=True
+                    ).encode("utf-8"),
+                )
+
+                version.mark_ready(
+                    train_count=train_frames,
+                    valid_count=valid_frames,
+                    test_count=test_frames,
+                    train_file_count=train_files,
+                    valid_file_count=valid_files,
+                    test_file_count=test_files,
+                    yaml_path=yaml_relative,
+                    items=items,
+                )
+                try:
+                    await self._versions.add(version)
+                    await self._uow.commit()
+                except IntegrityError as exc:
+                    last_error = exc
+                    await self._storage.delete_directory(relative_root)
+                    if hasattr(self._uow, "rollback"):
+                        await self._uow.rollback()
+                    continue
+                return version
             except Exception:
-                pass
-            await self._storage.delete_directory(relative_root)
-            raise
+                await self._storage.delete_directory(relative_root)
+                raise
+
+        raise ResourceNotFoundException(
+            f"could not allocate dataset version number after "
+            f"{_MAX_VERSION_ALLOC_ATTEMPTS} attempts: {last_error}"
+        )
 
 
 class ListDatasetVersionsUseCase:

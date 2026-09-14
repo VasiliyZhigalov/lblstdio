@@ -14,7 +14,7 @@ class UnverifiedDataException(DomainError):
     """Raised when unverified data is used where only verified data is allowed."""
 
 
-class InsufficientVerifiedDataException(DomainValidationException):
+class InsufficientVerifiedDataException(DomainError):
     """Raised when too few verified frames are available for a dataset version."""
 
 
