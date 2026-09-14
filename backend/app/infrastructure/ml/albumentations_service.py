@@ -69,7 +69,6 @@ def _pad_fill_kwargs() -> dict:
 
 
 def _shift_fill_kwargs() -> dict:
-    # Prefer Affine on albumentations 2.x; fall back to ShiftScaleRotate on 1.x.
     if hasattr(A, "Affine") and _supports_param(A.Affine, "fill"):
         return {"fill": 0}
     if _supports_param(A.ShiftScaleRotate, "fill"):
@@ -77,47 +76,20 @@ def _shift_fill_kwargs() -> dict:
     return {"value": 0}
 
 
+def _bbox_params() -> A.BboxParams:
+    kwargs: dict = {
+        "format": "yolo",
+        "label_fields": ["class_labels"],
+        "min_visibility": 0.1,
+    }
+    if _supports_param(A.BboxParams, "clip"):
+        kwargs["clip"] = True
+    return A.BboxParams(**kwargs)
+
+
 class AlbumentationsAugmentationService(IAugmentationService):
-    def _letterbox(self, config: AugmentationConfig) -> A.Compose:
-        return A.Compose(
-            [
-                A.LongestMaxSize(max_size=max(config.resize_width, config.resize_height)),
-                A.PadIfNeeded(
-                    min_height=config.resize_height,
-                    min_width=config.resize_width,
-                    border_mode=cv2.BORDER_CONSTANT,
-                    **_pad_fill_kwargs(),
-                ),
-            ],
-            bbox_params=A.BboxParams(
-                format="yolo",
-                label_fields=["class_labels"],
-                min_visibility=0.0,
-            ),
-        )
-
-    def _geometric_aug(self) -> A.BasicTransform:
-        fill_kwargs = _shift_fill_kwargs()
-        if hasattr(A, "Affine") and _supports_param(A.Affine, "translate_percent"):
-            return A.Affine(
-                translate_percent={"x": (-0.1, 0.1), "y": (-0.1, 0.1)},
-                scale=(0.9, 1.1),
-                rotate=(-10, 10),
-                border_mode=cv2.BORDER_CONSTANT,
-                p=0.5,
-                **fill_kwargs,
-            )
-        return A.ShiftScaleRotate(
-            shift_limit=0.1,
-            scale_limit=0.1,
-            rotate_limit=10,
-            border_mode=cv2.BORDER_CONSTANT,
-            p=0.5,
-            **fill_kwargs,
-        )
-
-    def _augment_pipeline(self, config: AugmentationConfig) -> A.Compose:
-        transforms: list[A.BasicTransform] = [
+    def _letterbox_ops(self, config: AugmentationConfig) -> list[A.BasicTransform]:
+        return [
             A.LongestMaxSize(max_size=max(config.resize_width, config.resize_height)),
             A.PadIfNeeded(
                 min_height=config.resize_height,
@@ -126,38 +98,92 @@ class AlbumentationsAugmentationService(IAugmentationService):
                 **_pad_fill_kwargs(),
             ),
         ]
+
+    def _letterbox(self, config: AugmentationConfig) -> A.Compose:
+        return A.Compose(self._letterbox_ops(config), bbox_params=_bbox_params())
+
+    def _geometric_aug(self, *, force: bool) -> A.BasicTransform:
+        fill_kwargs = _shift_fill_kwargs()
+        probability = 1.0 if force else 0.5
+        if hasattr(A, "Affine") and _supports_param(A.Affine, "translate_percent"):
+            return A.Affine(
+                translate_percent={"x": (-0.1, 0.1), "y": (-0.1, 0.1)},
+                scale=(0.9, 1.1),
+                rotate=(-10, 10),
+                border_mode=cv2.BORDER_CONSTANT,
+                p=probability,
+                **fill_kwargs,
+            )
+        return A.ShiftScaleRotate(
+            shift_limit=0.1,
+            scale_limit=0.1,
+            rotate_limit=10,
+            border_mode=cv2.BORDER_CONSTANT,
+            p=probability,
+            **fill_kwargs,
+        )
+
+    def _enabled_forced_ops(
+        self, config: AugmentationConfig
+    ) -> list[A.BasicTransform]:
+        ops: list[A.BasicTransform] = []
         if config.horizontal_flip:
-            transforms.append(A.HorizontalFlip(p=0.5))
+            ops.append(A.HorizontalFlip(p=1.0))
         if config.brightness_contrast:
-            transforms.append(A.RandomBrightnessContrast(p=0.5))
+            ops.append(
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.2, contrast_limit=0.2, p=1.0
+                )
+            )
         if config.shift_scale_rotate:
-            transforms.append(self._geometric_aug())
+            ops.append(self._geometric_aug(force=True))
         if config.blur:
-            transforms.append(
+            ops.append(
                 A.OneOf(
                     [
                         A.MotionBlur(blur_limit=5, p=1.0),
                         A.GaussianBlur(blur_limit=(3, 5), p=1.0),
                     ],
-                    p=0.3,
+                    p=1.0,
                 )
             )
-        return A.Compose(
-            transforms,
-            bbox_params=A.BboxParams(
-                format="yolo",
-                label_fields=["class_labels"],
-                min_visibility=0.0,
-            ),
-        )
+        return ops
+
+    def _variant_pipeline(
+        self, config: AugmentationConfig, variant_index: int
+    ) -> A.Compose:
+        """Build a deterministic unique transform set for this variant."""
+        transforms: list[A.BasicTransform] = list(self._letterbox_ops(config))
+        forced = self._enabled_forced_ops(config)
+        if not forced:
+            # Still differentiate variants slightly if user disabled all augs.
+            transforms.append(
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.05 * variant_index,
+                    contrast_limit=0.05 * variant_index,
+                    p=1.0,
+                )
+            )
+        else:
+            primary = forced[(variant_index - 1) % len(forced)]
+            transforms.append(primary)
+            if len(forced) > 1:
+                secondary = forced[variant_index % len(forced)]
+                if secondary is not primary:
+                    transforms.append(secondary)
+        return A.Compose(transforms, bbox_params=_bbox_params())
 
     def _apply(
         self,
         pipeline: A.Compose,
         image: np.ndarray,
         boxes: Sequence[LabeledBox],
+        *,
+        seed: int | None = None,
     ) -> AugmentedSample:
         coords, labels = _boxes_to_albumentations(boxes)
+        if seed is not None:
+            np.random.seed(seed)
         result = pipeline(image=image, bboxes=coords, class_labels=labels)
         out_boxes = _albumentations_to_boxes(result["bboxes"], result["class_labels"])
         return AugmentedSample(
@@ -176,7 +202,7 @@ class AlbumentationsAugmentationService(IAugmentationService):
     ) -> list[AugmentedSample]:
         image = _decode_image(image_bytes)
         letterbox = self._letterbox(config)
-        base = self._apply(letterbox, image, boxes)
+        base = self._apply(letterbox, image, boxes, seed=0)
         base = AugmentedSample(
             image_bytes=base.image_bytes,
             boxes=base.boxes,
@@ -187,9 +213,9 @@ class AlbumentationsAugmentationService(IAugmentationService):
             return [base]
 
         samples = [base]
-        augment = self._augment_pipeline(config)
         for index in range(1, config.multiplier):
-            variant = self._apply(augment, image, boxes)
+            pipeline = self._variant_pipeline(config, index)
+            variant = self._apply(pipeline, image, boxes, seed=index * 10_007)
             samples.append(
                 AugmentedSample(
                     image_bytes=variant.image_bytes,
@@ -208,10 +234,6 @@ class AlbumentationsAugmentationService(IAugmentationService):
         image = _decode_image(image_bytes)
         pipeline = A.Compose(
             [A.HorizontalFlip(p=1.0)],
-            bbox_params=A.BboxParams(
-                format="yolo",
-                label_fields=["class_labels"],
-                min_visibility=0.0,
-            ),
+            bbox_params=_bbox_params(),
         )
-        return self._apply(pipeline, image, boxes)
+        return self._apply(pipeline, image, boxes, seed=1)

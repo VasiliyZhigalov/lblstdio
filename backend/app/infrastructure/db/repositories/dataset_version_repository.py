@@ -39,6 +39,9 @@ class SqliteDatasetVersionRepository(IDatasetVersionRepository):
         row.train_count = version.train_count
         row.valid_count = version.valid_count
         row.test_count = version.test_count
+        row.train_file_count = version.train_file_count
+        row.valid_file_count = version.valid_file_count
+        row.test_file_count = version.test_file_count
         row.yaml_path = version.yaml_path
         row.augmentation_json = {
             "resize_width": version.augmentation.resize_width,
