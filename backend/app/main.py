@@ -9,10 +9,11 @@ from app.infrastructure.db.session import create_session_factory, dispose_engine
 from app.infrastructure.storage.local_storage import LocalFileStorage
 from app.infrastructure.storage.pillow_metadata import PillowMetadataReader
 from app.presentation.api.v1.annotations_router import router as annotations_router
+from app.presentation.api.v1.dataset_versions_router import router as dataset_versions_router
 from app.presentation.api.v1.images_router import router as images_router
+from app.presentation.api.v1.matching_router import router as matching_router
 from app.presentation.api.v1.projects_router import router as projects_router
 from app.presentation.exception_handlers import register_exception_handlers
-
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
 
@@ -50,6 +51,8 @@ def create_app(
     app.include_router(projects_router, prefix="/api/v1")
     app.include_router(images_router, prefix="/api/v1")
     app.include_router(annotations_router, prefix="/api/v1")
+    app.include_router(matching_router, prefix="/api/v1")
+    app.include_router(dataset_versions_router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

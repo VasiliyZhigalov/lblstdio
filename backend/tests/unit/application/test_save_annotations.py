@@ -7,7 +7,7 @@ from app.application.use_cases.annotations.save_annotations import SaveAnnotatio
 from app.domain.entities.annotation import Annotation
 from app.domain.entities.annotation_class import AnnotationClass
 from app.domain.entities.image import Image
-from app.domain.enums import ImageStatus, SplitType
+from app.domain.enums import ImageStatus, SourceType, SplitType, VerificationStatus
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
 from app.domain.value_objects.bounding_box import BoundingBox
 
@@ -38,6 +38,9 @@ class _FakeAnnotations:
     def __init__(self) -> None:
         self.store: dict[UUID, list[Annotation]] = {}
         self.calls = 0
+
+    async def list_by_image(self, image_id: UUID) -> list[Annotation]:
+        return list(self.store.get(image_id, []))
 
     async def replace_for_image(
         self, image_id: UUID, annotations: list[Annotation]
@@ -154,3 +157,67 @@ class TestSaveAnnotationsUseCase:
         )
         assert result[0].id == kept_id
         assert repo.store[image.id][0].id == kept_id
+
+    @pytest.mark.asyncio
+    async def test_existing_keypoint_box_stays_pending_without_geometry_edit(self) -> None:
+        use_case, image, annotation_class, repo, uow = _setup()
+        pending = Annotation.create_from_keypoints(
+            image_id=image.id,
+            class_id=annotation_class.id,
+            bbox=BoundingBox(0.40, 0.50, 0.20, 0.10),
+            source_annotation_id=uuid4(),
+            confidence=0.81,
+        )
+        repo.store[image.id] = [pending]
+        image.recalculate_status([pending])
+
+        result = await use_case.execute(
+            image.id,
+            [
+                _box_input(
+                    annotation_class.id,
+                    annotation_id=pending.id,
+                    x_center=0.40,
+                    y_center=0.50,
+                    width=0.20,
+                    height=0.10,
+                )
+            ],
+        )
+
+        assert result[0].source == SourceType.KEYPOINT_PROPAGATION
+        assert result[0].verification_status == VerificationStatus.PENDING_REVIEW
+        assert result[0].confidence == 0.81
+        assert image.status == ImageStatus.REQUIRES_REVIEW
+        assert uow.committed is True
+
+    @pytest.mark.asyncio
+    async def test_editing_pending_box_geometry_verifies_it(self) -> None:
+        use_case, image, annotation_class, repo, _ = _setup()
+        pending = Annotation.create_from_keypoints(
+            image_id=image.id,
+            class_id=annotation_class.id,
+            bbox=BoundingBox(0.40, 0.50, 0.20, 0.10),
+            source_annotation_id=uuid4(),
+            confidence=0.70,
+        )
+        repo.store[image.id] = [pending]
+
+        result = await use_case.execute(
+            image.id,
+            [
+                _box_input(
+                    annotation_class.id,
+                    annotation_id=pending.id,
+                    x_center=0.42,
+                    y_center=0.51,
+                    width=0.22,
+                    height=0.12,
+                )
+            ],
+        )
+
+        assert result[0].verification_status == VerificationStatus.VERIFIED
+        assert result[0].verified_at is not None
+        assert image.status == ImageStatus.VERIFIED
+

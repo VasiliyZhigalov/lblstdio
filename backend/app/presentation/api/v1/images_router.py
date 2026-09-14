@@ -49,6 +49,7 @@ def _annotation_to_read(annotation) -> AnnotationRead:
         confidence=annotation.confidence,
         verification_status=annotation.verification_status.value,
         verified_at=annotation.verified_at,
+        source_annotation_id=annotation.source_annotation_id,
     )
 
 

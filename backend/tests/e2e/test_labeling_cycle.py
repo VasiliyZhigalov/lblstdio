@@ -122,13 +122,25 @@ class TestLabelingCycleE2E:
         paths = schema.json()["paths"]
         assert "/api/v1/projects" in paths
         assert "/api/v1/projects/{project_id}/export-yolo" in paths
+        assert "/api/v1/matching/propagate-box" in paths
 
     def test_frontend_index_is_served(self, client: TestClient) -> None:
         home = client.get("/")
         assert home.status_code == 200
         assert b"annotation-canvas" in home.content
+        assert b"view-projects" in home.content
+        assert b"filmstrip-list" in home.content
         app_js = client.get("/js/app.js")
         assert app_js.status_code == 200
+        # Smoke: race-safe save / clear binding present in SPA orchestration.
+        assert b"serializeBoxes" in app_js.content
+        assert b"pendingClearImageId" in app_js.content
+        api_js = client.get("/js/api.js")
+        assert api_js.status_code == 200
+        assert b"if (box.id) payload.id = box.id" in api_js.content
+        hotkeys = client.get("/js/hotkeys.js")
+        assert hotkeys.status_code == 200
+        assert b"isModalOpen" in hotkeys.content
 
     def test_invalid_box_returns_422(self, client: TestClient) -> None:
         project_id = client.post("/api/v1/projects", json={"name": "P"}).json()["id"]
@@ -201,6 +213,65 @@ class TestLabelingCycleE2E:
         )
         assert listing.status_code == 200
         assert len(listing.json()) == 1
+
+    def test_image_file_is_inline_for_img_tags(self, client: TestClient) -> None:
+        project_id = client.post("/api/v1/projects", json={"name": "P"}).json()["id"]
+        image_id = client.post(
+            f"/api/v1/projects/{project_id}/images/upload",
+            files=[("files", ("a.png", _png(), "image/png"))],
+        ).json()[0]["id"]
+        response = client.get(f"/api/v1/images/{image_id}/file")
+        assert response.status_code == 200
+        disposition = response.headers.get("content-disposition", "")
+        assert "inline" in disposition.lower()
+        assert "attachment" not in disposition.lower()
+
+    def test_save_annotations_preserves_client_box_id(self, client: TestClient) -> None:
+        project_id = client.post("/api/v1/projects", json={"name": "P"}).json()["id"]
+        class_id = client.post(
+            f"/api/v1/projects/{project_id}/classes",
+            json={"name": "defect", "color_hex": "#EF4444"},
+        ).json()["id"]
+        image_id = client.post(
+            f"/api/v1/projects/{project_id}/images/upload",
+            files=[("files", ("a.png", _png(), "image/png"))],
+        ).json()[0]["id"]
+
+        first = client.put(
+            f"/api/v1/images/{image_id}/annotations",
+            json={
+                "boxes": [
+                    {
+                        "class_id": class_id,
+                        "x_center": 0.4,
+                        "y_center": 0.5,
+                        "width": 0.2,
+                        "height": 0.1,
+                    }
+                ]
+            },
+        )
+        assert first.status_code == 200
+        kept_id = first.json()[0]["id"]
+
+        second = client.put(
+            f"/api/v1/images/{image_id}/annotations",
+            json={
+                "boxes": [
+                    {
+                        "id": kept_id,
+                        "class_id": class_id,
+                        "x_center": 0.45,
+                        "y_center": 0.55,
+                        "width": 0.22,
+                        "height": 0.12,
+                    }
+                ]
+            },
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()[0]["id"] == kept_id
+        assert second.json()[0]["x_center"] == pytest.approx(0.45)
 
 
 def test_delete_project_removes_files(tmp_path: Path) -> None:

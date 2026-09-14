@@ -3,9 +3,16 @@ from uuid import UUID
 
 from app.domain.entities.annotation import Annotation
 from app.domain.entities.annotation_class import AnnotationClass
+from app.domain.entities.dataset_version import (
+    AugmentationConfig,
+    DatasetItem,
+    DatasetVersion,
+    SnapshotAnnotation,
+)
 from app.domain.entities.image import Image
 from app.domain.entities.project import Project
 from app.domain.enums import (
+    DatasetVersionStatus,
     ImageSourceType,
     ImageStatus,
     SourceType,
@@ -13,7 +20,14 @@ from app.domain.enums import (
     VerificationStatus,
 )
 from app.domain.value_objects.bounding_box import BoundingBox
-from app.infrastructure.db.tables import AnnotationRow, ClassRow, ImageRow, ProjectRow
+from app.infrastructure.db.tables import (
+    AnnotationRow,
+    ClassRow,
+    DatasetItemRow,
+    DatasetVersionRow,
+    ImageRow,
+    ProjectRow,
+)
 
 
 def ensure_utc(value: datetime | None) -> datetime | None:
@@ -139,4 +153,85 @@ def row_to_annotation(row: AnnotationRow) -> Annotation:
         source_annotation_id=(
             UUID(row.source_annotation_id) if row.source_annotation_id else None
         ),
+    )
+
+
+def augmentation_to_dict(config: AugmentationConfig) -> dict:
+    return {
+        "resize_width": config.resize_width,
+        "resize_height": config.resize_height,
+        "horizontal_flip": config.horizontal_flip,
+        "brightness_contrast": config.brightness_contrast,
+        "blur": config.blur,
+        "shift_scale_rotate": config.shift_scale_rotate,
+        "multiplier": config.multiplier,
+    }
+
+
+def dict_to_augmentation(raw: dict) -> AugmentationConfig:
+    return AugmentationConfig(
+        resize_width=int(raw.get("resize_width", 640)),
+        resize_height=int(raw.get("resize_height", 640)),
+        horizontal_flip=bool(raw.get("horizontal_flip", True)),
+        brightness_contrast=bool(raw.get("brightness_contrast", True)),
+        blur=bool(raw.get("blur", False)),
+        shift_scale_rotate=bool(raw.get("shift_scale_rotate", True)),
+        multiplier=int(raw.get("multiplier", 3)),
+    )
+
+
+def dataset_version_to_row(version: DatasetVersion) -> DatasetVersionRow:
+    return DatasetVersionRow(
+        id=str(version.id),
+        project_id=str(version.project_id),
+        version_number=version.version_number,
+        name=version.name,
+        status=version.status.value,
+        train_count=version.train_count,
+        valid_count=version.valid_count,
+        test_count=version.test_count,
+        yaml_path=version.yaml_path,
+        created_at=version.created_at,
+        augmentation_json=augmentation_to_dict(version.augmentation),
+    )
+
+
+def dataset_item_to_row(item: DatasetItem) -> DatasetItemRow:
+    return DatasetItemRow(
+        id=str(item.id),
+        dataset_version_id=str(item.dataset_version_id),
+        image_id=str(item.image_id),
+        split=item.split.value,
+        snapshot_annotations=item.snapshot_as_dicts(),
+        source_file_name=item.source_file_name,
+    )
+
+
+def row_to_dataset_item(row: DatasetItemRow) -> DatasetItem:
+    return DatasetItem(
+        id=UUID(row.id),
+        dataset_version_id=UUID(row.dataset_version_id),
+        image_id=UUID(row.image_id),
+        split=SplitType(row.split),
+        snapshot_annotations=[
+            SnapshotAnnotation.from_dict(raw) for raw in (row.snapshot_annotations or [])
+        ],
+        source_file_name=row.source_file_name,
+    )
+
+
+def row_to_dataset_version(row: DatasetVersionRow) -> DatasetVersion:
+    return DatasetVersion(
+        id=UUID(row.id),
+        project_id=UUID(row.project_id),
+        version_number=row.version_number,
+        name=row.name,
+        status=DatasetVersionStatus(row.status),
+        train_count=row.train_count,
+        valid_count=row.valid_count,
+        test_count=row.test_count,
+        yaml_path=row.yaml_path,
+        created_at=ensure_utc(row.created_at),
+        augmentation=dict_to_augmentation(row.augmentation_json or {}),
+        items=[row_to_dataset_item(item) for item in (row.items or [])],
     )

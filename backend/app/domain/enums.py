@@ -30,3 +30,9 @@ class SplitType(str, Enum):
     TRAIN = "train"
     VALID = "valid"
     TEST = "test"
+
+
+class DatasetVersionStatus(str, Enum):
+    PREPARING = "PREPARING"
+    READY = "READY"
+    FAILED = "FAILED"
