@@ -2,11 +2,13 @@ import { store } from "../store.js";
 import {
   HANDLE_SIZE,
   MAX_ZOOM,
+  MIN_BOX_IMAGE_PX,
   MIN_DRAW_SCREEN_PX,
   MIN_ZOOM,
   applyHandleResize,
   clampRectToImage,
   clientToImage,
+  enforceMinRect,
   fitTransform,
   handlePoints,
   hexWithAlpha,
@@ -89,6 +91,7 @@ export class AnnotationCanvas {
   }
 
   async loadImage(url) {
+    const loadId = (this._loadId = (this._loadId || 0) + 1);
     const img = new Image();
     img.decoding = "async";
     const done = new Promise((resolve, reject) => {
@@ -97,11 +100,14 @@ export class AnnotationCanvas {
     });
     img.src = url;
     await done;
+    if (loadId !== this._loadId) return false;
     this.image = img;
     this.fitToScreen();
+    return true;
   }
 
   clearImage() {
+    this._loadId = (this._loadId || 0) + 1;
     this.image = null;
     this.draft = null;
     this.scheduleRender();
@@ -114,6 +120,41 @@ export class AnnotationCanvas {
     this.zoom = next.zoom;
     this.pan = next.pan;
     this.scheduleRender();
+  }
+
+  centerOnBox(box) {
+    if (!this.image || !box) return;
+    const { w, h } = this.viewSize();
+    const { w: iw, h: ih } = this.imgSize();
+    const xywh = yoloToXywh(box, iw, ih);
+    const cx = (xywh.x + xywh.w / 2) * this.zoom;
+    const cy = (xywh.y + xywh.h / 2) * this.zoom;
+    this.pan = { x: w / 2 - cx, y: h / 2 - cy };
+    this.scheduleRender();
+  }
+
+  syncFloatActions() {
+    const el = document.getElementById("box-float-actions");
+    if (!el) return;
+    const selectedId = store.get("selectedBoxId");
+    const hoveredId = store.get("hoveredBoxId");
+    const focusId = selectedId || hoveredId;
+    const box = (store.get("annotations") || []).find((item) => item.id === focusId);
+    if (
+      store.get("matchingInProgress") ||
+      !box ||
+      box.verification_status !== "PENDING_REVIEW" ||
+      !this.image
+    ) {
+      el.classList.add("hidden");
+      return;
+    }
+    const rect = this.screenRectForBox(box);
+    const top = Math.max(4, rect.y - 34);
+    const left = Math.max(4, rect.x + rect.w / 2 - 32);
+    el.style.top = `${top}px`;
+    el.style.left = `${left}px`;
+    el.classList.remove("hidden");
   }
 
   canvasRect() {
@@ -160,10 +201,18 @@ export class AnnotationCanvas {
   }
 
   setCursor(value) {
+    if (store.get("matchingInProgress")) {
+      this.container.style.cursor = "wait";
+      return;
+    }
     this.container.style.cursor = value;
   }
 
   updateHoverCursor(event) {
+    if (store.get("matchingInProgress")) {
+      this.setCursor("wait");
+      return;
+    }
     if (this.isPanning) {
       this.setCursor("grabbing");
       return;
@@ -230,7 +279,7 @@ export class AnnotationCanvas {
   }
 
   onMouseDown(event) {
-    if (!this.image) return;
+    if (!this.image || store.get("matchingInProgress")) return;
     if (this.shouldPan(event)) {
       event.preventDefault();
       this.isPanning = true;
@@ -312,7 +361,11 @@ export class AnnotationCanvas {
       const box = store.get("annotations").find((item) => item.id === this.dragBoxId);
       if (box) {
         const current = yoloToXywh(box, imgW, imgH);
-        const resized = applyHandleResize(current, this.activeHandle, imgPt.x, imgPt.y, imgW, imgH);
+        const resized = enforceMinRect(
+          applyHandleResize(current, this.activeHandle, imgPt.x, imgPt.y, imgW, imgH),
+          imgW,
+          imgH
+        );
         this.commitBoxGeometry(this.dragBoxId, resized);
       }
       return;
@@ -361,7 +414,12 @@ export class AnnotationCanvas {
       this.draft = null;
       const screenW = Math.abs(w) * this.zoom;
       const screenH = Math.abs(h) * this.zoom;
-      if (screenW >= MIN_DRAW_SCREEN_PX && screenH >= MIN_DRAW_SCREEN_PX) {
+      if (
+        screenW >= MIN_DRAW_SCREEN_PX &&
+        screenH >= MIN_DRAW_SCREEN_PX &&
+        Math.abs(w) >= MIN_BOX_IMAGE_PX &&
+        Math.abs(h) >= MIN_BOX_IMAGE_PX
+      ) {
         const { w: imgW, h: imgH } = this.imgSize();
         const yolo = xywhToYolo(this.drawStart.x, this.drawStart.y, w, h, imgW, imgH);
         const classId = store.get("activeClassId");
@@ -398,7 +456,10 @@ export class AnnotationCanvas {
     ctx.fillStyle = "#0a0a0c";
     ctx.fillRect(0, 0, w, h);
 
-    if (!this.image) return;
+    if (!this.image) {
+      this.syncFloatActions();
+      return;
+    }
 
     ctx.imageSmoothingEnabled = this.zoom < 1.2;
     ctx.imageSmoothingQuality = this.zoom < 0.5 ? "low" : "medium";
@@ -449,6 +510,109 @@ export class AnnotationCanvas {
       ctx.strokeRect(screen.x, screen.y, screen.w, screen.h);
       ctx.restore();
     }
+
+    this.drawMatchDebug(ctx);
+    this.syncFloatActions();
+  }
+
+  drawMatchDebug(ctx) {
+    const debug = store.get("matchDebug");
+    if (!debug?.transform) return;
+    const t = debug.transform;
+    const arrows = debug.arrows || [];
+
+    const toScreen = (ix, iy) => ({
+      x: ix * this.zoom + this.pan.x,
+      y: iy * this.zoom + this.pan.y,
+    });
+
+    ctx.save();
+    // Per-box arrows: identity place → transformed place
+    for (const arrow of arrows) {
+      const from = toScreen(arrow.from_x, arrow.from_y);
+      const to = toScreen(arrow.to_x, arrow.to_y);
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const len = Math.hypot(dx, dy);
+
+      ctx.beginPath();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = "rgba(250, 204, 21, 0.85)";
+      ctx.lineWidth = 1.5;
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // start = yellow dot (before), end = cyan arrow (after)
+      ctx.fillStyle = "#facc15";
+      ctx.beginPath();
+      ctx.arc(from.x, from.y, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (len > 4) {
+        const angle = Math.atan2(dy, dx);
+        ctx.fillStyle = "#22d3ee";
+        ctx.beginPath();
+        ctx.moveTo(to.x, to.y);
+        ctx.lineTo(to.x - 10 * Math.cos(angle - 0.4), to.y - 10 * Math.sin(angle - 0.4));
+        ctx.lineTo(to.x - 10 * Math.cos(angle + 0.4), to.y - 10 * Math.sin(angle + 0.4));
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    // Global image-center vector (tx, ty) in image pixels
+    const { w: imgW, h: imgH } = this.imgSize();
+    const origin = toScreen(imgW / 2, imgH / 2);
+    const tip = toScreen(imgW / 2 + t.tx, imgH / 2 + t.ty);
+    ctx.strokeStyle = "#f97316";
+    ctx.fillStyle = "#f97316";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(origin.x, origin.y);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(origin.x, origin.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    const glen = Math.hypot(tip.x - origin.x, tip.y - origin.y);
+    if (glen > 4) {
+      const angle = Math.atan2(tip.y - origin.y, tip.x - origin.x);
+      ctx.beginPath();
+      ctx.moveTo(tip.x, tip.y);
+      ctx.lineTo(tip.x - 12 * Math.cos(angle - 0.4), tip.y - 12 * Math.sin(angle - 0.4));
+      ctx.lineTo(tip.x - 12 * Math.cos(angle + 0.4), tip.y - 12 * Math.sin(angle + 0.4));
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // HUD
+    const lines = [
+      "MATCH DEBUG",
+      `Δx=${t.tx.toFixed(1)}px  Δy=${t.ty.toFixed(1)}px`,
+      `rot=${t.rotation_deg.toFixed(2)}°  scale=${t.scale.toFixed(4)}`,
+      `conf=${(t.match_score * 100).toFixed(1)}%`,
+      Math.hypot(t.tx, t.ty) < 2
+        ? "⚠ вектор ≈ 0 (кадры почти совпали)"
+        : `‖Δ‖=${Math.hypot(t.tx, t.ty).toFixed(1)}px`,
+    ];
+    ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+    const pad = 8;
+    const lineH = 16;
+    const boxW = Math.max(...lines.map((line) => ctx.measureText(line).width)) + pad * 2;
+    const boxH = lines.length * lineH + pad * 2;
+    ctx.fillStyle = "rgba(9, 9, 11, 0.82)";
+    ctx.strokeStyle = "rgba(249, 115, 22, 0.7)";
+    ctx.lineWidth = 1;
+    ctx.fillRect(10, 10, boxW, boxH);
+    ctx.strokeRect(10, 10, boxW, boxH);
+    ctx.fillStyle = "#fdba74";
+    lines.forEach((line, index) => {
+      ctx.fillStyle = index === 0 ? "#fb923c" : line.startsWith("⚠") ? "#fbbf24" : "#e4e4e7";
+      ctx.fillText(line, 10 + pad, 10 + pad + (index + 1) * lineH - 4);
+    });
+    ctx.restore();
   }
 
   drawBox(ctx, box, cls, rect, isSelected, isHovered) {

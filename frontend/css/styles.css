@@ -18,6 +18,10 @@ body {
   touch-action: none;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .scrollbar-thin::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -93,4 +97,11 @@ kbd {
 .box-row.hovered,
 .box-row.selected {
   background: rgba(99, 102, 241, 0.18);
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }

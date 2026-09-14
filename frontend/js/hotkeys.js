@@ -1,9 +1,23 @@
 import { store } from "./store.js";
 
+const MODAL_IDS = ["upload-modal", "project-modal", "clear-modal", "delete-project-modal"];
+
 function isTypingTarget(target) {
-  if (!target) return false;
+  if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
+  const editable =
+    tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
+  if (!editable) return false;
+  if (target.disabled) return false;
+  if (target.closest(".hidden")) return false;
+  return true;
+}
+
+function isModalOpen() {
+  return MODAL_IDS.some((id) => {
+    const el = document.getElementById(id);
+    return el && !el.classList.contains("hidden");
+  });
 }
 
 export function initHotkeys({
@@ -14,61 +28,80 @@ export function initHotkeys({
   deleteSelected,
   selectClass,
   save,
+  verifyAll,
+  rejectAll,
+  hasPending,
 }) {
   window.addEventListener("keydown", (event) => {
     if (isTypingTarget(event.target)) return;
     if (store.get("view") !== "studio") return;
+    if (isModalOpen()) return;
+    if (store.get("matchingInProgress")) {
+      event.preventDefault();
+      return;
+    }
 
-    const key = event.key;
     const code = event.code;
 
     if (code === "Space") {
       event.preventDefault();
+      if (hasPending?.()) {
+        if (!event.repeat) verifyAll?.();
+        return;
+      }
       if (!event.repeat) store.set("spaceHeld", true);
       return;
     }
 
     if (event.ctrlKey || event.metaKey) {
-      if (key.toLowerCase() === "s") {
+      if (code === "KeyS") {
         event.preventDefault();
         save();
       }
       return;
     }
 
-    if (key === "w" || key === "W") {
+    if (code === "KeyR") {
+      if (hasPending?.()) {
+        event.preventDefault();
+        if (!event.repeat) rejectAll?.();
+        return;
+      }
+    }
+
+    if (code === "KeyW") {
       event.preventDefault();
       setMode("DRAW");
       return;
     }
-    if (key === "v" || key === "V") {
+    if (code === "KeyV") {
       event.preventDefault();
       setMode("SELECT");
       return;
     }
-    if (key === "f" || key === "F") {
+    if (code === "KeyF") {
       event.preventDefault();
       fit();
       return;
     }
-    if (key === "d" || key === "D" || key === "ArrowRight") {
+    if (code === "KeyD" || code === "ArrowRight") {
       event.preventDefault();
       if (!event.repeat) next();
       return;
     }
-    if (key === "a" || key === "A" || key === "ArrowLeft") {
+    if (code === "KeyA" || code === "ArrowLeft") {
       event.preventDefault();
       if (!event.repeat) prev();
       return;
     }
-    if (key === "Delete" || key === "Backspace") {
+    if (code === "Delete" || code === "Backspace") {
       event.preventDefault();
       deleteSelected();
       return;
     }
-    if (/^[1-9]$/.test(key)) {
+    if (/^Digit[1-9]$/.test(code)) {
       event.preventDefault();
-      selectClass(Number(key));
+      selectClass(Number(code.slice(-1)));
     }
   });
 

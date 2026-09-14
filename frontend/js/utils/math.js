@@ -1,6 +1,7 @@
 export const MIN_DRAW_SCREEN_PX = 5;
-export const HANDLE_SIZE = 7;
-export const HANDLE_HIT = 10;
+export const MIN_BOX_IMAGE_PX = 5;
+export const HANDLE_SIZE = 8;
+export const HANDLE_HIT = 11;
 export const MIN_ZOOM = 0.08;
 export const MAX_ZOOM = 16;
 export const CLASS_COLORS = [
@@ -66,7 +67,7 @@ export function xywhToYolo(x, y, w, h, imgW, imgH) {
   const y2 = clamp(Math.max(y, y + h), 0, imgH);
   const bw = x2 - x1;
   const bh = y2 - y1;
-  if (bw <= 0.5 || bh <= 0.5) return null;
+  if (bw < MIN_BOX_IMAGE_PX || bh < MIN_BOX_IMAGE_PX) return null;
   const yolo = {
     x_center: clamp01((x1 + bw / 2) / imgW),
     y_center: clamp01((y1 + bh / 2) / imgH),
@@ -159,6 +160,18 @@ export function clampRectToImage(rect, imgW, imgH) {
   return {
     x: clamp(rect.x, 0, Math.max(0, imgW - w)),
     y: clamp(rect.y, 0, Math.max(0, imgH - h)),
+    w,
+    h,
+  };
+}
+
+export function enforceMinRect(rect, imgW, imgH, min = MIN_BOX_IMAGE_PX) {
+  const clamped = clampRectToImage(rect, imgW, imgH);
+  const w = Math.min(imgW, Math.max(min, clamped.w));
+  const h = Math.min(imgH, Math.max(min, clamped.h));
+  return {
+    x: clamp(clamped.x, 0, Math.max(0, imgW - w)),
+    y: clamp(clamped.y, 0, Math.max(0, imgH - h)),
     w,
     h,
   };

@@ -1,20 +1,9 @@
 import { store } from "../store.js";
 import { nextClassColor } from "../utils/math.js";
 import { api } from "../api.js";
+import { escapeHtml, refreshIcons } from "../utils/dom.js";
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function refreshIcons() {
-  window.lucide?.createIcons();
-}
-
-export function initSidebar({ onError }) {
+export function initSidebar({ onError, onDeleteBox }) {
   const classesList = document.getElementById("classes-list");
   const annotationsList = document.getElementById("annotations-list");
   const addBtn = document.getElementById("btn-add-class");
@@ -111,12 +100,15 @@ export function initSidebar({ onError }) {
     const del = event.target.closest("[data-delete-box]");
     if (del) {
       const id = del.dataset.deleteBox;
-      store.patch({
-        annotations: store.get("annotations").filter((box) => box.id !== id),
-        selectedBoxId: store.get("selectedBoxId") === id ? null : store.get("selectedBoxId"),
-        hasUnsavedChanges: true,
-        saveStatus: "unsaved",
-      });
+      if (onDeleteBox) onDeleteBox(id);
+      else {
+        store.patch({
+          annotations: store.get("annotations").filter((box) => box.id !== id),
+          selectedBoxId: store.get("selectedBoxId") === id ? null : store.get("selectedBoxId"),
+          hasUnsavedChanges: true,
+          saveStatus: "unsaved",
+        });
+      }
       return;
     }
     const row = event.target.closest("[data-box-id]");

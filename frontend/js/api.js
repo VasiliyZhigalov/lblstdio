@@ -44,6 +44,7 @@ export const api = {
       body: JSON.stringify({ name, description }),
     }),
   getProject: (id) => request(`/projects/${id}`),
+  deleteProject: (id) => request(`/projects/${id}`, { method: "DELETE" }),
 
   listClasses: (projectId) => request(`/projects/${projectId}/classes`),
   createClass: (projectId, name, color_hex) =>
@@ -60,14 +61,72 @@ export const api = {
     request(`/images/${imageId}/annotations`, {
       method: "PUT",
       body: JSON.stringify({
-        boxes: boxes.map((box) => ({
-          class_id: box.class_id,
-          x_center: box.x_center,
-          y_center: box.y_center,
-          width: box.width,
-          height: box.height,
+        boxes: boxes.map((box) => {
+          const payload = {
+            class_id: box.class_id,
+            x_center: box.x_center,
+            y_center: box.y_center,
+            width: box.width,
+            height: box.height,
+          };
+          if (box.id) payload.id = box.id;
+          return payload;
+        }),
+      }),
+    }),
+
+  propagateBox: (sourceImageId, targetImageId, sourceBox) =>
+    request("/matching/propagate-box", {
+      method: "POST",
+      body: JSON.stringify({
+        source_image_id: sourceImageId,
+        target_image_id: targetImageId,
+        source_box: {
+          id: sourceBox.id,
+          class_id: sourceBox.class_id,
+          x_center: sourceBox.x_center,
+          y_center: sourceBox.y_center,
+          width: sourceBox.width,
+          height: sourceBox.height,
+        },
+      }),
+    }),
+
+  propagateBoxes: (sourceImageId, targetImageId, sourceBoxes) =>
+    request("/matching/propagate-boxes", {
+      method: "POST",
+      body: JSON.stringify({
+        source_image_id: sourceImageId,
+        target_image_id: targetImageId,
+        source_boxes: sourceBoxes.map((sourceBox) => ({
+          id: sourceBox.id,
+          class_id: sourceBox.class_id,
+          x_center: sourceBox.x_center,
+          y_center: sourceBox.y_center,
+          width: sourceBox.width,
+          height: sourceBox.height,
         })),
       }),
+    }),
+
+  verifyAnnotation: (imageId, annotationId) =>
+    request(`/images/${imageId}/annotations/${annotationId}/verify`, {
+      method: "POST",
+    }),
+
+  verifyAllAnnotations: (imageId) =>
+    request(`/images/${imageId}/verify-all`, {
+      method: "POST",
+    }),
+
+  rejectAllPending: (imageId) =>
+    request(`/images/${imageId}/reject-pending`, {
+      method: "POST",
+    }),
+
+  deleteAnnotation: (imageId, annotationId) =>
+    request(`/images/${imageId}/annotations/${annotationId}`, {
+      method: "DELETE",
     }),
 
   uploadImages(projectId, files, splits, onProgress) {
@@ -120,4 +179,15 @@ export const api = {
     }
     return response.blob();
   },
+
+  listDatasetVersions: (projectId) =>
+    request(`/projects/${projectId}/dataset-versions`),
+
+  createDatasetVersion: (projectId, body) =>
+    request(`/projects/${projectId}/dataset-versions`, {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
+
+  getDatasetVersion: (versionId) => request(`/dataset-versions/${versionId}`),
 };

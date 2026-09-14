@@ -64,20 +64,26 @@ export class Store extends EventTarget {
 }
 
 export const store = new Store({
-  view: "dashboard", // 'dashboard' | 'studio'
+  view: "projects", // 'projects' | 'studio'
   currentProject: null,
   projects: [],
+  projectQuery: "",
   images: [],
   currentImage: null,
   annotations: [],
+  boxCounts: {},
   selectedBoxId: null,
   hoveredBoxId: null,
   activeClassId: null,
   classes: [],
   mode: "SELECT", // 'SELECT' | 'DRAW'
-  splitFilter: "all",
-  statusFilter: "all",
+  filmstripFilter: "all", // 'all' | 'review' | 'unannotated'
+  filmstripQuery: "",
   hasUnsavedChanges: false,
   saveStatus: "idle", // 'idle' | 'saving' | 'saved' | 'error'
   spaceHeld: false,
+  clipboardBox: null, // { sourceImageId, boxes: [{ id, class_id, ... }] } | null
+  matchingInProgress: false,
+  // Debug overlay after keypoint paste: transform + arrows in image pixels
+  matchDebug: null, // { transform, arrows } | null
 });
