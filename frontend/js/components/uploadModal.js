@@ -3,7 +3,7 @@ import { api } from "../api.js";
 
 const IMAGE_RE = /\.(jpe?g|png|webp)$/i;
 const LABEL_RE = /\.txt$/i;
-const META_RE = /(^|\/)(data\.ya?ml|classes\.txt)$/i;
+const META_RE = /(^|[/\\])(data\.ya?ml|classes\.txt)$/i;
 const ZIP_RE = /\.zip$/i;
 
 function showModal(el, visible) {
@@ -11,8 +11,12 @@ function showModal(el, visible) {
   el.classList.toggle("flex", visible);
 }
 
+function filePath(file) {
+  return (file.webkitRelativePath || file.name || "").replace(/\\/g, "/");
+}
+
 function isAcceptedFile(file) {
-  const name = file.webkitRelativePath || file.name;
+  const name = filePath(file);
   if (IMAGE_RE.test(name) || ZIP_RE.test(name) || META_RE.test(name)) return true;
   if (LABEL_RE.test(name) && !META_RE.test(name)) return true;
   return false;
@@ -24,7 +28,7 @@ function summarize(files) {
   let zips = 0;
   let meta = 0;
   for (const file of files) {
-    const name = file.webkitRelativePath || file.name;
+    const name = filePath(file);
     if (ZIP_RE.test(name)) zips += 1;
     else if (META_RE.test(name)) meta += 1;
     else if (IMAGE_RE.test(name)) images += 1;
@@ -67,21 +71,41 @@ export function initUploadModal({ onUploaded, onError }) {
     dropzone.classList.remove("dropzone-active");
   }
 
+  function openFilePicker(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    fileInput.click();
+  }
+
+  function openFolderPicker(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    if (!folderInput) {
+      onError("Выбор папки не поддерживается в этом браузере");
+      return;
+    }
+    folderInput.click();
+  }
+
+  // Dropzone click opens files only when not clicking action buttons.
   dropzone.addEventListener("click", (event) => {
-    if (event.target.closest("[data-upload-folder]")) return;
-    fileInput.click();
-  });
-  document.getElementById("btn-upload-files")?.addEventListener("click", (event) => {
-    event.stopPropagation();
-    fileInput.click();
-  });
-  document.getElementById("btn-upload-folder")?.addEventListener("click", (event) => {
-    event.stopPropagation();
-    folderInput?.click();
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    if (target?.closest("button, label, input")) return;
+    openFilePicker(event);
   });
 
-  fileInput.addEventListener("change", () => setFiles(fileInput.files));
-  folderInput?.addEventListener("change", () => setFiles(folderInput.files));
+  document.getElementById("btn-upload-files")?.addEventListener("click", openFilePicker);
+  document.getElementById("btn-upload-folder")?.addEventListener("click", openFolderPicker);
+
+  fileInput.addEventListener("change", () => {
+    setFiles(fileInput.files);
+    if (folderInput) folderInput.value = "";
+  });
+  folderInput?.addEventListener("change", () => {
+    setFiles(folderInput.files);
+    // Clear the other input so repeated picks always fire change.
+    fileInput.value = "";
+  });
 
   ["dragenter", "dragover"].forEach((type) => {
     dropzone.addEventListener(type, (event) => {

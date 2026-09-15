@@ -264,6 +264,7 @@ export function initModelsHub({
   onAutoLabel,
   onUseModel,
   onCreateDataset,
+  onUploadModel,
   onError,
   onChanged,
 }) {
@@ -272,6 +273,21 @@ export function initModelsHub({
   document.getElementById("btn-models-autolabel")?.addEventListener("click", () => onAutoLabel?.());
   document.getElementById("btn-models-create-dataset")?.addEventListener("click", openCreate);
   document.getElementById("btn-models-create-dataset-inner")?.addEventListener("click", openCreate);
+
+  const uploadInput = document.getElementById("model-upload-input");
+  document.getElementById("btn-models-upload")?.addEventListener("click", () => {
+    uploadInput?.click();
+  });
+  uploadInput?.addEventListener("change", async () => {
+    const file = uploadInput.files?.[0];
+    uploadInput.value = "";
+    if (!file) return;
+    try {
+      await onUploadModel?.(file);
+    } catch (err) {
+      onError?.(err.message || String(err));
+    }
+  });
 
   const renameModal = document.getElementById("rename-asset-modal");
   const renameForm = document.getElementById("rename-asset-form");

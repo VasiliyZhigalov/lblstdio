@@ -43,6 +43,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, description }),
     }),
+  updateProject: (id, name, description = null) =>
+    request(`/projects/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name, description }),
+    }),
   getProject: (id) => request(`/projects/${id}`),
   deleteProject: (id) => request(`/projects/${id}`, { method: "DELETE" }),
 
@@ -139,8 +144,13 @@ export const api = {
       const xhr = new XMLHttpRequest();
       const form = new FormData();
       for (const file of files) {
-        const relative = file.webkitRelativePath || file.name;
-        form.append("files", file, relative);
+        // Keep binary filename as basename; browsers often strip directories from
+        // Content-Disposition filename. Send the relative path separately.
+        form.append("files", file, file.name);
+        form.append(
+          "relative_paths",
+          (file.webkitRelativePath || file.name || "").replace(/\\/g, "/")
+        );
       }
       xhr.open("POST", `${API_BASE}/projects/${projectId}/images/upload`);
       xhr.upload.onprogress = (event) => {
@@ -162,7 +172,7 @@ export const api = {
           } catch {
             /* raw text */
           }
-          reject(new Error(detail));
+          reject(new Error(typeof detail === "string" ? detail : JSON.stringify(detail)));
         }
       };
       xhr.onerror = () => reject(new Error("Ошибка сети при загрузке файлов"));
@@ -237,6 +247,16 @@ export const api = {
   getTrainingDevice: () => request("/training/device"),
 
   listModels: (projectId) => request(`/projects/${projectId}/models`),
+
+  uploadModel: (projectId, file, name = null) => {
+    const form = new FormData();
+    form.append("file", file, file.name || "best.pt");
+    if (name) form.append("name", name);
+    return request(`/projects/${projectId}/models/upload`, {
+      method: "POST",
+      body: form,
+    });
+  },
 
   renameModel: (projectId, modelId, name) =>
     request(`/projects/${projectId}/models/${modelId}`, {

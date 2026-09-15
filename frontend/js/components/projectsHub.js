@@ -75,7 +75,11 @@ function renderProjects() {
             Открыть проект →
           </button>
           <div data-menu-panel="${project.id}"
-            class="hidden absolute right-3 top-10 z-10 w-36 rounded-md border border-zinc-700 bg-zinc-900 shadow-xl py-1">
+            class="hidden absolute right-3 top-10 z-10 w-40 rounded-md border border-zinc-700 bg-zinc-900 shadow-xl py-1">
+            <button type="button" data-edit-project="${project.id}"
+              class="w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
+              Редактировать
+            </button>
             <button type="button" data-delete-project="${project.id}"
               class="w-full text-left px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/40">
               Удалить проект
@@ -87,34 +91,66 @@ function renderProjects() {
   refreshIcons(grid);
 }
 
-export function initProjectsHub({ onOpenProject, onCreateProject, onDeleteProject }) {
+export function initProjectsHub({
+  onOpenProject,
+  onCreateProject,
+  onUpdateProject,
+  onDeleteProject,
+}) {
   const modal = document.getElementById("project-modal");
+  const modalTitle = document.getElementById("project-modal-title");
   const form = document.getElementById("project-form");
   const nameInput = document.getElementById("project-name");
   const descInput = document.getElementById("project-description");
+  const submitBtn = document.getElementById("project-submit-btn");
   const deleteModal = document.getElementById("delete-project-modal");
   const deleteText = document.getElementById("delete-project-text");
   let pendingDeleteId = null;
+  let editingProjectId = null;
 
   const closeMenus = () => {
     document.querySelectorAll("[data-menu-panel]").forEach((el) => el.classList.add("hidden"));
   };
 
-  document.getElementById("btn-new-project").addEventListener("click", () => {
+  const openCreateModal = () => {
+    editingProjectId = null;
+    modalTitle.textContent = "Новый проект";
+    submitBtn.textContent = "Создать";
     nameInput.value = "";
     descInput.value = "";
     showModal(modal, true);
     nameInput.focus();
+  };
+
+  const openEditModal = (project) => {
+    editingProjectId = project.id;
+    modalTitle.textContent = "Редактировать проект";
+    submitBtn.textContent = "Сохранить";
+    nameInput.value = project.name || "";
+    descInput.value = project.description || "";
+    showModal(modal, true);
+    nameInput.focus();
+    nameInput.select();
+  };
+
+  document.getElementById("btn-new-project").addEventListener("click", openCreateModal);
+  document.getElementById("btn-cancel-project").addEventListener("click", () => {
+    editingProjectId = null;
+    showModal(modal, false);
   });
-  document.getElementById("btn-cancel-project").addEventListener("click", () => showModal(modal, false));
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const name = nameInput.value.trim();
     if (!name) return;
-    const submitBtn = form.querySelector('button[type="submit"]');
+    const description = descInput.value.trim() || null;
     if (submitBtn) submitBtn.disabled = true;
     try {
-      await onCreateProject(name, descInput.value.trim() || null);
+      if (editingProjectId) {
+        await onUpdateProject(editingProjectId, name, description);
+      } else {
+        await onCreateProject(name, description);
+      }
+      editingProjectId = null;
       showModal(modal, false);
     } catch {
       /* caller shows toast; keep modal open */
@@ -136,6 +172,15 @@ export function initProjectsHub({ onOpenProject, onCreateProject, onDeleteProjec
       const wasHidden = panel.classList.contains("hidden");
       closeMenus();
       if (wasHidden) panel.classList.remove("hidden");
+      return;
+    }
+    const edit = event.target.closest("[data-edit-project]");
+    if (edit) {
+      const project = (store.get("projects") || []).find(
+        (item) => item.id === edit.dataset.editProject
+      );
+      closeMenus();
+      if (project) openEditModal(project);
       return;
     }
     const del = event.target.closest("[data-delete-project]");

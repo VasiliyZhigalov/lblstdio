@@ -1,6 +1,6 @@
 import { store } from "../store.js";
 import { api } from "../api.js";
-import { escapeHtml, splitBadgeClass } from "../utils/dom.js";
+import { escapeHtml } from "../utils/dom.js";
 
 const FILTERS = [
   { id: "all", label: "Все" },
@@ -104,7 +104,6 @@ function cardHtml(image, currentId) {
         <div class="text-[11px] font-mono truncate ${active ? "text-white" : "text-zinc-300"}">${escapeHtml(image.file_name)}</div>
         <div class="text-[10px] text-zinc-500">${image.width}×${image.height}</div>
         <div class="flex items-center justify-between gap-1">
-          <span class="px-1.5 py-0.5 text-[9px] uppercase rounded border ${splitBadgeClass(image.split)}">${image.split}</span>
           <span class="text-[10px] ${status.className}" data-status-label>${status.label}</span>
         </div>
         <div class="text-[10px] text-zinc-500" data-box-count>${boxCountLabel(image)}</div>

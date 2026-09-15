@@ -829,7 +829,12 @@ function showQuickClassPopover(boxId, screenX, screenY) {
   const classes = [...(store.get("classes") || [])]
     .sort((a, b) => a.index_id - b.index_id)
     .slice(0, 9);
-  if (!classes.length) {
+  // Single-class projects never need a picker; multi-class opens on demand only.
+  if (classes.length <= 1) {
+    hideQuickClassPopover();
+    return;
+  }
+  if (!boxId) {
     hideQuickClassPopover();
     return;
   }
@@ -860,6 +865,28 @@ function showQuickClassPopover(boxId, screenX, screenY) {
       applyQuickClass(btn.dataset.quickClass);
     });
   });
+}
+
+function openQuickClassForBox(boxId, screenX, screenY) {
+  if (!boxId) {
+    toast("Выберите бокс");
+    return;
+  }
+  const classes = store.get("classes") || [];
+  if (classes.length <= 1) return;
+  showQuickClassPopover(boxId, screenX, screenY);
+}
+
+function openQuickClassForSelection() {
+  const boxId = store.get("selectedBoxId");
+  if (!boxId) {
+    toast("Выберите бокс");
+    return;
+  }
+  const box = (store.get("annotations") || []).find((item) => item.id === boxId);
+  if (!box) return;
+  const rect = canvas.screenRectForBox(box);
+  openQuickClassForBox(boxId, rect.x + rect.w / 2, rect.y + rect.h / 2);
 }
 
 function applyQuickClass(classId) {
@@ -954,6 +981,22 @@ function boot() {
         const created = await api.createProject(name, description);
         await loadProjectsHub();
         navigate(projectPath(created.id, "data"));
+      } catch (err) {
+        toast(err.message);
+        throw err;
+      }
+    },
+    onUpdateProject: async (id, name, description) => {
+      try {
+        const updated = await api.updateProject(id, name, description);
+        await loadProjectsHub();
+        const current = store.get("currentProject");
+        if (current?.id === id) {
+          store.set("currentProject", { ...current, ...updated });
+          const shellName = document.getElementById("shell-project-name");
+          if (shellName) shellName.textContent = updated.name;
+        }
+        toast("Проект обновлён");
       } catch (err) {
         toast(err.message);
         throw err;
@@ -1058,6 +1101,15 @@ function boot() {
     onAutoLabel: () => autoLabelModal?.open(),
     onUseModel: (modelId) => autoLabelModal?.open(modelId),
     onCreateDataset: () => datasetModal?.open(),
+    onUploadModel: async (file) => {
+      const project = store.get("currentProject");
+      if (!project) throw new Error("Сначала откройте проект");
+      const created = await api.uploadModel(project.id, file);
+      toast(`Модель загружена: ${created.display_name || created.name}`);
+      await modelsHub?.refresh?.();
+      trainingDrawer?.refreshSelectors?.().catch(() => {});
+      autoLabelModal?.refreshModels?.().catch(() => {});
+    },
     onError: toast,
     onChanged: () => {
       trainingDrawer?.refreshSelectors?.().catch(() => {});
@@ -1105,6 +1157,7 @@ function boot() {
     toggleLeftSidebar,
     toggleRightSidebar,
     applyQuickClassDigit,
+    openQuickClass: openQuickClassForSelection,
   });
 
   document.getElementById("btn-copy-annotations")?.addEventListener("click", () => {
@@ -1128,9 +1181,9 @@ function boot() {
   document.getElementById("canvas-container").addEventListener("need-class", () => {
     toast("Сначала создайте и выберите класс");
   });
-  document.getElementById("canvas-container").addEventListener("box-drawn", (event) => {
+  document.getElementById("canvas-container").addEventListener("request-class-popover", (event) => {
     const { boxId, screenX, screenY } = event.detail || {};
-    if (boxId) showQuickClassPopover(boxId, screenX, screenY);
+    openQuickClassForBox(boxId, screenX ?? 8, screenY ?? 8);
   });
 
   document.getElementById("tool-select").addEventListener("click", () => setMode("SELECT"));
@@ -1202,6 +1255,7 @@ function boot() {
   store.addEventListener("change:currentProject", updateStudioChrome);
   store.addEventListener("change:quickClassOpen", () => {
     if (!store.get("quickClassOpen")) {
+      quickClassBoxId = null;
       document.getElementById("quick-class-popover")?.classList.add("hidden");
     }
   });
@@ -1215,7 +1269,7 @@ function boot() {
     event.returnValue = "";
   });
 
-  setMode("SELECT");
+  setMode("DRAW");
   syncTabChrome("data");
   applySidebarCollapsed();
   refreshIcons();

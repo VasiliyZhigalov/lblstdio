@@ -27,7 +27,7 @@
               <i data-lucide="box" class="w-4 h-4"></i>
             </div>
             <div>
-              <div class="text-sm font-semibold tracking-tight">Roboflow-Lite</div>
+              <div class="text-sm font-semibold tracking-tight">LBL_STDIO</div>
               <div class="text-[11px] text-zinc-500">Projects</div>
             </div>
           </div>
@@ -504,6 +504,14 @@
                   <span>Создать датасет</span>
                 </button>
                 <button
+                  id="btn-models-upload"
+                  class="px-3 py-1.5 text-xs font-medium rounded-md border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-zinc-100 flex items-center gap-1.5"
+                >
+                  <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                  <span>Загрузить .pt</span>
+                </button>
+                <input id="model-upload-input" type="file" accept=".pt,application/octet-stream" class="hidden" />
+                <button
                   id="btn-models-train"
                   class="px-3 py-1.5 text-xs font-medium rounded-md bg-violet-700 hover:bg-violet-600 text-white flex items-center gap-1.5 shadow-sm"
                 >
@@ -573,14 +581,14 @@
           >
             <i data-lucide="image-plus" class="w-8 h-8 mx-auto mb-2 text-zinc-500"></i>
             <p>Перетащите изображения, YOLO labels или zip (Roboflow)</p>
-            <p class="text-[11px] text-zinc-500 mt-1">или выберите файлы / папку</p>
-            <div class="mt-3 flex justify-center gap-2">
-              <button id="btn-upload-files" type="button" class="px-2.5 py-1 text-[11px] rounded border border-zinc-700 hover:bg-zinc-800 text-zinc-300">Файлы</button>
-              <button id="btn-upload-folder" type="button" data-upload-folder class="px-2.5 py-1 text-[11px] rounded border border-zinc-700 hover:bg-zinc-800 text-zinc-300">Папка</button>
-            </div>
-            <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,.txt,.yaml,.yml,.zip" multiple class="hidden" />
-            <input id="folder-input" type="file" webkitdirectory directory multiple class="hidden" />
+            <p class="text-[11px] text-zinc-500 mt-1">или выберите файлы / папку ниже</p>
           </div>
+          <div class="flex gap-2">
+            <button id="btn-upload-files" type="button" class="px-2.5 py-1.5 text-[11px] rounded border border-zinc-700 hover:bg-zinc-800 text-zinc-300">Файлы</button>
+            <button id="btn-upload-folder" type="button" class="px-2.5 py-1.5 text-[11px] rounded border border-zinc-700 hover:bg-zinc-800 text-zinc-300">Папка</button>
+          </div>
+          <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,.txt,.yaml,.yml,.zip" multiple class="sr-only" />
+          <input id="folder-input" type="file" webkitdirectory directory multiple class="sr-only" />
           <div id="file-count" class="text-xs text-zinc-500"></div>
           <div class="h-2 rounded-full bg-zinc-800 overflow-hidden">
             <div id="upload-progress" class="h-full w-0 bg-indigo-500 transition-[width]"></div>
@@ -595,7 +603,7 @@
 
     <div id="project-modal" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/70 p-4">
       <form id="project-form" class="w-full max-w-sm rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-3">
-        <h2 class="text-sm font-semibold">Новый проект</h2>
+        <h2 id="project-modal-title" class="text-sm font-semibold">Новый проект</h2>
         <input
           id="project-name"
           required
@@ -610,7 +618,7 @@
         ></textarea>
         <div class="flex justify-end gap-2">
           <button type="button" id="btn-cancel-project" class="px-3 py-1.5 text-xs rounded-md border border-zinc-700">Отмена</button>
-          <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-indigo-600 hover:bg-indigo-500">Создать</button>
+          <button type="submit" id="project-submit-btn" class="px-3 py-1.5 text-xs rounded-md bg-indigo-600 hover:bg-indigo-500">Создать</button>
         </div>
       </form>
     </div>

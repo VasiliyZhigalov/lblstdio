@@ -54,48 +54,81 @@ function renderStats(images) {
   document.getElementById("stat-empty-images").textContent = String(empty);
 }
 
-function renderClassBars(classes, classCounts) {
+function countBackgroundFrames(images) {
+  return (images || []).filter(
+    (item) => item.status === "VERIFIED" && item.is_background
+  ).length;
+}
+
+function renderClassBars(classes, classCounts, backgroundFrames = 0) {
   const root = document.getElementById("class-distribution-bars");
   const countLabel = document.getElementById("data-hub-class-count");
   const hint = document.getElementById("class-distribution-hint");
   if (!root) return;
 
   const sorted = [...(classes || [])].sort((a, b) => a.index_id - b.index_id);
-  countLabel.textContent = `${sorted.length} классов`;
+  const classTotal = sorted.reduce((sum, cls) => sum + (classCounts[cls.id] || 0), 0);
+  const total = classTotal + backgroundFrames;
+  const parts = [`${sorted.length} классов`];
+  if (backgroundFrames > 0) parts.push(`${backgroundFrames} background`);
+  if (countLabel) countLabel.textContent = parts.join(" · ");
 
-  if (!sorted.length) {
+  if (!sorted.length && backgroundFrames <= 0) {
     root.innerHTML = `<p class="text-xs text-zinc-500">Классы ещё не созданы.</p>`;
     hint?.classList.add("hidden");
     return;
   }
 
-  const total = sorted.reduce((sum, cls) => sum + (classCounts[cls.id] || 0), 0);
-  root.innerHTML = sorted
-    .map((cls) => {
-      const count = classCounts[cls.id] || 0;
-      const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-      return `
+  const rows = sorted.map((cls) => {
+    const count = classCounts[cls.id] || 0;
+    const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+    return {
+      name: cls.name,
+      color: cls.color_hex,
+      count,
+      pct,
+    };
+  });
+  rows.push(
+    ...(backgroundFrames > 0
+      ? [
+          {
+            name: "background",
+            color: "#38BDF8",
+            count: backgroundFrames,
+            pct: total > 0 ? Math.round((backgroundFrames / total) * 100) : 0,
+          },
+        ]
+      : [])
+  );
+
+  root.innerHTML = rows
+    .map(
+      (row) => `
         <div class="space-y-1">
           <div class="flex items-center justify-between gap-2 text-[11px]">
             <div class="flex items-center gap-2 min-w-0">
-              <span class="w-2.5 h-2.5 rounded-sm shrink-0" style="background:${escapeHtml(cls.color_hex)}"></span>
-              <span class="truncate text-zinc-300">${escapeHtml(cls.name)}</span>
+              <span class="w-2.5 h-2.5 rounded-sm shrink-0" style="background:${escapeHtml(row.color)}"></span>
+              <span class="truncate text-zinc-300">${escapeHtml(row.name)}</span>
             </div>
-            <span class="font-mono text-zinc-500">${count} · ${pct}%</span>
+            <span class="font-mono text-zinc-500">${row.count} · ${row.pct}%</span>
           </div>
           <div class="h-1.5 rounded-full bg-zinc-950 overflow-hidden border border-zinc-800">
-            <div class="h-full rounded-full" style="width:${pct}%; background:${escapeHtml(cls.color_hex)}"></div>
+            <div class="h-full rounded-full" style="width:${row.pct}%; background:${escapeHtml(row.color)}"></div>
           </div>
-        </div>`;
-    })
+        </div>`
+    )
     .join("");
 
   if (hint) {
     if (total === 0) {
-      hint.textContent = "Нет подсчитанных аннотаций (пустой проект или ещё не загружены детали кадров).";
+      hint.textContent =
+        "Нет подсчитанных аннотаций и background-кадров (пустой проект или ещё не загружены детали).";
       hint.classList.remove("hidden");
     } else {
-      hint.classList.add("hidden");
+      hint.textContent =
+        "Background — число confirmed пустых кадров (negative samples), классы — число боксов.";
+      hint.classList.remove("hidden");
     }
   }
 }
@@ -197,8 +230,13 @@ export function initDataHub({ onOpenImage, onStartAnnotate }) {
 
   const rerender = () => {
     renderSplitFilters();
-    renderStats(store.get("images") || []);
-    renderClassBars(store.get("classes") || [], store.get("classCounts") || {});
+    const images = store.get("images") || [];
+    renderStats(images);
+    renderClassBars(
+      store.get("classes") || [],
+      store.get("classCounts") || {},
+      countBackgroundFrames(images)
+    );
     renderGallery({ onOpenImage });
   };
 
@@ -218,7 +256,11 @@ export function initDataHub({ onOpenImage, onStartAnnotate }) {
       renderStats(images);
       renderGallery({ onOpenImage });
       await refreshClassCounts(images);
-      renderClassBars(store.get("classes") || [], store.get("classCounts") || {});
+      renderClassBars(
+        store.get("classes") || [],
+        store.get("classCounts") || {},
+        countBackgroundFrames(images)
+      );
       refreshIcons(document.getElementById("tab-view-data"));
     },
   };
