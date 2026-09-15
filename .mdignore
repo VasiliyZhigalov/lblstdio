@@ -1,0 +1,49 @@
+# git2md reads only root .gitignore/.mdignore (not nested ones).
+# Keep this for dump noise that should stay in git but out of Markdown.
+
+# Self / generated dumps
+lblstdio.md
+*.dump.md
+
+# Nested tooling (from backend/.gitignore and similar)
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+*.egg-info/
+dist/
+build/
+*.pyo
+
+# Secrets / local env
+.env
+.env.*
+
+# Runtime / binary artifacts
+*.db
+storage/
+*.pt
+*.onnx
+*.weights
+*.pth
+
+# Caches / venvs (belt-and-suspenders with .gitignore)
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+*.pyc
+
+# Media and fonts (not useful in LLM dumps)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.ico
+*.svg
+*.woff
+*.woff2
+*.ttf
+*.eot

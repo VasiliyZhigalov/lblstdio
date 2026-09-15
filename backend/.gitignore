@@ -6,5 +6,6 @@ htmlcov/
 *.pyc
 *.pyo
 /app.db
+*.db
 /storage/
 .mypy_cache/

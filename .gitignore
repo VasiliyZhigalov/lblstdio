@@ -1,0 +1,7 @@
+*.db
+cv_trainer.db
+__pycache__/
+.pytest_cache/
+.venv/
+storage/
+*.pyc
