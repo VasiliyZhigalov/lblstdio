@@ -277,4 +277,38 @@ export const api = {
     }),
 
   getAutoLabelJob: (jobId) => request(`/auto-label-jobs/${jobId}`),
+
+  listStreams: (projectId) => request(`/projects/${projectId}/streams`),
+  createRtspStream: (projectId, body) =>
+    request(`/projects/${projectId}/streams/rtsp`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  createDeviceStream: (projectId, body) =>
+    request(`/projects/${projectId}/streams/device`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  uploadStreamVideo: (projectId, file, name = "") => {
+    const form = new FormData();
+    form.append("file", file, file.name || "video.mp4");
+    if (name) form.append("name", name);
+    return request(`/projects/${projectId}/streams/upload-video`, {
+      method: "POST",
+      body: form,
+    });
+  },
+  deleteStream: (streamId) =>
+    request(`/streams/${streamId}`, { method: "DELETE" }),
+  putStreamTriggers: (streamId, body) =>
+    request(`/streams/${streamId}/triggers`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  startStream: (streamId) =>
+    request(`/streams/${streamId}/start`, { method: "POST" }),
+  stopStream: (streamId) =>
+    request(`/streams/${streamId}/stop`, { method: "POST" }),
+  getStreamStatus: (streamId) => request(`/streams/${streamId}/status`),
+  streamLiveUrl: (streamId) => `${API_BASE}/streams/${streamId}/live`,
 };

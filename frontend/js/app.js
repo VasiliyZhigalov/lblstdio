@@ -11,6 +11,7 @@ import { initTrainingDrawer } from "./components/trainingDrawer.js";
 import { initAutoLabelModal } from "./components/autoLabelModal.js";
 import { initDataHub } from "./components/dataHub.js";
 import { initModelsHub } from "./components/modelsHub.js";
+import { initStreamHub } from "./components/streamHub.js";
 import { initHotkeys } from "./hotkeys.js";
 import { ensureHash, navigate, parseHash, projectPath, replaceHash } from "./router.js";
 import { escapeHtml, refreshIcons, showModal } from "./utils/dom.js";
@@ -27,6 +28,7 @@ let trainingDrawer = null;
 let autoLabelModal = null;
 let dataHub = null;
 let modelsHub = null;
+let streamHub = null;
 let quickClassBoxId = null;
 
 function statusFromAnnotations(boxes) {
@@ -67,7 +69,7 @@ const TAB_BTN_ACTIVE = "flex items-center gap-1.5 px-3 py-1 text-xs font-medium 
 const TAB_BTN_IDLE = "flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition text-zinc-400 hover:text-zinc-200";
 
 function syncTabChrome(tab) {
-  for (const name of ["data", "annotate", "models"]) {
+  for (const name of ["data", "annotate", "models", "stream"]) {
     const btn = document.getElementById(`tab-btn-${name}`);
     if (btn) btn.className = name === tab ? TAB_BTN_ACTIVE : TAB_BTN_IDLE;
     const view = document.getElementById(`tab-view-${name}`);
@@ -105,6 +107,9 @@ async function setProjectTab(tab, { skipSave = false } = {}) {
   }
   if (tab === "models") {
     modelsHub?.refresh?.().catch((err) => toast(err.message));
+  }
+  if (tab === "stream") {
+    streamHub?.refresh?.().catch((err) => toast(err.message));
   }
 }
 
@@ -829,12 +834,7 @@ function showQuickClassPopover(boxId, screenX, screenY) {
   const classes = [...(store.get("classes") || [])]
     .sort((a, b) => a.index_id - b.index_id)
     .slice(0, 9);
-  // Single-class projects never need a picker; multi-class opens on demand only.
-  if (classes.length <= 1) {
-    hideQuickClassPopover();
-    return;
-  }
-  if (!boxId) {
+  if (!classes.length) {
     hideQuickClassPopover();
     return;
   }
@@ -865,28 +865,6 @@ function showQuickClassPopover(boxId, screenX, screenY) {
       applyQuickClass(btn.dataset.quickClass);
     });
   });
-}
-
-function openQuickClassForBox(boxId, screenX, screenY) {
-  if (!boxId) {
-    toast("Выберите бокс");
-    return;
-  }
-  const classes = store.get("classes") || [];
-  if (classes.length <= 1) return;
-  showQuickClassPopover(boxId, screenX, screenY);
-}
-
-function openQuickClassForSelection() {
-  const boxId = store.get("selectedBoxId");
-  if (!boxId) {
-    toast("Выберите бокс");
-    return;
-  }
-  const box = (store.get("annotations") || []).find((item) => item.id === boxId);
-  if (!box) return;
-  const rect = canvas.screenRectForBox(box);
-  openQuickClassForBox(boxId, rect.x + rect.w / 2, rect.y + rect.h / 2);
 }
 
 function applyQuickClass(classId) {
@@ -1117,6 +1095,11 @@ function boot() {
     },
   });
 
+  streamHub = initStreamHub({
+    toast,
+    setProjectTab,
+  });
+
   document.getElementById("btn-train-model")?.addEventListener("click", () => {
     trainingDrawer?.open();
   });
@@ -1134,6 +1117,10 @@ function boot() {
   document.getElementById("tab-btn-models")?.addEventListener("click", () => {
     const project = store.get("currentProject");
     if (project) navigate(projectPath(project.id, "models"));
+  });
+  document.getElementById("tab-btn-stream")?.addEventListener("click", () => {
+    const project = store.get("currentProject");
+    if (project) navigate(projectPath(project.id, "stream"));
   });
 
   initHotkeys({
@@ -1157,7 +1144,6 @@ function boot() {
     toggleLeftSidebar,
     toggleRightSidebar,
     applyQuickClassDigit,
-    openQuickClass: openQuickClassForSelection,
   });
 
   document.getElementById("btn-copy-annotations")?.addEventListener("click", () => {
@@ -1181,9 +1167,9 @@ function boot() {
   document.getElementById("canvas-container").addEventListener("need-class", () => {
     toast("Сначала создайте и выберите класс");
   });
-  document.getElementById("canvas-container").addEventListener("request-class-popover", (event) => {
+  document.getElementById("canvas-container").addEventListener("box-drawn", (event) => {
     const { boxId, screenX, screenY } = event.detail || {};
-    openQuickClassForBox(boxId, screenX ?? 8, screenY ?? 8);
+    if (boxId) showQuickClassPopover(boxId, screenX, screenY);
   });
 
   document.getElementById("tool-select").addEventListener("click", () => setMode("SELECT"));
@@ -1255,7 +1241,6 @@ function boot() {
   store.addEventListener("change:currentProject", updateStudioChrome);
   store.addEventListener("change:quickClassOpen", () => {
     if (!store.get("quickClassOpen")) {
-      quickClassBoxId = null;
       document.getElementById("quick-class-popover")?.classList.add("hidden");
     }
   });
@@ -1269,7 +1254,7 @@ function boot() {
     event.returnValue = "";
   });
 
-  setMode("DRAW");
+  setMode("SELECT");
   syncTabChrome("data");
   applySidebarCollapsed();
   refreshIcons();

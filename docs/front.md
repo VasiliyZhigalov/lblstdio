@@ -63,7 +63,7 @@ frontend/
     │   ├── canvas.js       # Рендерер холста, Zoom/Pan, трансформация боксов
     │   ├── sidebar.js      # Список классов, слои текущего кадра
     │   ├── reviewBar.js    # Панель экспресс-подтверждения (Accept All / Reject)
-    │   └── streamModal.js  # Управление RTSP потоком и uncertainty-сэмплингом
+    │   └── streamHub.js    # Вкладка «Стрим и Сбор»: live MJPEG, tripwire, harvest
     └── utils/
         └── math.js         # Перевод экранных координат в нормализованные (YOLO)
 ```

@@ -206,21 +206,18 @@ backend/
 
 ### 3.5. Блок работы с потоковым видео (Active Learning Stream)
 
-#### `ProcessStreamFrameUseCase`
-* **Назначение:** Анализ кадра из видеопотока и отбор в датасет по правилу неопределенности.
-* **Вход:** кадр из потока (бинарный буфер / NumPy массив), `stream_source_id`.
-* **Алгоритм:**
-  1. Получить активную модель проекта через `IModelRegistry`.
-  2. Запустить быстрый инференс кадра.
-  3. Применить **фильтр неопределенности (Uncertainty Sampling)**:
-     * Проверить условие: есть ли на кадре детекции, чья уверенность попадает в окно сомнения $[Conf_{min}, Conf_{max}]$ (например, $0.70 \dots 0.90$).
-     * Если условие не выполнено (модель либо полностью уверена $> 0.90$, либо ничего нет $< 0.70$) $\to$ кадр отбрасывается, ресурсы не тратятся.
-  4. Применить **фильтр частоты (Cooldown)**:
-     * Проверить время последнего сохраненного кадра с этого потока, предотвращая запись идентичных сцен.
-  5. Если кадр прошел фильтры:
-     * Сохранить файл на диск через `IFileStorage`.
-     * Создать запись `Image` с источником `STREAM_INGEST` и статусом `REQUIRES_REVIEW`.
-     * Сохранить предсказанные «сомнительные» боксы со статусом `PENDING_REVIEW`.
+#### Управление источниками и live-хаб
+REST API (актуально):
+* `GET/POST /projects/{id}/streams`, `POST .../rtsp|device|upload-video`
+* `PUT /streams/{id}/triggers`, `POST .../start|stop`, `GET .../status|live`
+
+#### `IngestStreamFrameUseCase`
+* **Назначение:** сохранение чистого кадра со стрима в HITL-очередь.
+* **Алгоритм:** файл → `Image(STREAM_INGEST, REQUIRES_REVIEW)` → `Annotation(MODEL_PREDICTION, PENDING_REVIEW)`.
+* Триггеры: таймер + uncertainty window; tripwire (пересечение линии + direction + debounce).
+* Live preview: MJPEG multipart через unified `OpenCVStreamRunner` (один активный стрим на проект).
+
+См. спецификацию: `docs/superpowers/specs/2026-09-15-stream-test-hub-design.md`.
 
 ---
 
@@ -294,8 +291,9 @@ backend/
 | `POST` | `/datasets/{id}/train` | Запустить задачу обучения YOLOv8n на версии |
 | `GET` | `/training-jobs/{id}` | Прогресс обучения (эпохи, текущие графики лосса) |
 | `POST` | `/models/{id}/auto-label` | Запустить пакетную авторазметку неразмеченных данных |
-| `POST` | `/streams/configure` | Добавить/настроить источник RTSP и окно уверенности |
-| `POST` | `/streams/{id}/toggle` | Запустить / остановить фоновый захват потока |
+| `POST` | `/projects/{id}/streams/rtsp` | Добавить RTSP-источник |
+| `POST` | `/streams/{id}/start` | Запустить обработку / MJPEG |
+| `GET` | `/streams/{id}/live` | MJPEG live с оверлеем |
 | `GET` | `/projects/{id}/export-yolo` | Скачать готовый ZIP архив датасета |
 
 ---

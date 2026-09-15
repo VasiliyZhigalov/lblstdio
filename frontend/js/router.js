@@ -27,6 +27,9 @@ export function parseHash() {
   if (subTab === "models") {
     return { name: "models", projectId, tab: "models" };
   }
+  if (subTab === "stream") {
+    return { name: "stream", projectId, tab: "stream" };
+  }
   return { name: "data", projectId, tab: "data" };
 }
 
