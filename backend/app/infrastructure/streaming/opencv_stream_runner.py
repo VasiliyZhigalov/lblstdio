@@ -5,7 +5,6 @@ import queue
 import threading
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID
 
 import cv2
@@ -14,7 +13,7 @@ import numpy as np
 from app.application.ports.services.model_predictor import Detection
 from app.application.ports.services.stream_runner import IngestJob, StreamStatus
 from app.domain.entities.stream_source import StreamSource
-from app.domain.enums import StreamSourceType, TripwireDirection
+from app.domain.enums import StreamSourceType
 from app.domain.services.stream_capture_rules import (
     should_capture_timer,
     should_capture_tripwire,
@@ -23,6 +22,9 @@ from app.domain.services.tripwire import TripwireDebouncer
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
 
 logger = logging.getLogger(__name__)
+
+_VIDEO_FAIL_LIMIT = 30
+_VIDEO_FAIL_SLEEP_S = 0.05
 
 
 class OpenCVStreamRunner:
@@ -33,44 +35,81 @@ class OpenCVStreamRunner:
         self._lock = threading.Lock()
         self._threads: dict[UUID, threading.Thread] = {}
         self._stops: dict[UUID, threading.Event] = {}
+        self._ready: dict[UUID, threading.Event] = {}
         self._latest_jpeg: dict[UUID, bytes] = {}
         self._status: dict[UUID, StreamStatus] = {}
         self._project_streams: dict[UUID, UUID] = {}
+        self._live_config: dict[UUID, StreamTriggerConfig] = {}
+        self._allowed_classes: dict[UUID, frozenset[int] | None] = {}
 
     def start(
         self,
         stream: StreamSource,
         weights_abs_path: str,
-        class_names: list[str],
+        *,
+        allowed_class_indices: frozenset[int] | None = None,
     ) -> None:
         self.stop_project(stream.project_id)
         stop_event = threading.Event()
+        ready_event = threading.Event()
         with self._lock:
             self._stops[stream.id] = stop_event
+            self._ready[stream.id] = ready_event
+            self._live_config[stream.id] = stream.config
+            self._allowed_classes[stream.id] = allowed_class_indices
             self._status[stream.id] = StreamStatus(
-                is_running=True, state="running", captured_count=stream.captured_frames_count
+                is_running=False,
+                state="starting",
+                captured_count=stream.captured_frames_count,
             )
             self._project_streams[stream.project_id] = stream.id
             thread = threading.Thread(
                 target=self._run,
-                args=(stream, weights_abs_path, class_names, stop_event),
+                args=(stream, weights_abs_path, stop_event, ready_event),
                 name=f"stream-{stream.id}",
                 daemon=True,
             )
             self._threads[stream.id] = thread
             thread.start()
 
+    def wait_until_ready(self, stream_id: UUID, timeout: float = 30.0) -> StreamStatus:
+        with self._lock:
+            ready = self._ready.get(stream_id)
+        if ready is None:
+            return self.get_status(stream_id)
+        ready.wait(timeout=timeout)
+        return self.get_status(stream_id)
+
+    def update_triggers(
+        self,
+        stream_id: UUID,
+        config: StreamTriggerConfig,
+        *,
+        allowed_class_indices: frozenset[int] | None = None,
+    ) -> None:
+        with self._lock:
+            if stream_id not in self._status:
+                return
+            self._live_config[stream_id] = config
+            self._allowed_classes[stream_id] = allowed_class_indices
+
     def stop(self, stream_id: UUID) -> None:
         with self._lock:
             event = self._stops.get(stream_id)
             thread = self._threads.get(stream_id)
+            ready = self._ready.get(stream_id)
         if event is not None:
             event.set()
+        if ready is not None:
+            ready.set()
         if thread is not None and thread.is_alive():
             thread.join(timeout=5.0)
         with self._lock:
             self._threads.pop(stream_id, None)
             self._stops.pop(stream_id, None)
+            self._ready.pop(stream_id, None)
+            self._live_config.pop(stream_id, None)
+            self._allowed_classes.pop(stream_id, None)
             status = self._status.get(stream_id)
             if status is not None:
                 self._status[stream_id] = StreamStatus(
@@ -111,6 +150,14 @@ class OpenCVStreamRunner:
     def push_ingest_for_tests(self, job: IngestJob) -> None:
         self.ingest_queue.put(job)
 
+    def _get_live(self, stream_id: UUID) -> tuple[StreamTriggerConfig, frozenset[int] | None]:
+        with self._lock:
+            config = self._live_config.get(stream_id)
+            allowed = self._allowed_classes.get(stream_id)
+        if config is None:
+            raise RuntimeError(f"no live config for stream {stream_id}")
+        return config, allowed
+
     def _set_status(self, stream_id: UUID, **kwargs) -> None:
         with self._lock:
             current = self._status.get(
@@ -127,76 +174,66 @@ class OpenCVStreamRunner:
             data.update(kwargs)
             self._status[stream_id] = StreamStatus(**data)
 
+    def _fail_ready(self, stream_id: UUID, ready: threading.Event, message: str) -> None:
+        self._set_status(
+            stream_id,
+            is_running=False,
+            state="error",
+            error_message=message,
+        )
+        ready.set()
+
     def _open_capture(self, stream: StreamSource) -> cv2.VideoCapture:
         if stream.source_type == StreamSourceType.DEVICE:
             return cv2.VideoCapture(int(stream.source_uri))
-        if stream.source_type == StreamSourceType.VIDEO_FILE:
-            return cv2.VideoCapture(stream.source_uri)
         return cv2.VideoCapture(stream.source_uri)
 
     def _run(
         self,
         stream: StreamSource,
         weights_abs_path: str,
-        class_names: list[str],
         stop_event: threading.Event,
+        ready_event: threading.Event,
     ) -> None:
         try:
             from ultralytics import YOLO
 
             model = YOLO(weights_abs_path)
         except Exception as exc:
-            self._set_status(
-                stream.id,
-                is_running=False,
-                state="error",
-                error_message=f"failed to load model: {exc}",
-            )
+            self._fail_ready(stream.id, ready_event, f"failed to load model: {exc}")
             return
 
-        uri = stream.source_uri
-        if stream.source_type == StreamSourceType.VIDEO_FILE:
-            # Caller should pass absolute path; accept relative as-is for OpenCV.
-            uri = stream.source_uri
-
-        cap = self._open_capture(
-            StreamSource(
-                id=stream.id,
-                project_id=stream.project_id,
-                name=stream.name,
-                source_type=stream.source_type,
-                source_uri=uri,
-                is_active=True,
-                model_version_id=stream.model_version_id,
-                config=stream.config,
-                captured_frames_count=stream.captured_frames_count,
-                created_at=stream.created_at,
-            )
-        )
+        cap = self._open_capture(stream)
         if not cap.isOpened():
-            self._set_status(
-                stream.id,
-                is_running=False,
-                state="error",
-                error_message="failed to open video source",
-            )
+            self._fail_ready(stream.id, ready_event, "failed to open video source")
             return
 
-        config = stream.config
-        debouncer = TripwireDebouncer(config.tripwire_debounce_seconds)
+        debouncer = TripwireDebouncer(stream.config.tripwire_debounce_seconds)
         prev_centers: dict[int, tuple[float, float]] = {}
         last_timer_at: float | None = None
         last_any_at: float | None = None
         frames = 0
         t0 = time.monotonic()
+        video_fail_streak = 0
+        marked_ready = False
 
         try:
             while not stop_event.is_set():
                 ok, frame = cap.read()
                 if not ok:
                     if stream.source_type == StreamSourceType.VIDEO_FILE:
+                        video_fail_streak += 1
+                        if video_fail_streak >= _VIDEO_FAIL_LIMIT:
+                            self._fail_ready(
+                                stream.id,
+                                ready_event,
+                                "video file unreadable (repeated read failures)",
+                            )
+                            break
+                        time.sleep(_VIDEO_FAIL_SLEEP_S)
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         continue
+                    video_fail_streak = 0
                     self._set_status(stream.id, state="reconnecting")
                     time.sleep(1.0)
                     cap.release()
@@ -204,15 +241,17 @@ class OpenCVStreamRunner:
                     if not cap.isOpened():
                         time.sleep(2.0)
                     else:
-                        self._set_status(stream.id, state="running")
+                        self._set_status(stream.id, state="running", is_running=True)
                     continue
 
+                video_fail_streak = 0
                 h, w = frame.shape[:2]
                 results = model.track(
                     frame, persist=True, tracker="bytetrack.yaml", verbose=False
                 )
-                detections, track_meta = self._parse_results(results, w, h)
+                detections, track_meta, box_xyxy = self._parse_results(results, w, h)
                 now = time.monotonic()
+                config, allowed = self._get_live(stream.id)
                 captured = False
 
                 if config.tripwire_enabled and config.tripwire_line is not None:
@@ -221,16 +260,7 @@ class OpenCVStreamRunner:
                         prev_centers[track_id] = center
                         if prev is None:
                             continue
-                        class_ok = (
-                            not config.tripwire_classes
-                            or True  # class UUID filter applied by caller via names index later
-                        )
-                        # Filter by class index against names length; UUID filter needs map — use all if empty
-                        if config.tripwire_classes:
-                            # Without class UUID→index map in runner, allow all when filter set is non-empty
-                            # only if class_index maps — simplified: skip UUID filter in runner thread;
-                            # configure empty tripwire_classes for all-classes (spec).
-                            class_ok = True
+                        class_ok = allowed is None or class_index in allowed
                         if should_capture_tripwire(
                             track_id=track_id,
                             p_prev=prev,
@@ -243,7 +273,9 @@ class OpenCVStreamRunner:
                             last_any_at=last_any_at,
                             cooldown=config.cooldown_seconds,
                         ):
-                            self._enqueue_ingest(stream.id, frame, detections, "tripwire", now)
+                            self._enqueue_ingest(
+                                stream.id, frame, detections, "tripwire", now
+                            )
                             last_any_at = now
                             captured = True
                             break
@@ -267,7 +299,7 @@ class OpenCVStreamRunner:
                     captured = True
 
                 overlay = frame.copy()
-                self._draw_overlay(overlay, track_meta, config, w, h)
+                self._draw_overlay(overlay, track_meta, box_xyxy, config, w, h)
                 ok_enc, buf = cv2.imencode(".jpg", overlay)
                 if ok_enc:
                     with self._lock:
@@ -275,25 +307,29 @@ class OpenCVStreamRunner:
 
                 frames += 1
                 elapsed = max(time.monotonic() - t0, 1e-6)
-                self._set_status(
-                    stream.id,
-                    is_running=True,
-                    state="running",
-                    fps=frames / elapsed,
-                    captured_count=(
-                        self.get_status(stream.id).captured_count + (1 if captured else 0)
-                    ),
-                    last_capture_at=datetime.now(UTC) if captured else self.get_status(stream.id).last_capture_at,
-                    error_message=None,
-                )
+                status_kwargs = {
+                    "is_running": True,
+                    "state": "running",
+                    "fps": frames / elapsed,
+                    "error_message": None,
+                }
+                if captured:
+                    status_kwargs["last_capture_at"] = datetime.now(UTC)
+                self._set_status(stream.id, **status_kwargs)
+
+                if not marked_ready:
+                    marked_ready = True
+                    ready_event.set()
         except Exception as exc:
             logger.exception("stream runner crashed")
-            self._set_status(
-                stream.id, is_running=False, state="error", error_message=str(exc)
-            )
+            self._fail_ready(stream.id, ready_event, str(exc))
         finally:
             cap.release()
-            self._set_status(stream.id, is_running=False, state="stopped")
+            if not ready_event.is_set():
+                ready_event.set()
+            status = self.get_status(stream.id)
+            if status.state != "error":
+                self._set_status(stream.id, is_running=False, state="stopped")
 
     def _enqueue_ingest(
         self,
@@ -319,13 +355,15 @@ class OpenCVStreamRunner:
     def _parse_results(self, results, width: int, height: int):
         detections: list[Detection] = []
         track_meta: dict[int, tuple[tuple[float, float], int, float]] = {}
+        box_xyxy: dict[int, tuple[int, int, int, int]] = {}
         if not results:
-            return detections, track_meta
+            return detections, track_meta, box_xyxy
         result = results[0]
         boxes = getattr(result, "boxes", None)
         if boxes is None or len(boxes) == 0:
-            return detections, track_meta
+            return detections, track_meta, box_xyxy
         xywhn = boxes.xywhn.cpu().numpy()
+        xyxy = boxes.xyxy.cpu().numpy()
         confs = boxes.conf.cpu().numpy()
         clss = boxes.cls.cpu().numpy().astype(int)
         ids = boxes.id
@@ -335,30 +373,42 @@ class OpenCVStreamRunner:
             else np.arange(len(confs))
         )
         for i in range(len(confs)):
-            x, y, w, h = map(float, xywhn[i])
+            x, y, bw, bh = map(float, xywhn[i])
             conf = float(confs[i])
             cls_i = int(clss[i])
+            tid = int(track_ids[i])
             detections.append(
                 Detection(
                     class_index=cls_i,
                     confidence=conf,
                     x_center=x,
                     y_center=y,
-                    width=w,
-                    height=h,
+                    width=bw,
+                    height=bh,
                 )
             )
-            track_meta[int(track_ids[i])] = ((x, y), cls_i, conf)
-        return detections, track_meta
+            track_meta[tid] = ((x, y), cls_i, conf)
+            x1, y1, x2, y2 = map(int, xyxy[i])
+            box_xyxy[tid] = (x1, y1, x2, y2)
+        return detections, track_meta, box_xyxy
 
-    def _draw_overlay(self, frame, track_meta, config: StreamTriggerConfig, w: int, h: int) -> None:
+    def _draw_overlay(
+        self,
+        frame,
+        track_meta,
+        box_xyxy: dict[int, tuple[int, int, int, int]],
+        config: StreamTriggerConfig,
+        w: int,
+        h: int,
+    ) -> None:
         for track_id, ((x, y), cls_i, conf) in track_meta.items():
-            # approximate box from center only for label point
+            if track_id in box_xyxy:
+                x1, y1, x2, y2 = box_xyxy[track_id]
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
             cx, cy = int(x * w), int(y * h)
-            cv2.circle(frame, (cx, cy), 4, (0, 255, 255), -1)
             cv2.putText(
                 frame,
-                f"#{track_id} {conf:.2f}",
+                f"#{track_id} cls{cls_i} {conf:.2f}",
                 (cx + 6, cy - 6),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,
@@ -384,15 +434,30 @@ class FakeStreamRunner:
         self._project: dict[UUID, UUID] = {}
         self._jpeg: dict[UUID, bytes] = {}
         self._status: dict[UUID, StreamStatus] = {}
+        self._live_config: dict[UUID, StreamTriggerConfig] = {}
+        self._allowed: dict[UUID, frozenset[int] | None] = {}
+        self.fail_start_message: str | None = None
 
-    def start(self, stream: StreamSource, weights_abs_path: str, class_names: list[str]) -> None:
+    def start(
+        self,
+        stream: StreamSource,
+        weights_abs_path: str,
+        *,
+        allowed_class_indices: frozenset[int] | None = None,
+    ) -> None:
         self.stop_project(stream.project_id)
+        if self.fail_start_message:
+            self._status[stream.id] = StreamStatus(
+                is_running=False,
+                state="error",
+                error_message=self.fail_start_message,
+            )
+            return
         self._running[stream.id] = stream
         self._project[stream.project_id] = stream.id
-        # 1x1 jpeg stub
-        self._jpeg[stream.id] = (
-            b"\xff\xd8\xff\xd9"  # minimal JPEG markers
-        )
+        self._jpeg[stream.id] = b"\xff\xd8\xff\xd9"
+        self._live_config[stream.id] = stream.config
+        self._allowed[stream.id] = allowed_class_indices
         self._status[stream.id] = StreamStatus(
             is_running=True,
             state="running",
@@ -400,8 +465,24 @@ class FakeStreamRunner:
             captured_count=stream.captured_frames_count,
         )
 
+    def wait_until_ready(self, stream_id: UUID, timeout: float = 30.0) -> StreamStatus:
+        return self.get_status(stream_id)
+
+    def update_triggers(
+        self,
+        stream_id: UUID,
+        config: StreamTriggerConfig,
+        *,
+        allowed_class_indices: frozenset[int] | None = None,
+    ) -> None:
+        if stream_id in self._status:
+            self._live_config[stream_id] = config
+            self._allowed[stream_id] = allowed_class_indices
+
     def stop(self, stream_id: UUID) -> None:
         self._running.pop(stream_id, None)
+        self._live_config.pop(stream_id, None)
+        self._allowed.pop(stream_id, None)
         for pid, sid in list(self._project.items()):
             if sid == stream_id:
                 self._project.pop(pid, None)
@@ -412,6 +493,7 @@ class FakeStreamRunner:
             fps=prev.fps if prev else 0.0,
             captured_count=prev.captured_count if prev else 0,
             last_capture_at=prev.last_capture_at if prev else None,
+            error_message=prev.error_message if prev else None,
         )
 
     def stop_project(self, project_id: UUID) -> None:

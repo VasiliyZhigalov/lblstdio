@@ -12,12 +12,17 @@ from app.application.use_cases.streaming.control_stream import (
 )
 from app.application.use_cases.streaming.manage_stream_source import ManageStreamSourceUseCase
 from app.domain.enums import TripwireDirection
+from app.domain.exceptions import ResourceNotFoundException
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
+from app.infrastructure.db.repositories.stream_source_repository import (
+    SqliteStreamSourceRepository,
+)
 from app.presentation.dependencies import (
     get_manage_stream_source_use_case,
     get_start_stream_use_case,
     get_stop_stream_use_case,
     get_stream_runner,
+    get_stream_source_repo,
     get_stream_status_use_case,
 )
 from app.presentation.schemas import (
@@ -193,16 +198,27 @@ async def stream_status(
 @router.get("/streams/{stream_id}/live")
 async def stream_live(
     stream_id: UUID,
+    streams: SqliteStreamSourceRepository = Depends(get_stream_source_repo),
     runner=Depends(get_stream_runner),
 ):
+    stream = await streams.get_by_id(stream_id)
+    if stream is None:
+        raise ResourceNotFoundException(f"stream source {stream_id} not found")
+
     async def gen():
+        idle = 0
         while True:
             jpeg = runner.latest_jpeg(stream_id)
             if jpeg:
+                idle = 0
                 yield (
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
                 )
+            else:
+                idle += 1
+                if idle > 300:  # ~21s without frames → end stream
+                    break
             await asyncio.sleep(0.07)
 
     return StreamingResponse(

@@ -5,6 +5,7 @@ import { escapeHtml, refreshIcons } from "../utils/dom.js";
 export function initStreamHub({ toast, setProjectTab }) {
   let streams = [];
   let models = [];
+  let classes = [];
   let selectedId = null;
   let pollTimer = null;
   let lastCaptured = 0;
@@ -56,6 +57,37 @@ export function initStreamHub({ toast, setProjectTab }) {
     }
   }
 
+  function contentRect(canvas, img) {
+    const cw = canvas.width;
+    const ch = canvas.height;
+    const iw = img?.naturalWidth || 0;
+    const ih = img?.naturalHeight || 0;
+    if (!iw || !ih || img.classList.contains("hidden")) {
+      return { x: 0, y: 0, w: cw, h: ch };
+    }
+    const scale = Math.min(cw / iw, ch / ih);
+    const w = iw * scale;
+    const h = ih * scale;
+    return { x: (cw - w) / 2, y: (ch - h) / 2, w, h };
+  }
+
+  function normFromClient(ev) {
+    const canvas = els.canvas();
+    const img = els.img();
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    const content = contentRect(canvas, img);
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    const x = (px - content.x) / content.w;
+    const y = (py - content.y) / content.h;
+    return [
+      Math.min(1, Math.max(0, x)),
+      Math.min(1, Math.max(0, y)),
+    ];
+  }
+
   function drawLineOverlay() {
     const canvas = els.canvas();
     const img = els.img();
@@ -67,9 +99,10 @@ export function initStreamHub({ toast, setProjectTab }) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const active = line || selected()?.config?.tripwire_line;
     if (!active) return;
+    const content = contentRect(canvas, img);
     const [x1, y1, x2, y2] = active;
-    const p1 = [x1 * canvas.width, y1 * canvas.height];
-    const p2 = [x2 * canvas.width, y2 * canvas.height];
+    const p1 = [content.x + x1 * content.w, content.y + y1 * content.h];
+    const p2 = [content.x + x2 * content.w, content.y + y2 * content.h];
     ctx.strokeStyle = "#22d3ee";
     ctx.lineWidth = 3;
     ctx.beginPath();
@@ -94,12 +127,15 @@ export function initStreamHub({ toast, setProjectTab }) {
     root.innerHTML = streams
       .map((s) => {
         const active = s.id === selectedId;
-        return `<button type="button" data-stream-id="${s.id}" class="w-full text-left px-2 py-1.5 rounded text-xs border ${
+        return `<div class="flex gap-1 items-stretch">
+          <button type="button" data-stream-id="${s.id}" class="flex-1 text-left px-2 py-1.5 rounded text-xs border ${
           active ? "border-cyan-600 bg-cyan-950/30 text-white" : "border-zinc-800 text-zinc-300 hover:bg-zinc-800/60"
         }">
           <div class="font-medium truncate">${escapeHtml(s.name)}</div>
           <div class="text-[10px] text-zinc-500 truncate">${escapeHtml(s.source_type)} · ${escapeHtml(s.source_uri)}</div>
-        </button>`;
+        </button>
+        <button type="button" data-delete-stream="${s.id}" class="px-2 rounded border border-zinc-800 text-zinc-500 hover:text-rose-300 hover:border-rose-800/60 text-[11px]" title="Удалить" ${s.is_active ? "disabled" : ""}>✕</button>
+        </div>`;
       })
       .join("");
     root.querySelectorAll("[data-stream-id]").forEach((btn) => {
@@ -112,6 +148,20 @@ export function initStreamHub({ toast, setProjectTab }) {
         renderList();
         drawLineOverlay();
         syncLiveImage(Boolean(s?.is_active));
+      });
+    });
+    root.querySelectorAll("[data-delete-stream]").forEach((btn) => {
+      btn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        const id = btn.getAttribute("data-delete-stream");
+        try {
+          await api.deleteStream(id);
+          if (selectedId === id) selectedId = null;
+          await refresh();
+          toast("Источник удалён");
+        } catch (err) {
+          toast(err.message);
+        }
       });
     });
   }
@@ -144,18 +194,22 @@ export function initStreamHub({ toast, setProjectTab }) {
     if (timerIv) timerIv.value = cfg.timer_interval_seconds ?? 5;
     if (tripEn) tripEn.checked = Boolean(cfg.tripwire_enabled);
     if (tripDir) tripDir.value = cfg.tripwire_direction || "ANY";
+    renderClassChecks();
     const captured = els.captured();
     if (captured) captured.textContent = String(s?.captured_frames_count ?? 0);
     lastCaptured = s?.captured_frames_count ?? 0;
   }
 
   function readConfigPayload() {
+    const classBoxes = [
+      ...document.querySelectorAll("#stream-tripwire-classes input[type=checkbox]:checked"),
+    ];
     return {
       timer_enabled: document.getElementById("stream-timer-enabled")?.checked || false,
       timer_interval_seconds: Number(document.getElementById("stream-timer-interval")?.value || 5),
       tripwire_enabled: document.getElementById("stream-tripwire-enabled")?.checked || false,
       tripwire_line: line,
-      tripwire_classes: [],
+      tripwire_classes: classBoxes.map((el) => el.value),
       tripwire_direction: document.getElementById("stream-tripwire-direction")?.value || "ANY",
       tripwire_debounce_seconds: 3,
       uncertainty_range: [
@@ -164,6 +218,24 @@ export function initStreamHub({ toast, setProjectTab }) {
       ],
       cooldown_seconds: 3,
     };
+  }
+
+  function renderClassChecks() {
+    const root = document.getElementById("stream-tripwire-classes");
+    if (!root) return;
+    const selected = new Set(selected()?.config?.tripwire_classes || []);
+    if (!classes.length) {
+      root.innerHTML = `<p class="text-[10px] text-zinc-600">Нет классов проекта</p>`;
+      return;
+    }
+    root.innerHTML = classes
+      .map(
+        (c) => `<label class="flex items-center gap-1.5 text-[11px] text-zinc-300">
+          <input type="checkbox" value="${c.id}" ${selected.has(c.id) ? "checked" : ""} class="rounded border-zinc-600" />
+          ${escapeHtml(c.name)}
+        </label>`
+      )
+      .join("");
   }
 
   async function saveTriggers() {
@@ -182,12 +254,14 @@ export function initStreamHub({ toast, setProjectTab }) {
   async function refresh() {
     const projectId = store.get("projectId");
     if (!projectId) return;
-    const [streamList, modelList] = await Promise.all([
+    const [streamList, modelList, classList] = await Promise.all([
       api.listStreams(projectId),
       api.listModels(projectId).catch(() => []),
+      api.listClasses(projectId).catch(() => []),
     ]);
     streams = streamList || [];
     models = modelList || [];
+    classes = classList || [];
     if (!selectedId && streams[0]) selectedId = streams[0].id;
     if (selectedId && !streams.some((s) => s.id === selectedId)) {
       selectedId = streams[0]?.id || null;
@@ -307,10 +381,7 @@ export function initStreamHub({ toast, setProjectTab }) {
 
   els.canvas()?.addEventListener("click", (ev) => {
     if (!drawMode) return;
-    const canvas = els.canvas();
-    const rect = canvas.getBoundingClientRect();
-    const x = (ev.clientX - rect.left) / rect.width;
-    const y = (ev.clientY - rect.top) / rect.height;
+    const [x, y] = normFromClient(ev);
     if (!pendingPoint) {
       pendingPoint = [x, y];
       return;
@@ -323,6 +394,8 @@ export function initStreamHub({ toast, setProjectTab }) {
     if (trip) trip.checked = true;
     saveTriggers().catch((err) => toast(err.message));
   });
+
+  els.img()?.addEventListener("load", () => drawLineOverlay());
 
   window.addEventListener("resize", () => drawLineOverlay());
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
 from app.application.ports.services.model_predictor import Detection
 from app.domain.entities.stream_source import StreamSource
+from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
 
 
 @dataclass
@@ -34,7 +34,18 @@ class IStreamRunner(Protocol):
         self,
         stream: StreamSource,
         weights_abs_path: str,
-        class_names: list[str],
+        *,
+        allowed_class_indices: frozenset[int] | None = None,
+    ) -> None: ...
+
+    def wait_until_ready(self, stream_id: UUID, timeout: float = 30.0) -> StreamStatus: ...
+
+    def update_triggers(
+        self,
+        stream_id: UUID,
+        config: StreamTriggerConfig,
+        *,
+        allowed_class_indices: frozenset[int] | None = None,
     ) -> None: ...
 
     def stop(self, stream_id: UUID) -> None: ...

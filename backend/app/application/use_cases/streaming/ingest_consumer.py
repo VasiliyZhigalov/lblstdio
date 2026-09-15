@@ -20,6 +20,8 @@ from app.infrastructure.storage.pillow_metadata import PillowMetadataReader
 
 logger = logging.getLogger(__name__)
 
+_MAX_INGEST_ATTEMPTS = 3
+
 
 class StreamIngestConsumer:
     def __init__(self, session_factory, storage: LocalFileStorage, runner) -> None:
@@ -50,10 +52,32 @@ class StreamIngestConsumer:
                 )
             except queue.Empty:
                 continue
+            await self._handle_with_retry(job)
+
+    async def _handle_with_retry(self, job: IngestJob) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, _MAX_INGEST_ATTEMPTS + 1):
             try:
                 await self._handle(job)
-            except Exception:
-                logger.exception("failed to ingest stream frame")
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "ingest attempt %s/%s failed for stream %s: %s",
+                    attempt,
+                    _MAX_INGEST_ATTEMPTS,
+                    job.stream_id,
+                    exc,
+                )
+                await asyncio.sleep(0.2 * attempt)
+        logger.error(
+            "failed to ingest stream frame after %s attempts (stream=%s reason=%s): %s",
+            _MAX_INGEST_ATTEMPTS,
+            job.stream_id,
+            job.reason,
+            last_error,
+            exc_info=last_error,
+        )
 
     async def _handle(self, job: IngestJob) -> None:
         async with self._session_factory() as session:

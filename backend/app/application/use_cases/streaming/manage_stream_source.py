@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from uuid import UUID, uuid4
 
+from app.application.ports.repositories.class_repository import IClassRepository
 from app.application.ports.repositories.model_version_repository import (
     IModelVersionRepository,
 )
@@ -10,8 +11,10 @@ from app.application.ports.repositories.project_repository import IProjectReposi
 from app.application.ports.repositories.stream_source_repository import (
     IStreamSourceRepository,
 )
+from app.application.ports.services.stream_runner import IStreamRunner
 from app.application.ports.storage.file_storage import IFileStorage
 from app.application.ports.unit_of_work import IUnitOfWork
+from app.application.use_cases.streaming.control_stream import allowed_class_indices_for
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
@@ -28,12 +31,17 @@ class ManageStreamSourceUseCase:
         models: IModelVersionRepository,
         storage: IFileStorage,
         uow: IUnitOfWork,
+        *,
+        classes: IClassRepository | None = None,
+        runner: IStreamRunner | None = None,
     ) -> None:
         self._projects = projects
         self._streams = streams
         self._models = models
         self._storage = storage
         self._uow = uow
+        self._classes = classes
+        self._runner = runner
 
     async def list_by_project(self, project_id: UUID) -> list[StreamSource]:
         await self._require_project(project_id)
@@ -122,6 +130,15 @@ class ManageStreamSourceUseCase:
         stream.update_config(config)
         await self._streams.update(stream)
         await self._uow.commit()
+
+        if self._runner is not None and stream.is_active:
+            allowed: frozenset[int] | None = None
+            if self._classes is not None:
+                project_classes = await self._classes.list_by_project(stream.project_id)
+                allowed = allowed_class_indices_for(config, project_classes)
+            self._runner.update_triggers(
+                stream_id, config, allowed_class_indices=allowed
+            )
         return stream
 
     async def delete(self, stream_id: UUID) -> None:

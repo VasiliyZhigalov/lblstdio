@@ -15,6 +15,19 @@ from app.application.ports.unit_of_work import IUnitOfWork
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
+from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
+
+
+def allowed_class_indices_for(
+    config: StreamTriggerConfig,
+    classes: list,
+) -> frozenset[int] | None:
+    """Map tripwire class UUIDs → YOLO class indices; None means all classes."""
+    if not config.tripwire_classes:
+        return None
+    by_id = {item.id: item.index_id for item in classes}
+    indices = {by_id[cid] for cid in config.tripwire_classes if cid in by_id}
+    return frozenset(indices)
 
 
 class StartStreamUseCase:
@@ -66,29 +79,38 @@ class StartStreamUseCase:
             active.deactivate()
             await self._streams.update(active)
             self._runner.stop(active.id)
+            await self._uow.commit()
 
         self._runner.stop_project(stream.project_id)
 
-        stream.activate()
-        await self._streams.update(stream)
-        await self._uow.commit()
-
-        class_names = [
-            item.name for item in await self._classes.list_by_project(stream.project_id)
-        ]
+        project_classes = await self._classes.list_by_project(stream.project_id)
+        allowed = allowed_class_indices_for(stream.config, project_classes)
         runner_stream = StreamSource(
             id=stream.id,
             project_id=stream.project_id,
             name=stream.name,
             source_type=stream.source_type,
             source_uri=source_uri_for_runner,
-            is_active=True,
+            is_active=False,
             model_version_id=stream.model_version_id,
             config=stream.config,
             captured_frames_count=stream.captured_frames_count,
             created_at=stream.created_at,
         )
-        self._runner.start(runner_stream, weights_abs, class_names)
+        self._runner.start(
+            runner_stream,
+            weights_abs,
+            allowed_class_indices=allowed,
+        )
+        status = self._runner.wait_until_ready(stream_id, timeout=45.0)
+        if status.state != "running" or not status.is_running:
+            self._runner.stop(stream_id)
+            message = status.error_message or f"stream failed to start ({status.state})"
+            raise DomainValidationException(message)
+
+        stream.activate()
+        await self._streams.update(stream)
+        await self._uow.commit()
         return stream
 
 

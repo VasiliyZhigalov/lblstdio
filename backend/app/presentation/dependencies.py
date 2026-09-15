@@ -153,13 +153,23 @@ def get_uow(session: AsyncSession = Depends(get_session)) -> SqlAlchemyUnitOfWor
 
 
 def get_manage_stream_source_use_case(
+    request: Request,
     projects: SqliteProjectRepository = Depends(get_project_repo),
     streams: SqliteStreamSourceRepository = Depends(get_stream_source_repo),
     models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+    classes: SqliteClassRepository = Depends(get_class_repo),
     storage: LocalFileStorage = Depends(get_storage),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ) -> ManageStreamSourceUseCase:
-    return ManageStreamSourceUseCase(projects, streams, models, storage, uow)
+    return ManageStreamSourceUseCase(
+        projects,
+        streams,
+        models,
+        storage,
+        uow,
+        classes=classes,
+        runner=request.app.state.stream_runner,
+    )
 
 
 def get_stream_runner(request: Request):

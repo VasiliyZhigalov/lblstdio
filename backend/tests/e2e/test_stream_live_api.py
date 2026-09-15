@@ -57,3 +57,32 @@ def test_stream_start_status_live_buffer_stop(client: TestClient) -> None:
     stopped = client.post(f"/api/v1/streams/{stream_id}/stop")
     assert stopped.status_code == 200
     assert stopped.json()["is_active"] is False
+
+
+def test_stream_start_failure_keeps_inactive(client: TestClient) -> None:
+    runner: FakeStreamRunner = client.app.state.stream_runner
+    runner.fail_start_message = "boom"
+    project_id = client.post("/api/v1/projects", json={"name": "Fail"}).json()["id"]
+    model = client.post(
+        f"/api/v1/projects/{project_id}/models/upload",
+        files={"file": ("m.pt", b"weights", "application/octet-stream")},
+        data={"name": "M1"},
+    ).json()
+    stream = client.post(
+        f"/api/v1/projects/{project_id}/streams/rtsp",
+        json={"name": "Cam", "rtsp_url": "rtsp://127.0.0.1/x"},
+    ).json()
+    client.put(
+        f"/api/v1/streams/{stream['id']}/triggers",
+        json={"config": {}, "model_version_id": model["id"]},
+    )
+    failed = client.post(f"/api/v1/streams/{stream['id']}/start")
+    assert failed.status_code == 422
+    listed = client.get(f"/api/v1/projects/{project_id}/streams").json()
+    assert listed[0]["is_active"] is False
+
+
+def test_stream_live_404_for_unknown(client: TestClient) -> None:
+    missing = "00000000-0000-0000-0000-000000000099"
+    response = client.get(f"/api/v1/streams/{missing}/live")
+    assert response.status_code == 404
