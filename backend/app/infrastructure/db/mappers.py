@@ -17,9 +17,13 @@ from app.domain.enums import (
     ImageStatus,
     SourceType,
     SplitType,
+    StreamSourceType,
+    TripwireDirection,
     VerificationStatus,
 )
 from app.domain.value_objects.bounding_box import BoundingBox
+from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
+from app.domain.entities.stream_source import StreamSource
 from app.infrastructure.db.tables import (
     AnnotationRow,
     ClassRow,
@@ -27,6 +31,7 @@ from app.infrastructure.db.tables import (
     DatasetVersionRow,
     ImageRow,
     ProjectRow,
+    StreamSourceRow,
 )
 
 
@@ -265,4 +270,66 @@ def row_to_dataset_version(row: DatasetVersionRow) -> DatasetVersion:
         created_at=ensure_utc(row.created_at),
         augmentation=dict_to_augmentation(row.augmentation_json or {}),
         items=[row_to_dataset_item(item) for item in (row.items or [])],
+    )
+
+
+def stream_trigger_config_to_dict(config: StreamTriggerConfig) -> dict:
+    return {
+        "timer_enabled": config.timer_enabled,
+        "timer_interval_seconds": config.timer_interval_seconds,
+        "tripwire_enabled": config.tripwire_enabled,
+        "tripwire_line": list(config.tripwire_line) if config.tripwire_line else None,
+        "tripwire_classes": [str(item) for item in config.tripwire_classes],
+        "tripwire_direction": config.tripwire_direction.value,
+        "tripwire_debounce_seconds": config.tripwire_debounce_seconds,
+        "uncertainty_range": list(config.uncertainty_range),
+        "cooldown_seconds": config.cooldown_seconds,
+    }
+
+
+def dict_to_stream_trigger_config(raw: dict) -> StreamTriggerConfig:
+    line = raw.get("tripwire_line")
+    unc = raw.get("uncertainty_range") or (0.70, 0.90)
+    return StreamTriggerConfig(
+        timer_enabled=bool(raw.get("timer_enabled", False)),
+        timer_interval_seconds=float(raw.get("timer_interval_seconds", 5.0)),
+        tripwire_enabled=bool(raw.get("tripwire_enabled", False)),
+        tripwire_line=tuple(line) if line else None,
+        tripwire_classes=tuple(UUID(item) for item in (raw.get("tripwire_classes") or [])),
+        tripwire_direction=TripwireDirection(
+            raw.get("tripwire_direction", TripwireDirection.ANY.value)
+        ),
+        tripwire_debounce_seconds=float(raw.get("tripwire_debounce_seconds", 3.0)),
+        uncertainty_range=(float(unc[0]), float(unc[1])),
+        cooldown_seconds=float(raw.get("cooldown_seconds", 3.0)),
+    )
+
+
+def stream_source_to_row(stream: StreamSource) -> StreamSourceRow:
+    return StreamSourceRow(
+        id=str(stream.id),
+        project_id=str(stream.project_id),
+        name=stream.name,
+        source_type=stream.source_type.value,
+        source_uri=stream.source_uri,
+        is_active=1 if stream.is_active else 0,
+        model_version_id=str(stream.model_version_id) if stream.model_version_id else None,
+        config_json=stream_trigger_config_to_dict(stream.config),
+        captured_frames_count=stream.captured_frames_count,
+        created_at=stream.created_at,
+    )
+
+
+def row_to_stream_source(row: StreamSourceRow) -> StreamSource:
+    return StreamSource(
+        id=UUID(row.id),
+        project_id=UUID(row.project_id),
+        name=row.name,
+        source_type=StreamSourceType(row.source_type),
+        source_uri=row.source_uri,
+        is_active=bool(row.is_active),
+        model_version_id=UUID(row.model_version_id) if row.model_version_id else None,
+        config=dict_to_stream_trigger_config(row.config_json or {}),
+        captured_frames_count=row.captured_frames_count,
+        created_at=ensure_utc(row.created_at),
     )

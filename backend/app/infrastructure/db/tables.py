@@ -238,3 +238,23 @@ class AutoLabelJobRow(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class StreamSourceRow(Base):
+    __tablename__ = "stream_sources"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_uri: Mapped[str] = mapped_column(String(1024), nullable=False)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    model_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    config_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    captured_frames_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
