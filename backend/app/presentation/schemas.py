@@ -258,3 +258,43 @@ class AutoLabelJobRead(BaseModel):
     error_message: str | None = None
     created_at: datetime
     finished_at: datetime | None = None
+
+
+class StreamTriggerConfigPayload(BaseModel):
+    timer_enabled: bool = False
+    timer_interval_seconds: float = Field(default=5.0, gt=0)
+    tripwire_enabled: bool = False
+    tripwire_line: tuple[float, float, float, float] | None = None
+    tripwire_classes: list[UUID] = Field(default_factory=list)
+    tripwire_direction: str = "ANY"
+    tripwire_debounce_seconds: float = Field(default=3.0, ge=0)
+    uncertainty_range: tuple[float, float] = (0.70, 0.90)
+    cooldown_seconds: float = Field(default=3.0, ge=0)
+
+
+class StreamTriggersUpdate(BaseModel):
+    config: StreamTriggerConfigPayload
+    model_version_id: UUID | None = None
+
+
+class StreamRtspCreate(BaseModel):
+    name: str = Field(min_length=1)
+    rtsp_url: str = Field(min_length=1)
+
+
+class StreamDeviceCreate(BaseModel):
+    name: str = Field(min_length=1)
+    device_index: int = Field(default=0, ge=0)
+
+
+class StreamSourceRead(BaseModel):
+    id: UUID
+    project_id: UUID
+    name: str
+    source_type: str
+    source_uri: str
+    is_active: bool
+    model_version_id: UUID | None = None
+    config: StreamTriggerConfigPayload
+    captured_frames_count: int
+    created_at: datetime

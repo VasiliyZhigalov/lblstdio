@@ -35,7 +35,10 @@ from app.application.use_cases.projects.create_project import (
     ListProjectsUseCase,
     UpdateProjectUseCase,
 )
-from app.application.use_cases.ml.batch_auto_label import BatchAutoLabelUseCase
+from app.application.use_cases.ml.batch_auto_label import (
+    BatchAutoLabelUseCase,
+    GetAutoLabelJobUseCase,
+)
 from app.application.use_cases.ml.manage_model_version import (
     DeleteModelVersionUseCase,
     ExportModelVersionUseCase,
@@ -48,6 +51,7 @@ from app.application.use_cases.ml.train_model import (
     TrainModelUseCase,
 )
 from app.application.use_cases.projects.delete_project import DeleteProjectUseCase
+from app.application.use_cases.streaming.manage_stream_source import ManageStreamSourceUseCase
 from app.infrastructure.db.repositories.annotation_repository import (
     SqliteAnnotationRepository,
 )
@@ -63,6 +67,9 @@ from app.infrastructure.db.repositories.model_version_repository import (
     SqliteModelVersionRepository,
 )
 from app.infrastructure.db.repositories.project_repository import SqliteProjectRepository
+from app.infrastructure.db.repositories.stream_source_repository import (
+    SqliteStreamSourceRepository,
+)
 from app.infrastructure.db.repositories.training_job_repository import (
     SqliteTrainingJobRepository,
 )
@@ -130,8 +137,24 @@ def get_auto_label_job_repo(
     return SqliteAutoLabelJobRepository(session)
 
 
+def get_stream_source_repo(
+    session: AsyncSession = Depends(get_session),
+) -> SqliteStreamSourceRepository:
+    return SqliteStreamSourceRepository(session)
+
+
 def get_uow(session: AsyncSession = Depends(get_session)) -> SqlAlchemyUnitOfWork:
     return SqlAlchemyUnitOfWork(session)
+
+
+def get_manage_stream_source_use_case(
+    projects: SqliteProjectRepository = Depends(get_project_repo),
+    streams: SqliteStreamSourceRepository = Depends(get_stream_source_repo),
+    models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> ManageStreamSourceUseCase:
+    return ManageStreamSourceUseCase(projects, streams, models, storage, uow)
 
 def get_create_project_use_case(
     projects: SqliteProjectRepository = Depends(get_project_repo),
@@ -443,3 +466,9 @@ def get_batch_auto_label_use_case(
     return BatchAutoLabelUseCase(
         models, images, annotations, classes, jobs, storage, predictor, uow
     )
+
+
+def get_get_auto_label_job_use_case(
+    jobs: SqliteAutoLabelJobRepository = Depends(get_auto_label_job_repo),
+) -> GetAutoLabelJobUseCase:
+    return GetAutoLabelJobUseCase(jobs)

@@ -18,6 +18,7 @@ from app.presentation.api.v1.dataset_versions_router import router as dataset_ve
 from app.presentation.api.v1.images_router import router as images_router
 from app.presentation.api.v1.matching_router import router as matching_router
 from app.presentation.api.v1.projects_router import router as projects_router
+from app.presentation.api.v1.stream_router import router as stream_router
 from app.presentation.api.v1.training_router import router as training_router
 from app.presentation.exception_handlers import register_exception_handlers
 from app.settings import load_settings
@@ -85,6 +86,7 @@ def create_app(
     app.include_router(matching_router, prefix="/api/v1")
     app.include_router(dataset_versions_router, prefix="/api/v1")
     app.include_router(training_router, prefix="/api/v1")
+    app.include_router(stream_router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
