@@ -5,3 +5,8 @@ __pycache__/
 .venv/
 storage/
 *.pyc
+*.pt
+* (2).*
+* (2).js
+* (2).db
+backend/config.yaml

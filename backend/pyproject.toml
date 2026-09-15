@@ -1,7 +1,7 @@
 [project]
 name = "lblstdio"
 version = "0.1.0"
-description = "Roboflow-Lite labeling platform — core MVP backend"
+description = "LBL_STDIO labeling platform — core MVP backend"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",

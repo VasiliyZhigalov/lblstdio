@@ -1,5 +1,5 @@
 # АРХИТЕКТУРНАЯ СПЕЦИФИКАЦИЯ БЭКЕНДА
-## Платформа активного обучения и полуавтоматической разметки «Roboflow-Lite»
+## Платформа активного обучения и полуавтоматической разметки «LBL_STDIO»
 **Стек:** Python 3.11+, FastAPI, Ultralytics YOLO, OpenCV / LightGlue, SQLite, AsyncIO.
 
 ---
@@ -91,9 +91,16 @@ backend/
 │   │   └── middleware.py               # Обработка исключений, CORS, логи
 │   │
 │   └── main.py                         # Инициализация FastAPI приложения и роутеров
-├── storage/                            # Физическое хранение на диске
-└── app.db                              # Файл базы данных SQLite
+├── config.example.yaml                 # Пример: data_root (сетевой диск / UNC)
+├── config.yaml                         # Локальный конфиг (не в git; copy from example)
+│
+# По умолчанию data_root = backend/ (рядом с этим деревом):
+├── storage/                            # Физическое хранение: <data_root>/storage
+└── app.db                              # SQLite: <data_root>/app.db
 ```
+
+Пути к данным задаются одним корнем `data_root` в `config.yaml` или переменной `LBLSTDIO_DATA_ROOT`
+(например `Z:/lblstdio-data` или `//NAS/share/lblstdio`). Внутри корня всегда `app.db` и `storage/`.
 
 ---
 

@@ -20,6 +20,7 @@ from app.presentation.api.v1.matching_router import router as matching_router
 from app.presentation.api.v1.projects_router import router as projects_router
 from app.presentation.api.v1.training_router import router as training_router
 from app.presentation.exception_handlers import register_exception_handlers
+from app.settings import load_settings
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
@@ -27,12 +28,14 @@ FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 def create_app(
     database_url: str | None = None,
     storage_root: str | Path | None = None,
+    data_root: str | Path | None = None,
     *,
     training_trainer=None,
     predictor=None,
 ) -> FastAPI:
-    db_url = database_url or "sqlite+aiosqlite:///./app.db"
-    files_root = Path(storage_root or "./storage")
+    settings = load_settings(data_root=data_root)
+    db_url = database_url or settings.database_url
+    files_root = Path(storage_root) if storage_root is not None else settings.storage_root
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -40,6 +43,7 @@ def create_app(
         app.state.engine = engine
         app.state.session_factory = factory
         app.state.storage = LocalFileStorage(files_root)
+        app.state.settings = settings
         app.state.metadata_reader = PillowMetadataReader()
         trainer = training_trainer or ProcessUltralyticsTrainer()
         device_resolver = UltralyticsDeviceResolver()
@@ -62,7 +66,7 @@ def create_app(
         await dispose_engine(engine)
 
     app = FastAPI(
-        title="Roboflow-Lite API",
+        title="LBL_STDIO API",
         description="Core MVP backend for manual bounding-box labeling and YOLO export.",
         version="0.1.0",
         lifespan=lifespan,
@@ -84,7 +88,11 @@ def create_app(
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "data_root": str(settings.data_root),
+            "storage_root": str(Path(files_root).resolve()),
+        }
 
     if FRONTEND_DIR.is_dir():
         app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

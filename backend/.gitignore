@@ -9,3 +9,6 @@ htmlcov/
 *.db
 /storage/
 .mypy_cache/
+*.pt
+weights/
+* (2).*

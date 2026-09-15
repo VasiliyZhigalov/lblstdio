@@ -1,0 +1,16 @@
+# Root directory for all project data (SQLite DB + file storage).
+# Layout:
+#   <data_root>/
+#     app.db
+#     storage/
+#       projects/...
+#
+# Examples (Windows network drive / UNC):
+#   data_root: "Z:/lblstdio-data"
+#   data_root: "//NAS/share/lblstdio"
+#
+# Relative paths are resolved from the backend/ directory.
+# Override with env: LBLSTDIO_DATA_ROOT=Z:/lblstdio-data
+#
+# Default "." keeps app.db and storage/ next to the backend (current layout).
+data_root: "."
