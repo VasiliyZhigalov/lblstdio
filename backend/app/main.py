@@ -33,6 +33,7 @@ def create_app(
     *,
     training_trainer=None,
     predictor=None,
+    stream_runner=None,
 ) -> FastAPI:
     settings = load_settings(data_root=data_root)
     db_url = database_url or settings.database_url
@@ -40,6 +41,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        from app.application.use_cases.streaming.ingest_consumer import StreamIngestConsumer
+        from app.infrastructure.streaming.opencv_stream_runner import OpenCVStreamRunner
+
         engine, factory = await create_session_factory(db_url)
         app.state.engine = engine
         app.state.session_factory = factory
@@ -61,9 +65,16 @@ def create_app(
             predictor or UltralyticsPredictor(),
             max_concurrent=1,
         )
+        app.state.stream_runner = stream_runner or OpenCVStreamRunner()
+        app.state.stream_ingest_consumer = StreamIngestConsumer(
+            factory, app.state.storage, app.state.stream_runner
+        )
         await app.state.training_runner.fail_orphaned_jobs()
         await app.state.auto_label_runner.fail_orphaned_jobs()
+        app.state.stream_ingest_consumer.start()
         yield
+        await app.state.stream_ingest_consumer.stop()
+        app.state.stream_runner.stop_all()
         await dispose_engine(engine)
 
     app = FastAPI(

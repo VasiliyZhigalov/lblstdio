@@ -298,3 +298,12 @@ class StreamSourceRead(BaseModel):
     config: StreamTriggerConfigPayload
     captured_frames_count: int
     created_at: datetime
+
+
+class StreamStatusRead(BaseModel):
+    is_running: bool
+    state: str
+    fps: float = 0.0
+    captured_count: int = 0
+    last_capture_at: datetime | None = None
+    error_message: str | None = None

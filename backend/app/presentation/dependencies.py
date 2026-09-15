@@ -51,6 +51,11 @@ from app.application.use_cases.ml.train_model import (
     TrainModelUseCase,
 )
 from app.application.use_cases.projects.delete_project import DeleteProjectUseCase
+from app.application.use_cases.streaming.control_stream import (
+    GetStreamStatusUseCase,
+    StartStreamUseCase,
+    StopStreamUseCase,
+)
 from app.application.use_cases.streaming.manage_stream_source import ManageStreamSourceUseCase
 from app.infrastructure.db.repositories.annotation_repository import (
     SqliteAnnotationRepository,
@@ -155,6 +160,38 @@ def get_manage_stream_source_use_case(
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ) -> ManageStreamSourceUseCase:
     return ManageStreamSourceUseCase(projects, streams, models, storage, uow)
+
+
+def get_stream_runner(request: Request):
+    return request.app.state.stream_runner
+
+
+def get_start_stream_use_case(
+    request: Request,
+    streams: SqliteStreamSourceRepository = Depends(get_stream_source_repo),
+    models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+    classes: SqliteClassRepository = Depends(get_class_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> StartStreamUseCase:
+    return StartStreamUseCase(
+        streams, models, classes, storage, request.app.state.stream_runner, uow
+    )
+
+
+def get_stop_stream_use_case(
+    request: Request,
+    streams: SqliteStreamSourceRepository = Depends(get_stream_source_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> StopStreamUseCase:
+    return StopStreamUseCase(streams, request.app.state.stream_runner, uow)
+
+
+def get_stream_status_use_case(
+    request: Request,
+    streams: SqliteStreamSourceRepository = Depends(get_stream_source_repo),
+) -> GetStreamStatusUseCase:
+    return GetStreamStatusUseCase(streams, request.app.state.stream_runner)
 
 def get_create_project_use_case(
     projects: SqliteProjectRepository = Depends(get_project_repo),

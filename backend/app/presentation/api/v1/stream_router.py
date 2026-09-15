@@ -1,15 +1,30 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
+import asyncio
 
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
+
+from app.application.use_cases.streaming.control_stream import (
+    GetStreamStatusUseCase,
+    StartStreamUseCase,
+    StopStreamUseCase,
+)
 from app.application.use_cases.streaming.manage_stream_source import ManageStreamSourceUseCase
 from app.domain.enums import TripwireDirection
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
-from app.presentation.dependencies import get_manage_stream_source_use_case
+from app.presentation.dependencies import (
+    get_manage_stream_source_use_case,
+    get_start_stream_use_case,
+    get_stop_stream_use_case,
+    get_stream_runner,
+    get_stream_status_use_case,
+)
 from app.presentation.schemas import (
     StreamDeviceCreate,
     StreamRtspCreate,
     StreamSourceRead,
+    StreamStatusRead,
     StreamTriggerConfigPayload,
     StreamTriggersUpdate,
 )
@@ -139,3 +154,57 @@ async def delete_stream(
 ) -> Response:
     await use_case.delete(stream_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/streams/{stream_id}/start", response_model=StreamSourceRead)
+async def start_stream(
+    stream_id: UUID,
+    use_case: StartStreamUseCase = Depends(get_start_stream_use_case),
+) -> StreamSourceRead:
+    stream = await use_case.execute(stream_id)
+    return _stream_to_read(stream)
+
+
+@router.post("/streams/{stream_id}/stop", response_model=StreamSourceRead)
+async def stop_stream(
+    stream_id: UUID,
+    use_case: StopStreamUseCase = Depends(get_stop_stream_use_case),
+) -> StreamSourceRead:
+    stream = await use_case.execute(stream_id)
+    return _stream_to_read(stream)
+
+
+@router.get("/streams/{stream_id}/status", response_model=StreamStatusRead)
+async def stream_status(
+    stream_id: UUID,
+    use_case: GetStreamStatusUseCase = Depends(get_stream_status_use_case),
+) -> StreamStatusRead:
+    status_obj = await use_case.execute(stream_id)
+    return StreamStatusRead(
+        is_running=status_obj.is_running,
+        state=status_obj.state,
+        fps=status_obj.fps,
+        captured_count=status_obj.captured_count,
+        last_capture_at=status_obj.last_capture_at,
+        error_message=status_obj.error_message,
+    )
+
+
+@router.get("/streams/{stream_id}/live")
+async def stream_live(
+    stream_id: UUID,
+    runner=Depends(get_stream_runner),
+):
+    async def gen():
+        while True:
+            jpeg = runner.latest_jpeg(stream_id)
+            if jpeg:
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                )
+            await asyncio.sleep(0.07)
+
+    return StreamingResponse(
+        gen(), media_type="multipart/x-mixed-replace; boundary=frame"
+    )
