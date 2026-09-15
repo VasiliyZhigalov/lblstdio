@@ -51,6 +51,7 @@ export function initHotkeys({
   toggleLeftSidebar,
   toggleRightSidebar,
   applyQuickClassDigit,
+  openQuickClass,
 }) {
   window.addEventListener("keydown", (event) => {
     if (isTypingTarget(event.target)) return;
@@ -112,6 +113,12 @@ export function initHotkeys({
     if (code === "KeyH") {
       event.preventDefault();
       if (!event.repeat) toggleHide?.();
+      return;
+    }
+
+    if (code === "KeyC" && !event.shiftKey) {
+      event.preventDefault();
+      if (!event.repeat) openQuickClass?.();
       return;
     }
 

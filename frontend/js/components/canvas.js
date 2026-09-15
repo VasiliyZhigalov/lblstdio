@@ -54,6 +54,7 @@ export class AnnotationCanvas {
     this.panStart = { x: 0, y: 0, panX: 0, panY: 0 };
     this.dragOffset = { x: 0, y: 0 };
     this.dragBoxId = null;
+    this.pointerGuide = null;
     this.bound = false;
     this.init();
   }
@@ -224,6 +225,12 @@ export class AnnotationCanvas {
       this.setCursor("grab");
       return;
     }
+    const mode = store.get("mode");
+    const allowManipulate = mode === "SELECT" || event.altKey;
+    if (mode === "DRAW" && !allowManipulate) {
+      this.setCursor("crosshair");
+      return;
+    }
     const screen = this.pointerScreen(event);
     if (!store.get("hideAnnotations")) {
       const selectedId = store.get("selectedBoxId");
@@ -242,11 +249,11 @@ export class AnnotationCanvas {
         }
       }
       if (this.findBoxAtScreen(screen.x, screen.y)) {
-        this.setCursor("pointer");
+        this.setCursor("move");
         return;
       }
     }
-    this.setCursor(store.get("mode") === "DRAW" ? "crosshair" : "default");
+    this.setCursor(mode === "DRAW" ? "crosshair" : "default");
   }
 
   bindEvents() {
@@ -272,7 +279,32 @@ export class AnnotationCanvas {
     this.canvas.addEventListener("mousedown", (event) => this.onMouseDown(event));
     window.addEventListener("mousemove", (event) => this.onMouseMove(event));
     window.addEventListener("mouseup", (event) => this.onMouseUp(event));
-    this.canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+    this.canvas.addEventListener("mouseleave", () => {
+      if (this.pointerGuide) {
+        this.pointerGuide = null;
+        this.scheduleRender();
+      }
+    });
+    store.addEventListener("change:mode", () => {
+      if (store.get("mode") !== "DRAW" && this.pointerGuide) {
+        this.pointerGuide = null;
+        this.scheduleRender();
+      }
+    });
+    this.canvas.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      if (!this.image || store.get("matchingInProgress")) return;
+      const screen = this.pointerScreen(event);
+      const hit = this.findBoxAtScreen(screen.x, screen.y);
+      if (!hit) return;
+      store.set("selectedBoxId", hit.id);
+      this.container.dispatchEvent(
+        new CustomEvent("request-class-popover", {
+          bubbles: true,
+          detail: { boxId: hit.id, screenX: screen.x, screenY: screen.y },
+        })
+      );
+    });
     this.canvas.addEventListener("dblclick", (event) => {
       event.preventDefault();
       this.fitToScreen();
@@ -299,10 +331,12 @@ export class AnnotationCanvas {
     const imgPt = this.pointerImage(event);
     const mode = store.get("mode");
     const hide = store.get("hideAnnotations");
+    // DRAW starts a new box even over existing ones; move/resize only in SELECT or with Alt.
+    const allowManipulate = mode === "SELECT" || event.altKey;
 
     const selectedId = store.get("selectedBoxId");
     const selected = (store.get("annotations") || []).find((box) => box.id === selectedId);
-    if (selected && !hide) {
+    if (allowManipulate && selected && !hide) {
       const handle = hitHandle(screen.x, screen.y, this.screenRectForBox(selected));
       if (handle) {
         this.activeHandle = handle;
@@ -311,15 +345,17 @@ export class AnnotationCanvas {
       }
     }
 
-    const hit = hide ? null : this.findBoxAtScreen(screen.x, screen.y);
-    if (hit) {
-      store.set("selectedBoxId", hit.id);
-      const { w, h } = this.imgSize();
-      const xywh = yoloToXywh(hit, w, h);
-      this.isDragging = true;
-      this.dragBoxId = hit.id;
-      this.dragOffset = { x: imgPt.x - xywh.x, y: imgPt.y - xywh.y };
-      return;
+    if (allowManipulate) {
+      const hit = hide ? null : this.findBoxAtScreen(screen.x, screen.y);
+      if (hit) {
+        store.set("selectedBoxId", hit.id);
+        const { w, h } = this.imgSize();
+        const xywh = yoloToXywh(hit, w, h);
+        this.isDragging = true;
+        this.dragBoxId = hit.id;
+        this.dragOffset = { x: imgPt.x - xywh.x, y: imgPt.y - xywh.y };
+        return;
+      }
     }
 
     if (mode === "DRAW") {
@@ -339,6 +375,27 @@ export class AnnotationCanvas {
   }
 
   onMouseMove(event) {
+    if (this.image && store.get("mode") === "DRAW" && !this.isPanning) {
+      const screen = this.pointerScreen(event);
+      const rect = this.canvasRect();
+      const inside =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+      const next = inside ? { x: screen.x, y: screen.y } : null;
+      if (
+        (next?.x ?? null) !== (this.pointerGuide?.x ?? null) ||
+        (next?.y ?? null) !== (this.pointerGuide?.y ?? null)
+      ) {
+        this.pointerGuide = next;
+        this.scheduleRender();
+      }
+    } else if (this.pointerGuide) {
+      this.pointerGuide = null;
+      this.scheduleRender();
+    }
+
     if (this.isPanning) {
       const screen = this.pointerScreen(event);
       this.pan = {
@@ -445,13 +502,6 @@ export class AnnotationCanvas {
             hasUnsavedChanges: true,
             saveStatus: "unsaved",
           });
-          const screen = this.pointerScreen(event);
-          this.container.dispatchEvent(
-            new CustomEvent("box-drawn", {
-              bubbles: true,
-              detail: { boxId: newBox.id, screenX: screen.x, screenY: screen.y },
-            })
-          );
         }
       }
       this.scheduleRender();
@@ -528,8 +578,24 @@ export class AnnotationCanvas {
       ctx.restore();
     }
 
+    this.drawCrosshairGuides(ctx, w, h);
     this.drawMatchDebug(ctx);
     this.syncFloatActions();
+  }
+
+  drawCrosshairGuides(ctx, viewW, viewH) {
+    if (store.get("mode") !== "DRAW" || !this.pointerGuide || this.isPanning) return;
+    const { x, y } = this.pointerGuide;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, viewH);
+    ctx.moveTo(0, y + 0.5);
+    ctx.lineTo(viewW, y + 0.5);
+    ctx.stroke();
+    ctx.restore();
   }
 
   drawMatchDebug(ctx) {
