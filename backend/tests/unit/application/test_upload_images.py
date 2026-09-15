@@ -4,11 +4,12 @@ import pytest
 
 from app.application.dto import UploadedFile
 from app.application.use_cases.images.upload_images import UploadImagesUseCase
+from app.domain.entities.annotation import Annotation
+from app.domain.entities.annotation_class import AnnotationClass
 from app.domain.entities.image import Image
 from app.domain.entities.project import Project
-from app.domain.enums import SplitType
+from app.domain.enums import ImageStatus, SplitType, VerificationStatus
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
-from app.domain.value_objects.split_ratios import SplitRatios
 
 
 class _FakeStorage:
@@ -48,9 +49,32 @@ class _FakeProjects:
 class _FakeImages:
     def __init__(self) -> None:
         self.added: list[Image] = []
+        self.updated: list[Image] = []
 
     async def add_many(self, images: list[Image]) -> None:
         self.added.extend(images)
+
+    async def update(self, image: Image) -> None:
+        self.updated.append(image)
+
+
+class _FakeAnnotations:
+    def __init__(self) -> None:
+        self.replaced: dict[UUID, list[Annotation]] = {}
+
+    async def replace_for_image(self, image_id: UUID, annotations) -> None:
+        self.replaced[image_id] = list(annotations)
+
+
+class _FakeClasses:
+    def __init__(self, classes: list[AnnotationClass] | None = None) -> None:
+        self.classes = list(classes or [])
+
+    async def list_by_project(self, project_id: UUID) -> list[AnnotationClass]:
+        return [item for item in self.classes if item.project_id == project_id]
+
+    async def add(self, annotation_class: AnnotationClass) -> None:
+        self.classes.append(annotation_class)
 
 
 class _FakeUow:
@@ -61,44 +85,102 @@ class _FakeUow:
         self.committed = True
 
 
-def _use_case(project: Project | None = None) -> tuple[UploadImagesUseCase, _FakeImages, _FakeMetadata, _FakeUow]:
+def _use_case(
+    project: Project | None = None,
+    *,
+    classes: list[AnnotationClass] | None = None,
+):
     project = project or Project.create("Demo")
     images = _FakeImages()
     metadata = _FakeMetadata()
     uow = _FakeUow()
+    annotations = _FakeAnnotations()
+    class_repo = _FakeClasses(classes)
     use_case = UploadImagesUseCase(
         projects=_FakeProjects(project),
         images=images,
         storage=_FakeStorage(),
         metadata=metadata,
         uow=uow,
+        annotations=annotations,
+        classes=class_repo,
     )
-    return use_case, images, metadata, uow, project
+    return use_case, images, metadata, uow, project, annotations, class_repo
 
 
 class TestUploadImagesUseCase:
     @pytest.mark.asyncio
-    async def test_splits_ten_images_70_20_10_and_reads_dimensions(self) -> None:
-        use_case, images, metadata, uow, project = _use_case()
+    async def test_assigns_train_stub_split_and_reads_dimensions(self) -> None:
+        use_case, images, metadata, uow, project, *_ = _use_case()
         files = [
             UploadedFile(filename=f"img_{index}.png", content=b"payload-%d" % index)
             for index in range(10)
         ]
 
-        result = await use_case.execute(
-            project.id,
-            files,
-            ratios=SplitRatios(train=0.7, valid=0.2, test=0.1),
-        )
+        result = await use_case.execute(project.id, files)
 
-        splits = [item.split for item in result]
-        assert splits.count(SplitType.TRAIN) == 7
-        assert splits.count(SplitType.VALID) == 2
-        assert splits.count(SplitType.TEST) == 1
+        assert all(item.split == SplitType.TRAIN for item in result)
+        assert all(item.status == ImageStatus.UNANNOTATED for item in result)
         assert all(item.width == 320 and item.height == 240 for item in result)
         assert metadata.seen == [item.content for item in files]
         assert images.added == result
         assert uow.committed is True
+
+    @pytest.mark.asyncio
+    async def test_imports_yolo_labels_as_verified_manual(self) -> None:
+        use_case, images, _, uow, project, annotations, class_repo = _use_case()
+        result = await use_case.execute(
+            project.id,
+            [
+                UploadedFile(filename="train/images/a.jpg", content=b"img-a"),
+                UploadedFile(
+                    filename="train/labels/a.txt",
+                    content=b"0 0.5 0.5 0.2 0.2\n",
+                ),
+                UploadedFile(filename="data.yaml", content=b"names: [crack]\n"),
+                UploadedFile(filename="train/images/empty.jpg", content=b"img-e"),
+                UploadedFile(filename="train/labels/empty.txt", content=b"\n"),
+                UploadedFile(filename="raw.jpg", content=b"img-raw"),
+            ],
+        )
+
+        by_name = {item.file_name: item for item in result}
+        assert by_name["a.jpg"].status == ImageStatus.VERIFIED
+        assert by_name["empty.jpg"].status == ImageStatus.VERIFIED
+        assert by_name["empty.jpg"].is_background is True
+        assert by_name["raw.jpg"].status == ImageStatus.UNANNOTATED
+
+        labeled = annotations.replaced[by_name["a.jpg"].id]
+        assert len(labeled) == 1
+        assert labeled[0].verification_status == VerificationStatus.VERIFIED
+        assert labeled[0].source.value == "MANUAL"
+        assert by_name["empty.jpg"].id not in annotations.replaced
+        assert any(item.name == "crack" for item in class_repo.classes)
+        assert uow.committed is True
+        assert len(images.updated) >= 2
+
+    @pytest.mark.asyncio
+    async def test_reuses_existing_class_by_name(self) -> None:
+        project = Project.create("Demo")
+        existing = AnnotationClass.create(
+            project_id=project.id,
+            name="crack",
+            color_hex="#FF0000",
+            index_id=0,
+        )
+        use_case, _, _, _, _, annotations, class_repo = _use_case(
+            project, classes=[existing]
+        )
+        result = await use_case.execute(
+            project.id,
+            [
+                UploadedFile(filename="a.png", content=b"img"),
+                UploadedFile(filename="a.txt", content=b"0 0.4 0.4 0.1 0.1\n"),
+                UploadedFile(filename="classes.txt", content=b"crack\n"),
+            ],
+        )
+        assert len(class_repo.classes) == 1
+        assert annotations.replaced[result[0].id][0].class_id == existing.id
 
     @pytest.mark.asyncio
     async def test_rejects_missing_project(self) -> None:
@@ -111,24 +193,24 @@ class TestUploadImagesUseCase:
 
     @pytest.mark.asyncio
     async def test_rejects_unsupported_format(self) -> None:
-        use_case, _, _, uow, project = _use_case()
+        use_case, _, _, uow, project, *_ = _use_case()
         with pytest.raises(DomainValidationException, match="format"):
             await use_case.execute(
                 project.id,
-                [UploadedFile(filename="notes.txt", content=b"nope")],
+                [UploadedFile(filename="notes.pdf", content=b"nope")],
             )
         assert uow.committed is False
 
     @pytest.mark.asyncio
-    async def test_validates_all_files_before_saving(self) -> None:
-        use_case, _, _, uow, project = _use_case()
+    async def test_validates_before_saving(self) -> None:
+        use_case, _, _, uow, project, *_ = _use_case()
         storage = use_case._storage
-        with pytest.raises(DomainValidationException, match="format"):
+        with pytest.raises(DomainValidationException, match="duplicate"):
             await use_case.execute(
                 project.id,
                 [
-                    UploadedFile(filename="ok.png", content=b"one"),
-                    UploadedFile(filename="bad.txt", content=b"two"),
+                    UploadedFile(filename="train/images/a.png", content=b"one"),
+                    UploadedFile(filename="valid/images/a.png", content=b"two"),
                 ],
             )
         assert storage.saved == []
@@ -150,6 +232,8 @@ class TestUploadImagesUseCase:
             storage=storage,
             metadata=_FakeMetadata(),
             uow=_FakeUow(),
+            annotations=_FakeAnnotations(),
+            classes=_FakeClasses(),
         )
         with pytest.raises(RuntimeError, match="db down"):
             await use_case.execute(
@@ -164,10 +248,24 @@ class TestUploadImagesUseCase:
         from app.application.use_cases.images import upload_images as upload_mod
 
         monkeypatch.setattr(upload_mod, "MAX_UPLOAD_BYTES", 8)
-        use_case, _, _, uow, project = _use_case()
+        use_case, _, _, uow, project, *_ = _use_case()
         with pytest.raises(DomainValidationException, match="size"):
             await use_case.execute(
                 project.id,
                 [UploadedFile(filename="big.png", content=b"0123456789")],
+            )
+        assert uow.committed is False
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_class_index(self) -> None:
+        use_case, _, _, uow, project, *_ = _use_case()
+        with pytest.raises(DomainValidationException, match="class index"):
+            await use_case.execute(
+                project.id,
+                [
+                    UploadedFile(filename="a.png", content=b"img"),
+                    UploadedFile(filename="a.txt", content=b"3 0.5 0.5 0.1 0.1\n"),
+                    UploadedFile(filename="classes.txt", content=b"only\n"),
+                ],
             )
         assert uow.committed is False

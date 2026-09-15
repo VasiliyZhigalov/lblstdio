@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 from fastapi.responses import FileResponse
 
 from app.application.dto import UploadedFile
@@ -8,7 +8,6 @@ from app.application.use_cases.images.get_image import GetImageUseCase, ListImag
 from app.application.use_cases.images.upload_images import UploadImagesUseCase
 from app.domain.enums import ImageStatus, SplitType
 from app.domain.exceptions import DomainValidationException
-from app.domain.value_objects.split_ratios import SplitRatios
 from app.infrastructure.storage.local_storage import LocalFileStorage
 from app.presentation.dependencies import (
     get_get_image_use_case,
@@ -33,6 +32,7 @@ def _image_to_read(image) -> ImageRead:
         status=image.status.value,
         source_type=image.source_type.value,
         created_at=image.created_at,
+        is_background=bool(getattr(image, "is_background", False)),
     )
 
 
@@ -50,6 +50,7 @@ def _annotation_to_read(annotation) -> AnnotationRead:
         verification_status=annotation.verification_status.value,
         verified_at=annotation.verified_at,
         source_annotation_id=annotation.source_annotation_id,
+        model_version_id=annotation.model_version_id,
     )
 
 
@@ -61,20 +62,13 @@ def _annotation_to_read(annotation) -> AnnotationRead:
 async def upload_images(
     project_id: UUID,
     files: list[UploadFile] = File(...),
-    train: float = Form(0.7),
-    valid: float = Form(0.2),
-    test: float = Form(0.1),
     use_case: UploadImagesUseCase = Depends(get_upload_images_use_case),
 ) -> list[ImageRead]:
     uploaded = [
         UploadedFile(filename=item.filename or "upload.bin", content=await item.read())
         for item in files
     ]
-    images = await use_case.execute(
-        project_id,
-        uploaded,
-        ratios=SplitRatios(train=train, valid=valid, test=test),
-    )
+    images = await use_case.execute(project_id, uploaded)
     return [_image_to_read(item) for item in images]
 
 

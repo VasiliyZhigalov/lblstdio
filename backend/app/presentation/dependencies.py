@@ -3,6 +3,9 @@ from collections.abc import AsyncIterator
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.use_cases.annotations.mark_background import (
+    MarkImageAsBackgroundUseCase,
+)
 from app.application.use_cases.annotations.save_annotations import SaveAnnotationsUseCase
 from app.application.use_cases.annotations.verify_annotation import (
     DeleteAnnotationUseCase,
@@ -18,6 +21,11 @@ from app.application.use_cases.dataset.create_dataset_version import (
     ListDatasetVersionsUseCase,
 )
 from app.application.use_cases.dataset.export_yolo import ExportYOLOUseCase
+from app.application.use_cases.dataset.manage_dataset_version import (
+    DeleteDatasetVersionUseCase,
+    ExportDatasetVersionUseCase,
+    RenameDatasetVersionUseCase,
+)
 from app.application.use_cases.images.get_image import GetImageUseCase, ListImagesUseCase
 from app.application.use_cases.images.upload_images import UploadImagesUseCase
 from app.application.use_cases.keypoints.propagate_box import PropagateBoxViaKeypointsUseCase
@@ -26,19 +34,40 @@ from app.application.use_cases.projects.create_project import (
     GetProjectUseCase,
     ListProjectsUseCase,
 )
+from app.application.use_cases.ml.batch_auto_label import BatchAutoLabelUseCase
+from app.application.use_cases.ml.manage_model_version import (
+    DeleteModelVersionUseCase,
+    ExportModelVersionUseCase,
+    RenameModelVersionUseCase,
+)
+from app.application.use_cases.ml.train_model import (
+    GetTrainingJobUseCase,
+    ListModelVersionsUseCase,
+    TrainModelUseCase,
+)
 from app.application.use_cases.projects.delete_project import DeleteProjectUseCase
 from app.infrastructure.db.repositories.annotation_repository import (
     SqliteAnnotationRepository,
+)
+from app.infrastructure.db.repositories.auto_label_job_repository import (
+    SqliteAutoLabelJobRepository,
 )
 from app.infrastructure.db.repositories.class_repository import SqliteClassRepository
 from app.infrastructure.db.repositories.dataset_version_repository import (
     SqliteDatasetVersionRepository,
 )
 from app.infrastructure.db.repositories.image_repository import SqliteImageRepository
+from app.infrastructure.db.repositories.model_version_repository import (
+    SqliteModelVersionRepository,
+)
 from app.infrastructure.db.repositories.project_repository import SqliteProjectRepository
+from app.infrastructure.db.repositories.training_job_repository import (
+    SqliteTrainingJobRepository,
+)
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 from app.infrastructure.ml.albumentations_service import AlbumentationsAugmentationService
 from app.infrastructure.ml.sift_matcher import SiftKeypointMatcher
+from app.infrastructure.ml.ultralytics_predictor import UltralyticsPredictor
 from app.infrastructure.storage.local_storage import LocalFileStorage
 from app.infrastructure.storage.pillow_metadata import PillowMetadataReader
 from app.infrastructure.storage.zip_packer import ZipArchivePacker
@@ -79,6 +108,24 @@ def get_dataset_version_repo(
     session: AsyncSession = Depends(get_session),
 ) -> SqliteDatasetVersionRepository:
     return SqliteDatasetVersionRepository(session)
+
+
+def get_training_job_repo(
+    session: AsyncSession = Depends(get_session),
+) -> SqliteTrainingJobRepository:
+    return SqliteTrainingJobRepository(session)
+
+
+def get_model_version_repo(
+    session: AsyncSession = Depends(get_session),
+) -> SqliteModelVersionRepository:
+    return SqliteModelVersionRepository(session)
+
+
+def get_auto_label_job_repo(
+    session: AsyncSession = Depends(get_session),
+) -> SqliteAutoLabelJobRepository:
+    return SqliteAutoLabelJobRepository(session)
 
 
 def get_uow(session: AsyncSession = Depends(get_session)) -> SqlAlchemyUnitOfWork:
@@ -145,8 +192,12 @@ def get_upload_images_use_case(
     storage: LocalFileStorage = Depends(get_storage),
     metadata: PillowMetadataReader = Depends(get_metadata_reader),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    classes: SqliteClassRepository = Depends(get_class_repo),
 ) -> UploadImagesUseCase:
-    return UploadImagesUseCase(projects, images, storage, metadata, uow)
+    return UploadImagesUseCase(
+        projects, images, storage, metadata, uow, annotations, classes
+    )
 
 
 def get_list_images_use_case(
@@ -193,6 +244,14 @@ def get_reject_all_pending_use_case(
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ) -> RejectAllPendingAnnotationsUseCase:
     return RejectAllPendingAnnotationsUseCase(images, annotations, uow)
+
+
+def get_mark_background_use_case(
+    images: SqliteImageRepository = Depends(get_image_repo),
+    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> MarkImageAsBackgroundUseCase:
+    return MarkImageAsBackgroundUseCase(images, annotations, uow)
 
 
 def get_delete_annotation_use_case(
@@ -267,3 +326,74 @@ def get_get_dataset_version_use_case(
     versions: SqliteDatasetVersionRepository = Depends(get_dataset_version_repo),
 ) -> GetDatasetVersionUseCase:
     return GetDatasetVersionUseCase(versions)
+
+
+def get_rename_dataset_version_use_case(
+    versions: SqliteDatasetVersionRepository = Depends(get_dataset_version_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> RenameDatasetVersionUseCase:
+    return RenameDatasetVersionUseCase(versions, uow)
+
+
+def get_export_dataset_version_use_case(
+    versions: SqliteDatasetVersionRepository = Depends(get_dataset_version_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    packer: ZipArchivePacker = Depends(get_packer),
+) -> ExportDatasetVersionUseCase:
+    return ExportDatasetVersionUseCase(versions, storage, packer)
+
+
+def get_delete_dataset_version_use_case(
+    versions: SqliteDatasetVersionRepository = Depends(get_dataset_version_repo),
+    models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+    jobs: SqliteTrainingJobRepository = Depends(get_training_job_repo),
+    auto_jobs: SqliteAutoLabelJobRepository = Depends(get_auto_label_job_repo),
+    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> DeleteDatasetVersionUseCase:
+    return DeleteDatasetVersionUseCase(
+        versions, models, jobs, auto_jobs, annotations, storage, uow
+    )
+
+
+def get_predictor() -> UltralyticsPredictor:
+    return UltralyticsPredictor()
+
+
+def get_train_model_use_case(
+    projects: SqliteProjectRepository = Depends(get_project_repo),
+    versions: SqliteDatasetVersionRepository = Depends(get_dataset_version_repo),
+    jobs: SqliteTrainingJobRepository = Depends(get_training_job_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+    models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+) -> TrainModelUseCase:
+    return TrainModelUseCase(projects, versions, jobs, storage, uow, models=models)
+
+
+def get_get_training_job_use_case(
+    jobs: SqliteTrainingJobRepository = Depends(get_training_job_repo),
+) -> GetTrainingJobUseCase:
+    return GetTrainingJobUseCase(jobs)
+
+
+def get_list_model_versions_use_case(
+    models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+) -> ListModelVersionsUseCase:
+    return ListModelVersionsUseCase(models)
+
+
+def get_batch_auto_label_use_case(
+    models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+    images: SqliteImageRepository = Depends(get_image_repo),
+    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    classes: SqliteClassRepository = Depends(get_class_repo),
+    jobs: SqliteAutoLabelJobRepository = Depends(get_auto_label_job_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    predictor: UltralyticsPredictor = Depends(get_predictor),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> BatchAutoLabelUseCase:
+    return BatchAutoLabelUseCase(
+        models, images, annotations, classes, jobs, storage, predictor, uow
+    )

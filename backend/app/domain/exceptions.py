@@ -18,5 +18,17 @@ class InsufficientVerifiedDataException(DomainError):
     """Raised when too few verified frames are available for a dataset version."""
 
 
+class DatasetVersionConflictException(DomainError):
+    """Raised when a dataset version number collides under concurrency."""
+
+
 class KeypointMatchingFailedException(DomainValidationException):
     """Raised when keypoint matching cannot project a box onto the target frame."""
+
+
+class DatasetNotReadyException(DomainValidationException):
+    """Raised when training is requested for a non-READY dataset version."""
+
+
+class ModelWeightsMissingException(DomainValidationException):
+    """Raised when model weights file is missing on disk."""

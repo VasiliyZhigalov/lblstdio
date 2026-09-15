@@ -36,3 +36,17 @@ class DatasetVersionStatus(str, Enum):
     PREPARING = "PREPARING"
     READY = "READY"
     FAILED = "FAILED"
+
+
+class TrainingJobStatus(str, Enum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class AutoLabelJobStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"

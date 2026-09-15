@@ -68,7 +68,7 @@ def _pad_fill_kwargs() -> dict:
     return {"value": 0}
 
 
-def _shift_fill_kwargs() -> dict:
+def _affine_fill_kwargs() -> dict:
     if hasattr(A, "Affine") and _supports_param(A.Affine, "fill"):
         return {"fill": 0}
     if _supports_param(A.ShiftScaleRotate, "fill"):
@@ -87,6 +87,30 @@ def _bbox_params() -> A.BboxParams:
     return A.BboxParams(**kwargs)
 
 
+def _coarse_dropout() -> A.BasicTransform:
+    cls = getattr(A, "CoarseDropout", None) or getattr(A, "Cutout", None)
+    if cls is None:
+        return A.GaussNoise(p=1.0)
+    kwargs: dict = {"p": 1.0}
+    if _supports_param(cls, "num_holes_range"):
+        kwargs["num_holes_range"] = (1, 3)
+    elif _supports_param(cls, "max_holes"):
+        kwargs["max_holes"] = 3
+    if _supports_param(cls, "hole_height_range"):
+        kwargs["hole_height_range"] = (0.05, 0.15)
+    elif _supports_param(cls, "max_height"):
+        kwargs["max_height"] = 32
+    if _supports_param(cls, "hole_width_range"):
+        kwargs["hole_width_range"] = (0.05, 0.15)
+    elif _supports_param(cls, "max_width"):
+        kwargs["max_width"] = 32
+    if _supports_param(cls, "fill"):
+        kwargs["fill"] = 0
+    elif _supports_param(cls, "fill_value"):
+        kwargs["fill_value"] = 0
+    return cls(**kwargs)
+
+
 class AlbumentationsAugmentationService(IAugmentationService):
     def _letterbox_ops(self, config: AugmentationConfig) -> list[A.BasicTransform]:
         return [
@@ -102,22 +126,32 @@ class AlbumentationsAugmentationService(IAugmentationService):
     def _letterbox(self, config: AugmentationConfig) -> A.Compose:
         return A.Compose(self._letterbox_ops(config), bbox_params=_bbox_params())
 
-    def _geometric_aug(self, *, force: bool) -> A.BasicTransform:
-        fill_kwargs = _shift_fill_kwargs()
+    def _rotate_op(self, *, force: bool) -> A.BasicTransform:
         probability = 1.0 if force else 0.5
-        if hasattr(A, "Affine") and _supports_param(A.Affine, "translate_percent"):
+        fill_kwargs = _affine_fill_kwargs()
+        if hasattr(A, "Affine"):
             return A.Affine(
-                translate_percent={"x": (-0.1, 0.1), "y": (-0.1, 0.1)},
-                scale=(0.9, 1.1),
-                rotate=(-10, 10),
+                rotate=(-15, 15),
+                border_mode=cv2.BORDER_CONSTANT,
+                p=probability,
+                **fill_kwargs,
+            )
+        return A.Rotate(limit=15, border_mode=cv2.BORDER_CONSTANT, p=probability)
+
+    def _shear_op(self, *, force: bool) -> A.BasicTransform:
+        probability = 1.0 if force else 0.5
+        fill_kwargs = _affine_fill_kwargs()
+        if hasattr(A, "Affine") and _supports_param(A.Affine, "shear"):
+            return A.Affine(
+                shear={"x": (-10, 10), "y": (-10, 10)},
                 border_mode=cv2.BORDER_CONSTANT,
                 p=probability,
                 **fill_kwargs,
             )
         return A.ShiftScaleRotate(
-            shift_limit=0.1,
-            scale_limit=0.1,
-            rotate_limit=10,
+            shift_limit=0.0,
+            scale_limit=0.0,
+            rotate_limit=0,
             border_mode=cv2.BORDER_CONSTANT,
             p=probability,
             **fill_kwargs,
@@ -129,14 +163,27 @@ class AlbumentationsAugmentationService(IAugmentationService):
         ops: list[A.BasicTransform] = []
         if config.horizontal_flip:
             ops.append(A.HorizontalFlip(p=1.0))
+        if config.vertical_flip:
+            ops.append(A.VerticalFlip(p=1.0))
+        if config.effective_rotate:
+            ops.append(self._rotate_op(force=True))
+        if config.effective_shear:
+            ops.append(self._shear_op(force=True))
+        if config.hue_saturation:
+            ops.append(
+                A.HueSaturationValue(
+                    hue_shift_limit=20,
+                    sat_shift_limit=30,
+                    val_shift_limit=20,
+                    p=1.0,
+                )
+            )
         if config.brightness_contrast:
             ops.append(
                 A.RandomBrightnessContrast(
                     brightness_limit=0.2, contrast_limit=0.2, p=1.0
                 )
             )
-        if config.shift_scale_rotate:
-            ops.append(self._geometric_aug(force=True))
         if config.blur:
             ops.append(
                 A.OneOf(
@@ -147,6 +194,19 @@ class AlbumentationsAugmentationService(IAugmentationService):
                     p=1.0,
                 )
             )
+        if config.noise:
+            noise_cls = getattr(A, "GaussNoise", None)
+            if noise_cls is not None:
+                kwargs: dict = {"p": 1.0}
+                if _supports_param(noise_cls, "std_range"):
+                    kwargs["std_range"] = (0.02, 0.08)
+                elif _supports_param(noise_cls, "var_limit"):
+                    kwargs["var_limit"] = (10.0, 50.0)
+                ops.append(noise_cls(**kwargs))
+        if config.grayscale:
+            ops.append(A.ToGray(p=1.0))
+        if config.cutout:
+            ops.append(_coarse_dropout())
         return ops
 
     def _variant_pipeline(
@@ -156,7 +216,6 @@ class AlbumentationsAugmentationService(IAugmentationService):
         transforms: list[A.BasicTransform] = list(self._letterbox_ops(config))
         forced = self._enabled_forced_ops(config)
         if not forced:
-            # Still differentiate variants slightly if user disabled all augs.
             transforms.append(
                 A.RandomBrightnessContrast(
                     brightness_limit=0.05 * variant_index,

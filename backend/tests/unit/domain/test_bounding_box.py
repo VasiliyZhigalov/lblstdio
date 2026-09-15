@@ -28,6 +28,17 @@ class TestBoundingBoxInvariant:
         with pytest.raises(DomainValidationException, match="outside"):
             BoundingBox(x_center=0.95, y_center=0.5, width=0.2, height=0.1)
 
+    def test_allows_six_decimal_edge_rounding_noise(self) -> None:
+        """Frontend round6 of center/size can leave ~1e-6 edge overshoot."""
+        box = BoundingBox(
+            x_center=0.000781,
+            y_center=0.5,
+            width=0.001563,
+            height=0.1,
+        )
+        assert box.x_center == 0.000781
+        assert box.width == 0.001563
+
     @pytest.mark.parametrize(
         ("field", "value"),
         [

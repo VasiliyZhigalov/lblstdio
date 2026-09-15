@@ -3,6 +3,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 
 from app.application.dto import BoxInput
+from app.application.use_cases.annotations.mark_background import (
+    MarkImageAsBackgroundUseCase,
+)
 from app.application.use_cases.annotations.save_annotations import SaveAnnotationsUseCase
 from app.application.use_cases.annotations.verify_annotation import (
     DeleteAnnotationUseCase,
@@ -10,15 +13,16 @@ from app.application.use_cases.annotations.verify_annotation import (
     VerifyAllAnnotationsUseCase,
     VerifyAnnotationUseCase,
 )
-from app.presentation.api.v1.images_router import _annotation_to_read
+from app.presentation.api.v1.images_router import _annotation_to_read, _image_to_read
 from app.presentation.dependencies import (
     get_delete_annotation_use_case,
+    get_mark_background_use_case,
     get_reject_all_pending_use_case,
     get_save_annotations_use_case,
     get_verify_all_annotations_use_case,
     get_verify_annotation_use_case,
 )
-from app.presentation.schemas import AnnotationRead, SaveAnnotationsRequest
+from app.presentation.schemas import AnnotationRead, ImageRead, SaveAnnotationsRequest
 
 router = APIRouter(tags=["annotations"])
 
@@ -77,6 +81,15 @@ async def reject_all_pending_annotations(
 ) -> list[AnnotationRead]:
     remaining = await use_case.execute(image_id)
     return [_annotation_to_read(item) for item in remaining]
+
+
+@router.post("/images/{image_id}/mark-background", response_model=ImageRead)
+async def mark_image_as_background(
+    image_id: UUID,
+    use_case: MarkImageAsBackgroundUseCase = Depends(get_mark_background_use_case),
+) -> ImageRead:
+    image = await use_case.execute(image_id)
+    return _image_to_read(image)
 
 
 @router.delete(

@@ -41,6 +41,7 @@ class SqliteImageRepository(IImageRepository):
         row.source_type = image.source_type.value
         row.split = image.split.value
         row.status = image.status.value
+        row.is_background = 1 if image.is_background else 0
         row.stream_source_id = (
             str(image.stream_source_id) if image.stream_source_id else None
         )

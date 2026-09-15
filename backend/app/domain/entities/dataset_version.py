@@ -16,9 +16,17 @@ class AugmentationConfig:
     resize_width: int = 640
     resize_height: int = 640
     horizontal_flip: bool = True
+    vertical_flip: bool = False
+    rotate: bool = True
+    shear: bool = True
+    hue_saturation: bool = True
     brightness_contrast: bool = True
     blur: bool = False
-    shift_scale_rotate: bool = True
+    noise: bool = False
+    grayscale: bool = False
+    cutout: bool = False
+    # Deprecated: kept for older snapshots; prefer rotate/shear.
+    shift_scale_rotate: bool = False
     multiplier: int = 3
 
     def __post_init__(self) -> None:
@@ -26,6 +34,14 @@ class AugmentationConfig:
             raise DomainValidationException("resize dimensions must be positive")
         if not 1 <= self.multiplier <= 5:
             raise DomainValidationException("multiplier must be in [1, 5]")
+
+    @property
+    def effective_rotate(self) -> bool:
+        return self.rotate or self.shift_scale_rotate
+
+    @property
+    def effective_shear(self) -> bool:
+        return self.shear or self.shift_scale_rotate
 
 
 @dataclass(frozen=True)
@@ -148,3 +164,9 @@ class DatasetVersion:
 
     def mark_failed(self) -> None:
         self.status = DatasetVersionStatus.FAILED
+
+    def rename(self, name: str) -> None:
+        cleaned = name.strip()
+        if not cleaned:
+            raise DomainValidationException("version name must not be empty")
+        self.name = cleaned

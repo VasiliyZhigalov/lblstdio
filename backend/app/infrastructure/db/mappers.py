@@ -91,6 +91,7 @@ def image_to_row(image: Image) -> ImageRow:
         status=image.status.value,
         created_at=image.created_at,
         stream_source_id=str(image.stream_source_id) if image.stream_source_id else None,
+        is_background=1 if image.is_background else 0,
     )
 
 
@@ -107,6 +108,7 @@ def row_to_image(row: ImageRow) -> Image:
         status=ImageStatus(row.status),
         created_at=ensure_utc(row.created_at),
         stream_source_id=UUID(row.stream_source_id) if row.stream_source_id else None,
+        is_background=bool(getattr(row, "is_background", 0)),
     )
 
 
@@ -161,21 +163,44 @@ def augmentation_to_dict(config: AugmentationConfig) -> dict:
         "resize_width": config.resize_width,
         "resize_height": config.resize_height,
         "horizontal_flip": config.horizontal_flip,
+        "vertical_flip": config.vertical_flip,
+        "rotate": config.rotate,
+        "shear": config.shear,
+        "hue_saturation": config.hue_saturation,
         "brightness_contrast": config.brightness_contrast,
         "blur": config.blur,
+        "noise": config.noise,
+        "grayscale": config.grayscale,
+        "cutout": config.cutout,
         "shift_scale_rotate": config.shift_scale_rotate,
         "multiplier": config.multiplier,
     }
 
 
 def dict_to_augmentation(raw: dict) -> AugmentationConfig:
+    legacy_ssr = bool(raw.get("shift_scale_rotate", False))
+    has_new_geo = "rotate" in raw or "shear" in raw
+    if has_new_geo:
+        rotate = bool(raw.get("rotate", True))
+        shear = bool(raw.get("shear", True))
+    else:
+        # Older snapshots stored geometry as shift_scale_rotate.
+        rotate = legacy_ssr if "shift_scale_rotate" in raw else True
+        shear = legacy_ssr if "shift_scale_rotate" in raw else True
     return AugmentationConfig(
         resize_width=int(raw.get("resize_width", 640)),
         resize_height=int(raw.get("resize_height", 640)),
         horizontal_flip=bool(raw.get("horizontal_flip", True)),
+        vertical_flip=bool(raw.get("vertical_flip", False)),
+        rotate=rotate,
+        shear=shear,
+        hue_saturation=bool(raw.get("hue_saturation", True)),
         brightness_contrast=bool(raw.get("brightness_contrast", True)),
         blur=bool(raw.get("blur", False)),
-        shift_scale_rotate=bool(raw.get("shift_scale_rotate", True)),
+        noise=bool(raw.get("noise", False)),
+        grayscale=bool(raw.get("grayscale", False)),
+        cutout=bool(raw.get("cutout", False)),
+        shift_scale_rotate=False,
         multiplier=int(raw.get("multiplier", 3)),
     )
 

@@ -64,3 +64,22 @@ class TestImageStatusDerivation:
 
         assert image.status == ImageStatus.REJECTED
         assert image.can_be_included_in_export() is False
+
+    def test_mark_as_background_makes_empty_frame_dataset_ready(self) -> None:
+        image = _image()
+        image.mark_as_background()
+
+        assert image.is_background is True
+        assert image.status == ImageStatus.VERIFIED
+        assert image.can_be_included_in_dataset() is True
+        image.recalculate_status([])
+        assert image.status == ImageStatus.VERIFIED
+
+    def test_boxes_clear_background_flag(self) -> None:
+        image = _image()
+        image.mark_as_background()
+        image.recalculate_status(
+            [Annotation.create_manual(image.id, uuid4(), _box())]
+        )
+        assert image.is_background is False
+        assert image.status == ImageStatus.VERIFIED

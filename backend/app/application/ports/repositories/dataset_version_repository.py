@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from uuid import UUID
 
 from app.domain.entities.dataset_version import DatasetVersion
@@ -24,4 +23,8 @@ class IDatasetVersionRepository(ABC):
 
     @abstractmethod
     async def next_version_number(self, project_id: UUID) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete(self, version_id: UUID) -> None:
         raise NotImplementedError

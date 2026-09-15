@@ -27,11 +27,14 @@ class BoundingBox:
                     f"{name} must be in [0, 1], got {value}"
                 )
 
+        # Match YOLO 6-decimal export: independent rounding of center/size
+        # can overshoot edges by ~1e-6 without leaving the image.
+        eps = 1e-6
         left = self.x_center - self.width / 2
         right = self.x_center + self.width / 2
         top = self.y_center - self.height / 2
         bottom = self.y_center + self.height / 2
-        if left < -1e-9 or top < -1e-9 or right > 1.0 + 1e-9 or bottom > 1.0 + 1e-9:
+        if left < -eps or top < -eps or right > 1.0 + eps or bottom > 1.0 + eps:
             raise DomainValidationException(
                 "bounding box extends outside the normalized [0, 1] frame"
             )

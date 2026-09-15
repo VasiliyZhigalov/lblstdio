@@ -37,8 +37,8 @@ class Annotation:
         if (
             self.source
             in (SourceType.MODEL_PREDICTION, SourceType.KEYPOINT_PROPAGATION)
-            and self.verification_status == VerificationStatus.PENDING_REVIEW
             and self.verified_at is not None
+            and self.verification_status == VerificationStatus.PENDING_REVIEW
         ):
             raise DomainValidationException(
                 "pending automatic annotations cannot have verified_at set"

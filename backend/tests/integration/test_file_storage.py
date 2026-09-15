@@ -44,14 +44,15 @@ async def test_delete_removes_file_from_disk(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_directory_removes_tree(tmp_path: Path) -> None:
+async def test_list_files_returns_relative_entries(tmp_path: Path) -> None:
     storage = LocalFileStorage(tmp_path)
-    await storage.save("projects/p1/images", "a.png", b"a")
-    await storage.save("projects/p1/images", "b.png", b"b")
+    await storage.save("projects/p1/datasets/v1", "data.yaml", b"names: []\n")
+    await storage.save("projects/p1/datasets/v1/train/images", "a.jpg", b"img")
 
-    await storage.delete_directory("projects/p1")
+    files = await storage.list_files("projects/p1/datasets/v1")
 
-    assert (tmp_path / "projects" / "p1").exists() is False
+    assert files["data.yaml"] == b"names: []\n"
+    assert files["train/images/a.jpg"] == b"img"
 
 
 def test_pillow_reader_extracts_original_dimensions() -> None:

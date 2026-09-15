@@ -23,6 +23,7 @@ class Image:
     status: ImageStatus
     created_at: datetime
     stream_source_id: UUID | None = None
+    is_background: bool = False
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
@@ -55,6 +56,7 @@ class Image:
             status=ImageStatus.UNANNOTATED,
             created_at=datetime.now(UTC),
             stream_source_id=stream_source_id,
+            is_background=False,
         )
 
     def recalculate_status(self, annotations: Sequence[Annotation]) -> None:
@@ -69,14 +71,31 @@ class Image:
             item.verification_status == VerificationStatus.PENDING_REVIEW
             for item in active
         ):
+            self.is_background = False
             self.status = ImageStatus.REQUIRES_REVIEW
         elif not active:
-            self.status = ImageStatus.UNANNOTATED
+            self.status = (
+                ImageStatus.VERIFIED if self.is_background else ImageStatus.UNANNOTATED
+            )
         else:
+            self.is_background = False
             self.status = ImageStatus.VERIFIED
+
+    def mark_as_background(self) -> None:
+        """Confirm empty frame as a negative / background sample for the dataset."""
+        if self.status == ImageStatus.REJECTED:
+            raise DomainValidationException("rejected image cannot be marked as background")
+        self.is_background = True
+        self.status = ImageStatus.VERIFIED
+
+    def clear_background(self) -> None:
+        self.is_background = False
+        if self.status == ImageStatus.VERIFIED:
+            self.status = ImageStatus.UNANNOTATED
 
     def reject(self) -> None:
         self.status = ImageStatus.REJECTED
+        self.is_background = False
 
     def can_be_included_in_export(self) -> bool:
         return self.status in (ImageStatus.UNANNOTATED, ImageStatus.VERIFIED)

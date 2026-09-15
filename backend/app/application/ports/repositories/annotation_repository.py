@@ -19,3 +19,7 @@ class IAnnotationRepository(ABC):
     @abstractmethod
     async def list_by_image_ids(self, image_ids: Sequence[UUID]) -> list[Annotation]:
         raise NotImplementedError
+
+    @abstractmethod
+    async def clear_model_version_refs(self, model_version_id: UUID) -> None:
+        raise NotImplementedError

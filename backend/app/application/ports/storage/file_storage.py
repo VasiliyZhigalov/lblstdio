@@ -22,3 +22,8 @@ class IFileStorage(ABC):
     @abstractmethod
     async def delete_directory(self, relative_dir: str) -> None:
         raise NotImplementedError
+
+    @abstractmethod
+    async def list_files(self, relative_dir: str) -> dict[str, bytes]:
+        """Return relative-path → bytes for all files under a directory."""
+        raise NotImplementedError

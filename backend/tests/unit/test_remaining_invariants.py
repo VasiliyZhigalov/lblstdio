@@ -154,7 +154,7 @@ async def test_delete_missing_class() -> None:
 
 @pytest.mark.asyncio
 async def test_upload_requires_files() -> None:
-    use_case, _, _, uow, project = _use_case()
+    use_case, _, _, uow, project, *_ = _use_case()
     with pytest.raises(DomainValidationException, match="file"):
         await use_case.execute(project.id, [])
     assert uow.committed is False

@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
@@ -38,3 +38,11 @@ class SqliteAnnotationRepository(IAnnotationRepository):
             )
         )
         return [row_to_annotation(row) for row in result]
+
+    async def clear_model_version_refs(self, model_version_id: UUID) -> None:
+        await self._session.execute(
+            update(AnnotationRow)
+            .where(AnnotationRow.model_version_id == str(model_version_id))
+            .values(model_version_id=None)
+        )
+        await self._session.flush()

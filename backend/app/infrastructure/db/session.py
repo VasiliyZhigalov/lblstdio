@@ -11,6 +11,25 @@ from sqlalchemy.pool import StaticPool
 
 from app.infrastructure.db.tables import Base
 
+_DATASET_VERSION_COLUMNS = (
+    ("train_file_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("valid_file_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("test_file_count", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+_TRAINING_JOB_COLUMNS = (
+    ("patience", "INTEGER NOT NULL DEFAULT 20"),
+    ("stopped_early", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+_IMAGE_COLUMNS = (
+    ("is_background", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+_MODEL_VERSION_COLUMNS = (
+    ("name", "TEXT NOT NULL DEFAULT ''"),
+)
+
 
 def create_engine(database_url: str) -> AsyncEngine:
     kwargs: dict = {"echo": False}
@@ -33,9 +52,29 @@ def create_engine(database_url: str) -> AsyncEngine:
     return engine
 
 
+def _ensure_sqlite_columns(connection) -> None:
+    _ensure_table_columns(connection, "dataset_versions", _DATASET_VERSION_COLUMNS)
+    _ensure_table_columns(connection, "training_jobs", _TRAINING_JOB_COLUMNS)
+    _ensure_table_columns(connection, "images", _IMAGE_COLUMNS)
+    _ensure_table_columns(connection, "model_versions", _MODEL_VERSION_COLUMNS)
+
+
+def _ensure_table_columns(connection, table: str, columns: tuple[tuple[str, str], ...]) -> None:
+    existing = {
+        row[1]
+        for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")
+    }
+    if not existing:
+        return
+    for name, ddl in columns:
+        if name not in existing:
+            connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
 async def init_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        await connection.run_sync(_ensure_sqlite_columns)
 
 
 async def create_session_factory(

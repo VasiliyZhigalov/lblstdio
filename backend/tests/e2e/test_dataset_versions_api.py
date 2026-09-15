@@ -97,9 +97,12 @@ class TestDatasetVersionsApi:
         payload = response.json()
         assert payload["status"] == "READY"
         assert payload["name"] == "v1-core"
-        assert payload["train_count"] == 3
+        assert payload["train_count"] == 1
         assert payload["valid_count"] == 1
         assert payload["test_count"] == 1
+        assert payload["train_file_count"] == 3
+        assert payload["valid_file_count"] == 1
+        assert payload["test_file_count"] == 1
         assert payload["yaml_path"].endswith("data.yaml")
 
         listed = client.get(f"/api/v1/projects/{project_id}/dataset-versions")
@@ -179,3 +182,62 @@ class TestDatasetVersionsApi:
         response = client.post(f"/api/v1/projects/{project_id}/dataset-versions")
         assert response.status_code == 400, response.text
         assert "unverified" in response.json()["detail"].lower()
+
+
+def test_dataset_version_rename_export_delete(client: TestClient) -> None:
+    project = client.post("/api/v1/projects", json={"name": "Lifecycle"}).json()
+    project_id = project["id"]
+    class_id = client.post(
+        f"/api/v1/projects/{project_id}/classes",
+        json={"name": "obj", "color_hex": "#112233"},
+    ).json()["id"]
+    upload = client.post(
+        f"/api/v1/projects/{project_id}/images/upload",
+        files=[
+            ("files", ("a.png", _png(), "image/png")),
+            ("files", ("b.png", _png((10, 20, 30)), "image/png")),
+            ("files", ("c.png", _png((40, 50, 60)), "image/png")),
+        ],
+    )
+    assert upload.status_code == 201, upload.text
+    for image in upload.json():
+        saved = client.put(
+            f"/api/v1/images/{image['id']}/annotations",
+            json={
+                "boxes": [
+                    {
+                        "class_id": class_id,
+                        "x_center": 0.5,
+                        "y_center": 0.5,
+                        "width": 0.2,
+                        "height": 0.2,
+                    }
+                ]
+            },
+        )
+        assert saved.status_code == 200, saved.text
+
+    created = client.post(
+        f"/api/v1/projects/{project_id}/dataset-versions",
+        json={"name": "v1"},
+    )
+    assert created.status_code == 201, created.text
+    version_id = created.json()["id"]
+
+    renamed = client.patch(
+        f"/api/v1/dataset-versions/{version_id}",
+        json={"name": "export-me"},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "export-me"
+
+    exported = client.get(f"/api/v1/dataset-versions/{version_id}/export")
+    assert exported.status_code == 200, exported.text
+    assert exported.headers["content-type"].startswith("application/zip")
+    assert exported.content[:2] == b"PK"
+
+    deleted = client.delete(f"/api/v1/dataset-versions/{version_id}")
+    assert deleted.status_code == 204, deleted.text
+    listed = client.get(f"/api/v1/projects/{project_id}/dataset-versions")
+    assert listed.status_code == 200
+    assert listed.json() == []

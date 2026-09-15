@@ -4,6 +4,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.domain.exceptions import (
     DomainValidationException,
+    InsufficientVerifiedDataException,
     ResourceNotFoundException,
     UnverifiedDataException,
 )
@@ -25,6 +26,12 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(UnverifiedDataException)
     async def unverified_handler(
         _request: Request, exc: UnverifiedDataException
+    ) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.exception_handler(InsufficientVerifiedDataException)
+    async def insufficient_verified_handler(
+        _request: Request, exc: InsufficientVerifiedDataException
     ) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 

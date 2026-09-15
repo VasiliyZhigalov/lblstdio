@@ -54,3 +54,19 @@ class LocalFileStorage(IFileStorage):
         path = self._resolve(relative_dir)
         if path.exists() and path.is_dir():
             await asyncio.to_thread(shutil.rmtree, path)
+
+    async def list_files(self, relative_dir: str) -> dict[str, bytes]:
+        root = self._resolve(relative_dir)
+        if not root.exists() or not root.is_dir():
+            return {}
+
+        def _walk() -> dict[str, bytes]:
+            entries: dict[str, bytes] = {}
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                rel = path.relative_to(root).as_posix()
+                entries[rel] = path.read_bytes()
+            return entries
+
+        return await asyncio.to_thread(_walk)

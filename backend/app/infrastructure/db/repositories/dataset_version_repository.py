@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -8,7 +9,9 @@ from app.application.ports.repositories.dataset_version_repository import (
     IDatasetVersionRepository,
 )
 from app.domain.entities.dataset_version import DatasetVersion
+from app.domain.exceptions import DatasetVersionConflictException
 from app.infrastructure.db.mappers import (
+    augmentation_to_dict,
     dataset_item_to_row,
     dataset_version_to_row,
     row_to_dataset_version,
@@ -24,7 +27,12 @@ class SqliteDatasetVersionRepository(IDatasetVersionRepository):
         self._session.add(dataset_version_to_row(version))
         for item in version.items:
             self._session.add(dataset_item_to_row(item))
-        await self._session.flush()
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            raise DatasetVersionConflictException(
+                f"dataset version v{version.version_number} already exists"
+            ) from exc
 
     async def update(self, version: DatasetVersion) -> None:
         row = await self._session.get(
@@ -43,15 +51,7 @@ class SqliteDatasetVersionRepository(IDatasetVersionRepository):
         row.valid_file_count = version.valid_file_count
         row.test_file_count = version.test_file_count
         row.yaml_path = version.yaml_path
-        row.augmentation_json = {
-            "resize_width": version.augmentation.resize_width,
-            "resize_height": version.augmentation.resize_height,
-            "horizontal_flip": version.augmentation.horizontal_flip,
-            "brightness_contrast": version.augmentation.brightness_contrast,
-            "blur": version.augmentation.blur,
-            "shift_scale_rotate": version.augmentation.shift_scale_rotate,
-            "multiplier": version.augmentation.multiplier,
-        }
+        row.augmentation_json = augmentation_to_dict(version.augmentation)
         for existing in list(row.items):
             await self._session.delete(existing)
         await self._session.flush()
@@ -83,3 +83,14 @@ class SqliteDatasetVersionRepository(IDatasetVersionRepository):
             )
         )
         return int(current or 0) + 1
+
+    async def delete(self, version_id: UUID) -> None:
+        row = await self._session.get(
+            DatasetVersionRow,
+            str(version_id),
+            options=(selectinload(DatasetVersionRow.items),),
+        )
+        if row is None:
+            return
+        await self._session.delete(row)
+        await self._session.flush()

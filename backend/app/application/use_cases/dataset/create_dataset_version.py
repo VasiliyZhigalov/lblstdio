@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from random import Random
 from uuid import UUID, uuid4
 
 import yaml
-from sqlalchemy.exc import IntegrityError
 
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
 from app.application.ports.repositories.class_repository import IClassRepository
@@ -25,10 +25,13 @@ from app.domain.entities.dataset_version import (
 )
 from app.domain.enums import ImageStatus, SplitType, VerificationStatus
 from app.domain.exceptions import (
+    DatasetVersionConflictException,
     InsufficientVerifiedDataException,
     ResourceNotFoundException,
     UnverifiedDataException,
 )
+from app.domain.services.split import assign_splits
+from app.domain.value_objects.split_ratios import SplitRatios
 
 _MAX_VERSION_ALLOC_ATTEMPTS = 5
 
@@ -62,12 +65,16 @@ class CreateDatasetVersionUseCase:
         project_id: UUID,
         augmentation: AugmentationConfig | None = None,
         name: str | None = None,
+        ratios: SplitRatios | None = None,
+        *,
+        rng: Random | None = None,
     ) -> DatasetVersion:
         project = await self._projects.get_by_id(project_id)
         if project is None:
             raise ResourceNotFoundException(f"project {project_id} not found")
 
         config = augmentation or AugmentationConfig()
+        split_ratios = ratios or SplitRatios()
         all_images = await self._images.list_by_project(project_id)
         annotations = await self._annotations.list_by_image_ids(
             [item.id for item in all_images]
@@ -100,6 +107,10 @@ class CreateDatasetVersionUseCase:
                 f"got {len(verified_images)}"
             )
 
+        ordered = list(verified_images)
+        (rng or Random()).shuffle(ordered)
+        assigned_splits = assign_splits(len(ordered), split_ratios)
+
         classes = sorted(
             await self._classes.list_by_project(project_id),
             key=lambda item: item.index_id,
@@ -126,7 +137,7 @@ class CreateDatasetVersionUseCase:
                 valid_files = 0
                 test_files = 0
 
-                for image in verified_images:
+                for image, split_type in zip(ordered, assigned_splits, strict=True):
                     verified_boxes = [
                         box
                         for box in by_image.get(image.id, [])
@@ -149,7 +160,7 @@ class CreateDatasetVersionUseCase:
                             id=uuid4(),
                             dataset_version_id=version.id,
                             image_id=image.id,
-                            split=image.split,
+                            split=split_type,
                             snapshot_annotations=snapshot,
                             source_file_name=image.file_name,
                         )
@@ -166,7 +177,7 @@ class CreateDatasetVersionUseCase:
                         for item in snapshot
                     ]
                     raw = await self._storage.read(image.file_path)
-                    apply_aug = image.split == SplitType.TRAIN
+                    apply_aug = split_type == SplitType.TRAIN
                     samples = self._augmentation.generate_samples(
                         raw,
                         labeled,
@@ -174,7 +185,7 @@ class CreateDatasetVersionUseCase:
                         apply_augmentation=apply_aug,
                     )
 
-                    split = image.split.value
+                    split = split_type.value
                     for sample in samples:
                         stem = f"{image.id}{sample.suffix}"
                         await self._storage.save(
@@ -194,10 +205,10 @@ class CreateDatasetVersionUseCase:
                         )
 
                     count = len(samples)
-                    if image.split == SplitType.TRAIN:
+                    if split_type == SplitType.TRAIN:
                         train_frames += 1
                         train_files += count
-                    elif image.split == SplitType.VALID:
+                    elif split_type == SplitType.VALID:
                         valid_frames += 1
                         valid_files += count
                     else:
@@ -234,7 +245,7 @@ class CreateDatasetVersionUseCase:
                 try:
                     await self._versions.add(version)
                     await self._uow.commit()
-                except IntegrityError as exc:
+                except DatasetVersionConflictException as exc:
                     last_error = exc
                     await self._storage.delete_directory(relative_root)
                     if hasattr(self._uow, "rollback"):

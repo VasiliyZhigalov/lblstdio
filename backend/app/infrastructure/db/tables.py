@@ -79,6 +79,7 @@ class ImageRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     stream_source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    is_background: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     project: Mapped[ProjectRow] = relationship(back_populates="images")
     annotations: Mapped[list["AnnotationRow"]] = relationship(
@@ -173,3 +174,67 @@ class DatasetItemRow(Base):
     source_file_name: Mapped[str] = mapped_column(String(255), nullable=False)
 
     dataset_version: Mapped[DatasetVersionRow] = relationship(back_populates="items")
+
+
+class TrainingJobRow(Base):
+    __tablename__ = "training_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    dataset_version_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    epochs: Mapped[int] = mapped_column(Integer, nullable=False)
+    batch_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    imgsz: Mapped[int] = mapped_column(Integer, nullable=False, default=640)
+    device: Mapped[str] = mapped_column(String(32), nullable=False, default="auto")
+    base_weights: Mapped[str] = mapped_column(String(255), nullable=False, default="yolov8n.pt")
+    patience: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    metrics_history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    current_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stopped_early: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    model_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ModelVersionRow(Base):
+    __tablename__ = "model_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "version_number", name="uq_model_version_project_number"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    dataset_version_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    training_job_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    weights_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    map50: Mapped[float | None] = mapped_column(Float, nullable=True)
+    map50_95: Mapped[float | None] = mapped_column(Float, nullable=True)
+    precision: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_active_for_stream: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AutoLabelJobRow(Base):
+    __tablename__ = "auto_label_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    model_version_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    image_ids_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    total_images_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_predictions_generated: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
