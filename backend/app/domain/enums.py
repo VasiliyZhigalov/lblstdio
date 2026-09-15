@@ -50,3 +50,15 @@ class AutoLabelJobStatus(str, Enum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+class StreamSourceType(str, Enum):
+    RTSP = "RTSP"
+    VIDEO_FILE = "VIDEO_FILE"
+    DEVICE = "DEVICE"
+
+
+class TripwireDirection(str, Enum):
+    ANY = "ANY"
+    FORWARD = "FORWARD"
+    BACKWARD = "BACKWARD"
