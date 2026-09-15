@@ -1,6 +1,6 @@
 import { store } from "../store.js";
 import { api } from "../api.js";
-import { escapeHtml, refreshIcons, splitBadgeClass } from "../utils/dom.js";
+import { escapeHtml, splitBadgeClass } from "../utils/dom.js";
 
 const FILTERS = [
   { id: "all", label: "Все" },
@@ -8,14 +8,29 @@ const FILTERS = [
   { id: "unannotated", label: "Неразмеченные" },
 ];
 
+const GAP_PX = 8;
+const DEFAULT_ITEM_HEIGHT = 208;
+const OVERSCAN = 6;
+
+const virtual = {
+  images: [],
+  itemHeight: DEFAULT_ITEM_HEIGHT,
+  scrollBound: false,
+  measured: false,
+  raf: 0,
+};
+
 function statusMeta(image) {
   if (image.status === "REQUIRES_REVIEW") {
-    return { label: "Review", className: "text-amber-400", icon: "zap" };
+    return { label: "Review", className: "text-amber-400" };
   }
   if (image.status === "VERIFIED") {
-    return { label: "Verified", className: "text-emerald-400", icon: "check-circle-2" };
+    if (image.is_background) {
+      return { label: "Background", className: "text-sky-400" };
+    }
+    return { label: "Verified", className: "text-emerald-400" };
   }
-  return { label: "Empty", className: "text-zinc-500", icon: "circle" };
+  return { label: "Empty", className: "text-zinc-500" };
 }
 
 function filteredImages() {
@@ -43,9 +58,11 @@ export function getFilmstripImages() {
 function boxCountLabel(image) {
   const counts = store.get("boxCounts") || {};
   const known = Object.hasOwn(counts, image.id);
+  if (image.is_background && image.status === "VERIFIED") {
+    return "бэкграунд";
+  }
   if (!known) {
     if (image.status === "UNANNOTATED") return "0 боксов";
-    // List API has no box count; avoid implying a known number.
     return "размечен";
   }
   const n = counts[image.id];
@@ -69,55 +86,191 @@ function renderFilters() {
   }).join("");
 }
 
-function renderList() {
+function cardHtml(image, currentId) {
+  const active = image.id === currentId;
+  const status = statusMeta(image);
+  return `
+    <button type="button" data-image-id="${image.id}" data-film-card
+      class="w-full text-left rounded-lg overflow-hidden border transition ${
+        active
+          ? "border-indigo-500 ring-2 ring-indigo-500/40 bg-zinc-900"
+          : "border-zinc-800 bg-zinc-950/60 hover:border-zinc-600"
+      }">
+      <div class="aspect-video bg-zinc-950 overflow-hidden">
+        <img src="${api.imageFileUrl(image.id)}" alt="${escapeHtml(image.file_name)}"
+          class="w-full h-full object-cover" loading="lazy" decoding="async" />
+      </div>
+      <div class="p-2 space-y-1">
+        <div class="text-[11px] font-mono truncate ${active ? "text-white" : "text-zinc-300"}">${escapeHtml(image.file_name)}</div>
+        <div class="text-[10px] text-zinc-500">${image.width}×${image.height}</div>
+        <div class="flex items-center justify-between gap-1">
+          <span class="px-1.5 py-0.5 text-[9px] uppercase rounded border ${splitBadgeClass(image.split)}">${image.split}</span>
+          <span class="text-[10px] ${status.className}" data-status-label>${status.label}</span>
+        </div>
+        <div class="text-[10px] text-zinc-500" data-box-count>${boxCountLabel(image)}</div>
+      </div>
+    </button>`;
+}
+
+function stride() {
+  return virtual.itemHeight + GAP_PX;
+}
+
+function ensureScrollBinding(list) {
+  if (virtual.scrollBound) return;
+  virtual.scrollBound = true;
+  list.addEventListener(
+    "scroll",
+    () => {
+      if (virtual.raf) return;
+      virtual.raf = requestAnimationFrame(() => {
+        virtual.raf = 0;
+        paintVisible({ preserveScroll: true });
+      });
+    },
+    { passive: true }
+  );
+}
+
+function measureItemHeight(list) {
+  if (virtual.measured) return;
+  const card = list.querySelector("[data-film-card]");
+  if (!card) return;
+  const height = card.getBoundingClientRect().height;
+  if (height > 40) {
+    virtual.itemHeight = height;
+    virtual.measured = true;
+  }
+}
+
+function paintVisible({ scrollToCurrent = false } = {}) {
   const list = document.getElementById("filmstrip-list");
   const empty = document.getElementById("filmstrip-empty");
-  const images = filteredImages();
+  if (!list || !empty) return;
+
+  const images = virtual.images;
   const currentId = store.get("currentImage")?.id;
+
   if (!images.length) {
     list.innerHTML = "";
     empty.classList.remove("hidden");
     return;
   }
   empty.classList.add("hidden");
-  list.innerHTML = images
-    .map((image) => {
-      const active = image.id === currentId;
-      const status = statusMeta(image);
-      return `
-        <button type="button" data-image-id="${image.id}"
-          class="w-full text-left rounded-lg overflow-hidden border transition ${
-            active
-              ? "border-indigo-500 ring-2 ring-indigo-500/40 bg-zinc-900"
-              : "border-zinc-800 bg-zinc-950/60 hover:border-zinc-600"
-          }">
-          <div class="aspect-video bg-zinc-950 overflow-hidden">
-            <img src="${api.imageFileUrl(image.id)}" alt="${escapeHtml(image.file_name)}"
-              class="w-full h-full object-cover" loading="lazy" />
-          </div>
-          <div class="p-2 space-y-1">
-            <div class="text-[11px] font-mono truncate ${active ? "text-white" : "text-zinc-300"}">${escapeHtml(image.file_name)}</div>
-            <div class="text-[10px] text-zinc-500">${image.width}×${image.height}</div>
-            <div class="flex items-center justify-between gap-1">
-              <span class="px-1.5 py-0.5 text-[9px] uppercase rounded border ${splitBadgeClass(image.split)}">${image.split}</span>
-              <span class="flex items-center gap-1 text-[10px] ${status.className}">
-                <i data-lucide="${status.icon}" class="w-3 h-3"></i>${status.label}
-              </span>
-            </div>
-            <div class="text-[10px] text-zinc-500">${boxCountLabel(image)}</div>
-          </div>
-        </button>`;
-    })
-    .join("");
-  refreshIcons(list);
-  if (currentId) {
-    list.querySelector(`[data-image-id="${currentId}"]`)?.scrollIntoView({ block: "nearest" });
+  ensureScrollBinding(list);
+
+  const step = stride();
+  const totalHeight = images.length * step - GAP_PX;
+
+  if (scrollToCurrent && currentId) {
+    const idx = images.findIndex((image) => image.id === currentId);
+    if (idx >= 0) {
+      const targetTop = idx * step;
+      const viewH = list.clientHeight || 1;
+      if (targetTop < list.scrollTop || targetTop + virtual.itemHeight > list.scrollTop + viewH) {
+        list.scrollTop = Math.max(0, targetTop - (viewH - virtual.itemHeight) / 2);
+      }
+    }
   }
+
+  const scrollTop = list.scrollTop;
+  const viewH = list.clientHeight || 600;
+  const start = Math.max(0, Math.floor(scrollTop / step) - OVERSCAN);
+  const end = Math.min(images.length, Math.ceil((scrollTop + viewH) / step) + OVERSCAN);
+  const slice = images.slice(start, end);
+
+  list.innerHTML = `
+    <div data-film-spacer style="position:relative;height:${Math.max(0, totalHeight)}px">
+      ${slice
+        .map((image, offset) => {
+          const index = start + offset;
+          return `<div data-film-slot style="position:absolute;left:0;right:0;top:${index * step}px">${cardHtml(
+            image,
+            currentId
+          )}</div>`;
+        })
+        .join("")}
+    </div>`;
+
+  const heightBefore = virtual.itemHeight;
+  measureItemHeight(list);
+  if (virtual.itemHeight !== heightBefore) {
+    // Height learned from first paint — rebuild once with accurate stride.
+    paintVisible({ scrollToCurrent });
+  }
+}
+
+function syncVisibleMeta() {
+  const list = document.getElementById("filmstrip-list");
+  if (!list) return;
+  const currentId = store.get("currentImage")?.id;
+  const activeClass =
+    "w-full text-left rounded-lg overflow-hidden border transition border-indigo-500 ring-2 ring-indigo-500/40 bg-zinc-900";
+  const idleClass =
+    "w-full text-left rounded-lg overflow-hidden border transition border-zinc-800 bg-zinc-950/60 hover:border-zinc-600";
+
+  list.querySelectorAll("[data-film-card]").forEach((card) => {
+    const id = card.dataset.imageId;
+    const active = id === currentId;
+    card.className = active ? activeClass : idleClass;
+    const name = card.querySelector(".font-mono");
+    if (name) name.className = `text-[11px] font-mono truncate ${active ? "text-white" : "text-zinc-300"}`;
+    const image = virtual.images.find((item) => item.id === id);
+    if (!image) return;
+    const countEl = card.querySelector("[data-box-count]");
+    if (countEl) countEl.textContent = boxCountLabel(image);
+    const statusEl = card.querySelector("[data-status-label]");
+    if (statusEl) {
+      const status = statusMeta(image);
+      statusEl.className = `text-[10px] ${status.className}`;
+      statusEl.textContent = status.label;
+    }
+  });
+}
+
+function sameImageOrder(prev, next) {
+  return (
+    prev.length === next.length && prev.every((image, index) => image.id === next[index]?.id)
+  );
+}
+
+function onImagesChange() {
+  const next = filteredImages();
+  if (sameImageOrder(virtual.images, next)) {
+    virtual.images = next;
+    syncVisibleMeta();
+    return;
+  }
+  rebuildList({ scrollToCurrent: true });
+}
+
+function rebuildList({ scrollToCurrent = false } = {}) {
+  virtual.images = filteredImages();
+  virtual.measured = false;
+  virtual.itemHeight = DEFAULT_ITEM_HEIGHT;
+  paintVisible({ scrollToCurrent });
+}
+
+function onCurrentImageChange() {
+  const currentId = store.get("currentImage")?.id;
+  if (!currentId) {
+    syncVisibleMeta();
+    return;
+  }
+  const visible = document
+    .getElementById("filmstrip-list")
+    ?.querySelector(`[data-image-id="${currentId}"]`);
+  if (visible) {
+    syncVisibleMeta();
+    visible.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  paintVisible({ scrollToCurrent: true });
 }
 
 export function initFilmstrip({ onOpenImage }) {
   renderFilters();
-  renderList();
+  rebuildList();
 
   document.getElementById("filmstrip-filters").addEventListener("click", (event) => {
     const btn = event.target.closest("[data-film-filter]");
@@ -131,12 +284,19 @@ export function initFilmstrip({ onOpenImage }) {
     if (card) onOpenImage(card.dataset.imageId);
   });
 
-  store.addEventListener("change:images", renderList);
-  store.addEventListener("change:currentImage", renderList);
-  store.addEventListener("change:boxCounts", renderList);
-  store.addEventListener("change:filmstripQuery", renderList);
+  store.addEventListener("change:images", onImagesChange);
+  store.addEventListener("change:currentImage", onCurrentImageChange);
+  store.addEventListener("change:boxCounts", syncVisibleMeta);
+  store.addEventListener("change:filmstripQuery", () => rebuildList());
   store.addEventListener("change:filmstripFilter", () => {
     renderFilters();
-    renderList();
+    rebuildList();
+  });
+  store.addEventListener("change:projectTab", () => {
+    if (store.get("projectTab") !== "annotate") return;
+    requestAnimationFrame(() => {
+      virtual.measured = false;
+      paintVisible({ scrollToCurrent: true });
+    });
   });
 }

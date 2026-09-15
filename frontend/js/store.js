@@ -64,7 +64,8 @@ export class Store extends EventTarget {
 }
 
 export const store = new Store({
-  view: "projects", // 'projects' | 'studio'
+  view: "projects", // 'projects' | 'studio' (project shell)
+  projectTab: "data", // 'data' | 'annotate' | 'models'
   currentProject: null,
   projects: [],
   projectQuery: "",
@@ -72,18 +73,25 @@ export const store = new Store({
   currentImage: null,
   annotations: [],
   boxCounts: {},
+  classCounts: {}, // { [classId]: number } for Data Hub bars
   selectedBoxId: null,
   hoveredBoxId: null,
   activeClassId: null,
   classes: [],
-  mode: "SELECT", // 'SELECT' | 'DRAW'
+  mode: "DRAW", // 'SELECT' | 'DRAW'
   filmstripFilter: "all", // 'all' | 'review' | 'unannotated'
   filmstripQuery: "",
+  galleryQuery: "",
+  gallerySplit: "all", // 'all' | 'train' | 'valid' | 'test'
   hasUnsavedChanges: false,
   saveStatus: "idle", // 'idle' | 'saving' | 'saved' | 'error'
   spaceHeld: false,
-  clipboardBox: null, // { sourceImageId, boxes: [{ id, class_id, ... }] } | null
+  clipboardBox: null,
   matchingInProgress: false,
-  // Debug overlay after keypoint paste: transform + arrows in image pixels
-  matchDebug: null, // { transform, arrows } | null
+  matchDebug: null,
+  boxOpacity: 0.2,
+  hideAnnotations: false,
+  leftSidebarCollapsed: false,
+  rightSidebarCollapsed: false,
+  quickClassOpen: false,
 });

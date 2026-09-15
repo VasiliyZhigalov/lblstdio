@@ -105,3 +105,8 @@ kbd {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+.gallery-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 220px;
+}

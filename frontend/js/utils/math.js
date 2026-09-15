@@ -58,6 +58,9 @@ export function yoloToXywh(box, imgW, imgH) {
 /**
  * Convert an axis-aligned rect in original image pixels to a YOLO box
  * clipped to the frame [0, 1]. Returns null if the clipped size is empty.
+ *
+ * Edges are rounded first; center is derived from the rounded size so the
+ * box cannot drift outside [0, 1] due to independent round6 of center/size.
  */
 export function xywhToYolo(x, y, w, h, imgW, imgH) {
   if (!imgW || !imgH) return null;
@@ -68,14 +71,25 @@ export function xywhToYolo(x, y, w, h, imgW, imgH) {
   const bw = x2 - x1;
   const bh = y2 - y1;
   if (bw < MIN_BOX_IMAGE_PX || bh < MIN_BOX_IMAGE_PX) return null;
-  const yolo = {
-    x_center: clamp01((x1 + bw / 2) / imgW),
-    y_center: clamp01((y1 + bh / 2) / imgH),
-    width: clamp01(bw / imgW),
-    height: clamp01(bh / imgH),
-  };
-  if (yolo.width <= 0 || yolo.height <= 0) return null;
-  return yolo;
+
+  let left = clamp(round6(x1 / imgW), 0, 1);
+  let right = clamp(round6(x2 / imgW), 0, 1);
+  let top = clamp(round6(y1 / imgH), 0, 1);
+  let bottom = clamp(round6(y2 / imgH), 0, 1);
+  if (right <= left || bottom <= top) return null;
+
+  const width = round6(right - left);
+  const height = round6(bottom - top);
+  if (width <= 0 || height <= 0) return null;
+
+  let x_center = round6(left + width / 2);
+  let y_center = round6(top + height / 2);
+  if (x_center - width / 2 < 0) x_center = round6(width / 2);
+  if (y_center - height / 2 < 0) y_center = round6(height / 2);
+  if (x_center + width / 2 > 1) x_center = round6(1 - width / 2);
+  if (y_center + height / 2 > 1) y_center = round6(1 - height / 2);
+
+  return { x_center, y_center, width, height };
 }
 
 export function fitTransform(imgW, imgH, viewW, viewH, padding = 32) {
@@ -183,6 +197,11 @@ export function hexWithAlpha(hex, alphaByte) {
     ? raw.split("").map((ch) => ch + ch).join("")
     : raw.slice(0, 6);
   return `#${normalized}${alphaByte}`;
+}
+
+export function hexAlphaFromFloat(opacity) {
+  const byte = Math.max(0, Math.min(255, Math.round(Number(opacity) * 255)));
+  return byte.toString(16).padStart(2, "0");
 }
 
 export function nextClassColor(index) {

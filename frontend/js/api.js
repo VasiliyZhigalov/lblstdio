@@ -124,19 +124,24 @@ export const api = {
       method: "POST",
     }),
 
+  markBackground: (imageId) =>
+    request(`/images/${imageId}/mark-background`, {
+      method: "POST",
+    }),
+
   deleteAnnotation: (imageId, annotationId) =>
     request(`/images/${imageId}/annotations/${annotationId}`, {
       method: "DELETE",
     }),
 
-  uploadImages(projectId, files, splits, onProgress) {
+  uploadImages(projectId, files, onProgress) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const form = new FormData();
-      for (const file of files) form.append("files", file);
-      form.append("train", String(splits.train));
-      form.append("valid", String(splits.valid));
-      form.append("test", String(splits.test));
+      for (const file of files) {
+        const relative = file.webkitRelativePath || file.name;
+        form.append("files", file, relative);
+      }
       xhr.open("POST", `${API_BASE}/projects/${projectId}/images/upload`);
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && onProgress) {
@@ -180,6 +185,24 @@ export const api = {
     return response.blob();
   },
 
+  async _downloadBlob(path) {
+    const response = await fetch(`${API_BASE}${path}`);
+    if (!response.ok) {
+      let detail = `${response.status} ${response.statusText}`;
+      try {
+        const payload = await response.json();
+        detail = payload.detail || detail;
+      } catch {
+        /* keep status */
+      }
+      throw new Error(detail);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = /filename="([^"]+)"/.exec(disposition);
+    return { blob, filename: match?.[1] || "download.zip" };
+  },
+
   listDatasetVersions: (projectId) =>
     request(`/projects/${projectId}/dataset-versions`),
 
@@ -190,4 +213,48 @@ export const api = {
     }),
 
   getDatasetVersion: (versionId) => request(`/dataset-versions/${versionId}`),
+
+  renameDatasetVersion: (versionId, name) =>
+    request(`/dataset-versions/${versionId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  exportDatasetVersion: (versionId) =>
+    api._downloadBlob(`/dataset-versions/${versionId}/export`),
+
+  deleteDatasetVersion: (versionId) =>
+    request(`/dataset-versions/${versionId}`, { method: "DELETE" }),
+
+  startTraining: (projectId, body) =>
+    request(`/projects/${projectId}/train`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  getTrainingJob: (jobId) => request(`/training-jobs/${jobId}`),
+
+  getTrainingDevice: () => request("/training/device"),
+
+  listModels: (projectId) => request(`/projects/${projectId}/models`),
+
+  renameModel: (projectId, modelId, name) =>
+    request(`/projects/${projectId}/models/${modelId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  exportModel: (projectId, modelId) =>
+    api._downloadBlob(`/projects/${projectId}/models/${modelId}/export`),
+
+  deleteModel: (projectId, modelId) =>
+    request(`/projects/${projectId}/models/${modelId}`, { method: "DELETE" }),
+
+  autoLabel: (projectId, modelId, body) =>
+    request(`/projects/${projectId}/models/${modelId}/auto-label`, {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
+
+  getAutoLabelJob: (jobId) => request(`/auto-label-jobs/${jobId}`),
 };

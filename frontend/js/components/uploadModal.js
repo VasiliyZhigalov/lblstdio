@@ -1,64 +1,56 @@
 import { store } from "../store.js";
 import { api } from "../api.js";
 
-const ACCEPT = new Set(["image/jpeg", "image/png", "image/webp", "image/jpg"]);
-
-function isImageFile(file) {
-  if (ACCEPT.has(file.type)) return true;
-  return /\.(jpe?g|png|webp)$/i.test(file.name);
-}
+const IMAGE_RE = /\.(jpe?g|png|webp)$/i;
+const LABEL_RE = /\.txt$/i;
+const META_RE = /(^|\/)(data\.ya?ml|classes\.txt)$/i;
+const ZIP_RE = /\.zip$/i;
 
 function showModal(el, visible) {
   el.classList.toggle("hidden", !visible);
   el.classList.toggle("flex", visible);
 }
 
+function isAcceptedFile(file) {
+  const name = file.webkitRelativePath || file.name;
+  if (IMAGE_RE.test(name) || ZIP_RE.test(name) || META_RE.test(name)) return true;
+  if (LABEL_RE.test(name) && !META_RE.test(name)) return true;
+  return false;
+}
+
+function summarize(files) {
+  let images = 0;
+  let labels = 0;
+  let zips = 0;
+  let meta = 0;
+  for (const file of files) {
+    const name = file.webkitRelativePath || file.name;
+    if (ZIP_RE.test(name)) zips += 1;
+    else if (META_RE.test(name)) meta += 1;
+    else if (IMAGE_RE.test(name)) images += 1;
+    else if (LABEL_RE.test(name)) labels += 1;
+  }
+  const parts = [];
+  if (images) parts.push(`${images} изображений`);
+  if (labels) parts.push(`${labels} label`);
+  if (meta) parts.push(`${meta} meta`);
+  if (zips) parts.push(`${zips} zip`);
+  return parts.length ? `Выбрано: ${parts.join(", ")}` : "Подходящие файлы не выбраны";
+}
+
 export function initUploadModal({ onUploaded, onError }) {
   const modal = document.getElementById("upload-modal");
   const dropzone = document.getElementById("dropzone");
   const fileInput = document.getElementById("file-input");
+  const folderInput = document.getElementById("folder-input");
   const fileCount = document.getElementById("file-count");
   const progress = document.getElementById("upload-progress");
   const submit = document.getElementById("btn-submit-upload");
-  const splits = { train: 70, valid: 20, test: 10 };
   let files = [];
 
-  function renderSplitLabels() {
-    document.getElementById("split-train-val").textContent = `${Math.round(splits.train)}%`;
-    document.getElementById("split-valid-val").textContent = `${Math.round(splits.valid)}%`;
-    document.getElementById("split-test-val").textContent = `${Math.round(splits.test)}%`;
-    document.getElementById("split-train").value = String(Math.round(splits.train));
-    document.getElementById("split-valid").value = String(Math.round(splits.valid));
-    document.getElementById("split-test").value = String(Math.round(splits.test));
-  }
-
-  function setSplit(changed, rawValue) {
-    const keys = ["train", "valid", "test"];
-    const value = Math.max(0, Math.min(100, Number(rawValue)));
-    const others = keys.filter((key) => key !== changed);
-    const remaining = 100 - value;
-    const otherSum = others.reduce((sum, key) => sum + splits[key], 0);
-    if (otherSum <= 0) {
-      splits[others[0]] = remaining / 2;
-      splits[others[1]] = remaining / 2;
-    } else {
-      const scale = remaining / otherSum;
-      splits[others[0]] *= scale;
-      splits[others[1]] *= scale;
-    }
-    splits[changed] = value;
-    const total = splits.train + splits.valid + splits.test;
-    if (total !== 100 && total > 0) {
-      splits.test += 100 - total;
-    }
-    renderSplitLabels();
-  }
-
   function setFiles(list) {
-    files = [...list].filter(isImageFile);
-    fileCount.textContent = files.length
-      ? `Выбрано файлов: ${files.length}`
-      : "Подходящие файлы не выбраны";
+    files = [...list].filter(isAcceptedFile);
+    fileCount.textContent = summarize(files);
   }
 
   function open() {
@@ -75,14 +67,21 @@ export function initUploadModal({ onUploaded, onError }) {
     dropzone.classList.remove("dropzone-active");
   }
 
-  ["train", "valid", "test"].forEach((key) => {
-    document.getElementById(`split-${key}`).addEventListener("input", (event) => {
-      setSplit(key, event.target.value);
-    });
+  dropzone.addEventListener("click", (event) => {
+    if (event.target.closest("[data-upload-folder]")) return;
+    fileInput.click();
+  });
+  document.getElementById("btn-upload-files")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    fileInput.click();
+  });
+  document.getElementById("btn-upload-folder")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    folderInput?.click();
   });
 
-  dropzone.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => setFiles(fileInput.files));
+  folderInput?.addEventListener("change", () => setFiles(folderInput.files));
 
   ["dragenter", "dragover"].forEach((type) => {
     dropzone.addEventListener(type, (event) => {
@@ -112,19 +111,13 @@ export function initUploadModal({ onUploaded, onError }) {
     }
     submit.disabled = true;
     try {
-      const ratios = {
-        train: Number((splits.train / 100).toFixed(4)),
-        valid: Number((splits.valid / 100).toFixed(4)),
-        test: Number((splits.test / 100).toFixed(4)),
-      };
-      const drift = 1 - (ratios.train + ratios.valid + ratios.test);
-      ratios.test = Number((ratios.test + drift).toFixed(4));
-      const uploaded = await api.uploadImages(project.id, files, ratios, (ratio) => {
+      const uploaded = await api.uploadImages(project.id, files, (ratio) => {
         progress.style.width = `${Math.round(ratio * 100)}%`;
       });
       progress.style.width = "100%";
       files = [];
       fileInput.value = "";
+      if (folderInput) folderInput.value = "";
       fileCount.textContent = "";
       close();
       onUploaded(uploaded);
@@ -135,6 +128,5 @@ export function initUploadModal({ onUploaded, onError }) {
     }
   });
 
-  renderSplitLabels();
   return { open, close };
 }

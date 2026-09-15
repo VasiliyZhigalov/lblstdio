@@ -11,6 +11,7 @@ import {
   enforceMinRect,
   fitTransform,
   handlePoints,
+  hexAlphaFromFloat,
   hexWithAlpha,
   hitHandle,
   imageRectToScreen,
@@ -141,6 +142,7 @@ export class AnnotationCanvas {
     const focusId = selectedId || hoveredId;
     const box = (store.get("annotations") || []).find((item) => item.id === focusId);
     if (
+      store.get("hideAnnotations") ||
       store.get("matchingInProgress") ||
       !box ||
       box.verification_status !== "PENDING_REVIEW" ||
@@ -182,6 +184,7 @@ export class AnnotationCanvas {
   }
 
   findBoxAtScreen(sx, sy) {
+    if (store.get("hideAnnotations")) return null;
     const annotations = store.get("annotations") || [];
     for (let i = annotations.length - 1; i >= 0; i -= 1) {
       const box = annotations[i];
@@ -221,27 +224,29 @@ export class AnnotationCanvas {
       this.setCursor("grab");
       return;
     }
-    if (store.get("mode") === "DRAW") {
-      this.setCursor("crosshair");
-      return;
-    }
     const screen = this.pointerScreen(event);
-    const selectedId = store.get("selectedBoxId");
-    if (selectedId) {
-      const selected = (store.get("annotations") || []).find((box) => box.id === selectedId);
-      if (selected) {
-        const handle = hitHandle(screen.x, screen.y, this.screenRectForBox(selected));
-        if (handle) {
-          this.setCursor(cursorForHandle(handle));
-          return;
-        }
-        if (pointInRect(screen.x, screen.y, this.screenRectForBox(selected))) {
-          this.setCursor("move");
-          return;
+    if (!store.get("hideAnnotations")) {
+      const selectedId = store.get("selectedBoxId");
+      if (selectedId) {
+        const selected = (store.get("annotations") || []).find((box) => box.id === selectedId);
+        if (selected) {
+          const handle = hitHandle(screen.x, screen.y, this.screenRectForBox(selected));
+          if (handle) {
+            this.setCursor(cursorForHandle(handle));
+            return;
+          }
+          if (pointInRect(screen.x, screen.y, this.screenRectForBox(selected))) {
+            this.setCursor("move");
+            return;
+          }
         }
       }
+      if (this.findBoxAtScreen(screen.x, screen.y)) {
+        this.setCursor("pointer");
+        return;
+      }
     }
-    this.setCursor(this.findBoxAtScreen(screen.x, screen.y) ? "pointer" : "default");
+    this.setCursor(store.get("mode") === "DRAW" ? "crosshair" : "default");
   }
 
   bindEvents() {
@@ -293,22 +298,11 @@ export class AnnotationCanvas {
     const screen = this.pointerScreen(event);
     const imgPt = this.pointerImage(event);
     const mode = store.get("mode");
-
-    if (mode === "DRAW") {
-      if (!store.get("activeClassId")) {
-        this.container.dispatchEvent(new CustomEvent("need-class", { bubbles: true }));
-        return;
-      }
-      this.isDrawing = true;
-      this.drawStart = imgPt;
-      this.draft = { x: imgPt.x, y: imgPt.y, w: 0, h: 0 };
-      this.scheduleRender();
-      return;
-    }
+    const hide = store.get("hideAnnotations");
 
     const selectedId = store.get("selectedBoxId");
     const selected = (store.get("annotations") || []).find((box) => box.id === selectedId);
-    if (selected) {
+    if (selected && !hide) {
       const handle = hitHandle(screen.x, screen.y, this.screenRectForBox(selected));
       if (handle) {
         this.activeHandle = handle;
@@ -317,7 +311,7 @@ export class AnnotationCanvas {
       }
     }
 
-    const hit = this.findBoxAtScreen(screen.x, screen.y);
+    const hit = hide ? null : this.findBoxAtScreen(screen.x, screen.y);
     if (hit) {
       store.set("selectedBoxId", hit.id);
       const { w, h } = this.imgSize();
@@ -325,6 +319,19 @@ export class AnnotationCanvas {
       this.isDragging = true;
       this.dragBoxId = hit.id;
       this.dragOffset = { x: imgPt.x - xywh.x, y: imgPt.y - xywh.y };
+      return;
+    }
+
+    if (mode === "DRAW") {
+      if (!store.get("activeClassId")) {
+        this.container.dispatchEvent(new CustomEvent("need-class", { bubbles: true }));
+        return;
+      }
+      store.set("selectedBoxId", null);
+      this.isDrawing = true;
+      this.drawStart = imgPt;
+      this.draft = { x: imgPt.x, y: imgPt.y, w: 0, h: 0 };
+      this.scheduleRender();
       return;
     }
 
@@ -438,6 +445,13 @@ export class AnnotationCanvas {
             hasUnsavedChanges: true,
             saveStatus: "unsaved",
           });
+          const screen = this.pointerScreen(event);
+          this.container.dispatchEvent(
+            new CustomEvent("box-drawn", {
+              bubbles: true,
+              detail: { boxId: newBox.id, screenX: screen.x, screenY: screen.y },
+            })
+          );
         }
       }
       this.scheduleRender();
@@ -475,16 +489,19 @@ export class AnnotationCanvas {
     const selectedId = store.get("selectedBoxId");
     const hoveredId = store.get("hoveredBoxId");
     const annotations = store.get("annotations") || [];
+    const hide = store.get("hideAnnotations") === true;
 
-    for (const box of annotations) {
-      const cls = classes.find((item) => item.id === box.class_id) || {
-        name: "Unknown",
-        color_hex: "#6366F1",
-      };
-      const rect = this.screenRectForBox(box);
-      const isSelected = box.id === selectedId;
-      const isHovered = box.id === hoveredId;
-      this.drawBox(ctx, box, cls, rect, isSelected, isHovered);
+    if (!hide) {
+      for (const box of annotations) {
+        const cls = classes.find((item) => item.id === box.class_id) || {
+          name: "Unknown",
+          color_hex: "#6366F1",
+        };
+        const rect = this.screenRectForBox(box);
+        const isSelected = box.id === selectedId;
+        const isHovered = box.id === hoveredId;
+        this.drawBox(ctx, box, cls, rect, isSelected, isHovered);
+      }
     }
 
     if (this.draft) {
@@ -617,11 +634,15 @@ export class AnnotationCanvas {
 
   drawBox(ctx, box, cls, rect, isSelected, isHovered) {
     const pending = box.verification_status === "PENDING_REVIEW";
+    const boxOpacity = store.get("boxOpacity") ?? 0.2;
+    const opacity =
+      isSelected || isHovered ? Math.min(1, Number(boxOpacity) + 0.15) : Number(boxOpacity);
+    const fillAlpha = hexAlphaFromFloat(opacity);
     ctx.save();
     ctx.setLineDash(pending ? [6, 4] : []);
     ctx.strokeStyle = cls.color_hex;
     ctx.lineWidth = isSelected ? 2.5 : 2;
-    ctx.fillStyle = hexWithAlpha(cls.color_hex, isHovered || isSelected ? "33" : pending ? "1A" : "26");
+    ctx.fillStyle = hexWithAlpha(cls.color_hex, fillAlpha);
     ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
     ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
 

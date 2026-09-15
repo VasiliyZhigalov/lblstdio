@@ -7,9 +7,13 @@ import { initSidebar, selectClassByHotkey } from "./components/sidebar.js";
 import { initReviewBar } from "./components/reviewBar.js";
 import { initUploadModal } from "./components/uploadModal.js";
 import { initDatasetVersionModal } from "./components/datasetVersionModal.js";
+import { initTrainingDrawer } from "./components/trainingDrawer.js";
+import { initAutoLabelModal } from "./components/autoLabelModal.js";
+import { initDataHub } from "./components/dataHub.js";
+import { initModelsHub } from "./components/modelsHub.js";
 import { initHotkeys } from "./hotkeys.js";
-import { ensureHash, navigate, parseHash } from "./router.js";
-import { refreshIcons, showModal } from "./utils/dom.js";
+import { ensureHash, navigate, parseHash, projectPath, replaceHash } from "./router.js";
+import { escapeHtml, refreshIcons, showModal } from "./utils/dom.js";
 
 let canvas;
 let celebrateSave = false;
@@ -19,6 +23,11 @@ let navToken = 0;
 let pendingClearImageId = null;
 let saveQueue = Promise.resolve();
 let datasetModal = null;
+let trainingDrawer = null;
+let autoLabelModal = null;
+let dataHub = null;
+let modelsHub = null;
+let quickClassBoxId = null;
 
 function statusFromAnnotations(boxes) {
   if (!boxes?.length) return "UNANNOTATED";
@@ -28,14 +37,14 @@ function statusFromAnnotations(boxes) {
   return "VERIFIED";
 }
 
-function patchImageStatus(imageId, status) {
+function patchImageStatus(imageId, status, extra = {}) {
   const images = (store.get("images") || []).map((item) =>
-    item.id === imageId ? { ...item, status } : item
+    item.id === imageId ? { ...item, status, ...extra } : item
   );
   store.set("images", images);
   const current = store.get("currentImage");
   if (current?.id === imageId) {
-    store.set("currentImage", { ...current, status });
+    store.set("currentImage", { ...current, status, ...extra });
   }
   return images;
 }
@@ -48,16 +57,54 @@ function toast(message, timeout = 2800) {
   toast._t = setTimeout(() => el.classList.add("hidden"), timeout);
 }
 
-function showView(name) {
-  store.set("view", name);
-  document.getElementById("view-projects").classList.toggle("hidden", name !== "projects");
-  document.getElementById("view-studio").classList.toggle("hidden", name !== "studio");
-  if (name === "studio") {
+function showShell(visible) {
+  store.set("view", visible ? "studio" : "projects");
+  document.getElementById("view-projects").classList.toggle("hidden", visible);
+  document.getElementById("view-project-shell").classList.toggle("hidden", !visible);
+}
+
+const TAB_BTN_ACTIVE = "flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition bg-zinc-800 text-white";
+const TAB_BTN_IDLE = "flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition text-zinc-400 hover:text-zinc-200";
+
+function syncTabChrome(tab) {
+  for (const name of ["data", "annotate", "models"]) {
+    const btn = document.getElementById(`tab-btn-${name}`);
+    if (btn) btn.className = name === tab ? TAB_BTN_ACTIVE : TAB_BTN_IDLE;
+    const view = document.getElementById(`tab-view-${name}`);
+    if (view) view.classList.toggle("hidden", name !== tab);
+    const actions = document.getElementById(`shell-actions-${name}`);
+    if (actions) actions.classList.toggle("hidden", name !== tab);
+  }
+}
+
+async function setProjectTab(tab, { skipSave = false } = {}) {
+  const prev = store.get("projectTab");
+  if (prev === "annotate" && tab !== "annotate" && !skipSave) {
+    try {
+      if (store.get("hasUnsavedChanges")) await saveCurrent({ silent: true });
+    } catch {
+      toast("Не удалось сохранить кадр перед сменой вкладки");
+      throw new Error("save-before-tab-failed");
+    }
+  }
+
+  store.set("projectTab", tab);
+  syncTabChrome(tab);
+  hideQuickClassPopover();
+  applySidebarCollapsed();
+
+  if (tab === "annotate") {
     document.activeElement?.blur?.();
     requestAnimationFrame(() => {
       canvas?.resize();
       canvas?.fitToScreen();
     });
+  }
+  if (tab === "data") {
+    dataHub?.refresh?.().catch((err) => toast(err.message));
+  }
+  if (tab === "models") {
+    modelsHub?.refresh?.().catch((err) => toast(err.message));
   }
 }
 
@@ -73,6 +120,7 @@ function updateSaveButton() {
   const btn = document.getElementById("btn-save-annotations");
   const label = document.getElementById("save-btn-label");
   const badge = document.getElementById("save-unsaved-badge");
+  if (!btn || !label || !badge) return;
   const status = store.get("saveStatus");
   const unsaved = store.get("hasUnsavedChanges");
   badge.classList.toggle("hidden", !unsaved || status === "saving");
@@ -93,7 +141,7 @@ function updateSaveButton() {
     }, 2000);
     return;
   }
-  label.textContent = "Сохранить аннотации";
+  label.textContent = "Сохранить";
   btn.classList.add("bg-indigo-600", "hover:bg-indigo-500");
 }
 
@@ -101,14 +149,19 @@ function updateStudioChrome() {
   const image = store.get("currentImage");
   const images = store.get("images") || [];
   const project = store.get("currentProject");
-  document.getElementById("studio-project-name").textContent = project?.name || "—";
-  document.getElementById("image-filename").textContent = image?.file_name || "";
+  const nameEl = document.getElementById("shell-project-name");
+  if (nameEl) nameEl.textContent = project?.name || "—";
+  const fileEl = document.getElementById("image-filename");
+  if (fileEl) fileEl.textContent = image?.file_name || "";
   const badge = document.getElementById("badge-split");
-  badge.textContent = (image?.split || "train").toUpperCase();
+  if (badge) badge.textContent = (image?.split || "train").toUpperCase();
   const idx = images.findIndex((item) => item.id === image?.id);
-  document.getElementById("current-idx").textContent = idx >= 0 ? String(idx + 1) : "0";
-  document.getElementById("total-idx").textContent = String(images.length);
+  const currentIdx = document.getElementById("current-idx");
+  const totalIdx = document.getElementById("total-idx");
+  if (currentIdx) currentIdx.textContent = idx >= 0 ? String(idx + 1) : "0";
+  if (totalIdx) totalIdx.textContent = String(images.length);
   updateSaveButton();
+  syncHideButtons();
 }
 
 function setBoxCount(imageId, count) {
@@ -128,16 +181,12 @@ function serializeBoxes(boxes) {
   );
 }
 
-function restoreStudioHash(projectId) {
+function restoreProjectHash(projectId, tab = "data", imageId = null) {
   if (!projectId) {
-    history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/projects`);
+    replaceHash("/projects");
     return;
   }
-  history.replaceState(
-    null,
-    "",
-    `${window.location.pathname}${window.location.search}#/projects/${projectId}`
-  );
+  replaceHash(projectPath(projectId, tab, imageId));
 }
 
 async function loadProject(projectId) {
@@ -223,6 +272,15 @@ async function saveCurrent({ silent = false, force = false, celebrate = false } 
   return queued;
 }
 
+function syncAnnotateHash(imageId) {
+  const project = store.get("currentProject");
+  if (!project || store.get("projectTab") !== "annotate") return;
+  const next = `#${projectPath(project.id, "annotate", imageId)}`;
+  if (window.location.hash !== next) {
+    history.replaceState(null, "", `${window.location.pathname}${window.location.search}${next}`);
+  }
+}
+
 async function openImage(imageId, expectedProjectId = null) {
   if (!imageId) return;
   const token = ++navToken;
@@ -236,6 +294,7 @@ async function openImage(imageId, expectedProjectId = null) {
 
     if (store.get("currentImage")?.id === imageId && canvas.image) {
       updateStudioChrome();
+      syncAnnotateHash(imageId);
       return;
     }
 
@@ -258,9 +317,11 @@ async function openImage(imageId, expectedProjectId = null) {
       saveStatus: "saved",
       matchDebug: null,
     });
+    hideQuickClassPopover();
     await canvas.loadImage(api.imageFileUrl(imageId));
     if (token !== navToken) return;
     updateStudioChrome();
+    syncAnnotateHash(imageId);
   } catch (err) {
     if (token === navToken) toast(err.message);
   }
@@ -299,61 +360,82 @@ async function exportDataset() {
 
 async function leaveStudio() {
   const projectId = store.get("currentProject")?.id;
+  const tab = store.get("projectTab");
+  const imageId = store.get("currentImage")?.id;
   try {
     if (store.get("hasUnsavedChanges")) await saveCurrent({ silent: true });
   } catch {
     toast("Не удалось сохранить кадр перед выходом");
-    restoreStudioHash(projectId);
+    restoreProjectHash(projectId, tab, tab === "annotate" ? imageId : null);
     return;
   }
   navigate("/projects");
 }
 
-async function enterStudio(projectId, seq) {
+async function enterProject(route, seq) {
+  const { projectId, tab, imageId } = route;
+  const rawHash = (window.location.hash || "").replace(/^#/, "");
+  const parts = rawHash.split("?")[0].split("/").filter(Boolean);
+  if (parts[0] === "projects" && parts[1] && !parts[2]) {
+    replaceHash(projectPath(projectId, "data"));
+  }
+
   await loadProject(projectId);
   if (seq !== routeSeq) return;
-  showView("studio");
+
+  showShell(true);
+  try {
+    await setProjectTab(tab || "data", { skipSave: true });
+  } catch {
+    return;
+  }
   refreshIcons();
-  const images = store.get("images") || [];
-  const current = store.get("currentImage");
-  const stillHere = current && images.some((item) => item.id === current.id);
-  if (stillHere) {
-    updateStudioChrome();
-    canvas.resize();
-    canvas.fitToScreen();
-    return;
-  }
-  if (images[0]) {
-    await openImage(images[0].id, projectId);
-    return;
-  }
-  if (seq !== routeSeq) return;
-  store.patch({
-    currentImage: null,
-    annotations: [],
-    selectedBoxId: null,
-    hasUnsavedChanges: false,
-    saveStatus: "idle",
-  });
-  canvas.clearImage();
   updateStudioChrome();
+
+  if (tab === "annotate") {
+    const images = store.get("images") || [];
+    const targetId =
+      imageId && images.some((item) => item.id === imageId)
+        ? imageId
+        : store.get("currentImage")?.id && images.some((item) => item.id === store.get("currentImage").id)
+          ? store.get("currentImage").id
+          : images[0]?.id || null;
+    if (targetId) {
+      await openImage(targetId, projectId);
+    } else {
+      store.patch({
+        currentImage: null,
+        annotations: [],
+        selectedBoxId: null,
+        hasUnsavedChanges: false,
+        saveStatus: "idle",
+      });
+      canvas.clearImage();
+      updateStudioChrome();
+    }
+  }
 }
 
 async function onRoute() {
   const seq = ++routeSeq;
   const route = parseHash();
   const previousProjectId = store.get("currentProject")?.id;
+  const previousTab = store.get("projectTab");
 
   if (route.name === "projects") {
     try {
       if (store.get("hasUnsavedChanges")) await saveCurrent({ silent: true });
     } catch {
       toast("Не удалось сохранить кадр перед выходом");
-      restoreStudioHash(previousProjectId);
+      restoreProjectHash(
+        previousProjectId,
+        previousTab,
+        previousTab === "annotate" ? store.get("currentImage")?.id : null
+      );
       return;
     }
     if (seq !== routeSeq) return;
-    showView("projects");
+    showShell(false);
     try {
       await loadProjectsHub();
     } catch (err) {
@@ -362,7 +444,6 @@ async function onRoute() {
     return;
   }
 
-  // Switching studio project: save previous frame first.
   if (
     previousProjectId &&
     previousProjectId !== route.projectId &&
@@ -372,14 +453,38 @@ async function onRoute() {
       await saveCurrent({ silent: true });
     } catch {
       toast("Не удалось сохранить кадр перед сменой проекта");
-      restoreStudioHash(previousProjectId);
+      restoreProjectHash(
+        previousProjectId,
+        previousTab,
+        previousTab === "annotate" ? store.get("currentImage")?.id : null
+      );
       return;
     }
   }
 
   if (seq !== routeSeq) return;
+
+  // Same project, tab change via hash
+  if (previousProjectId === route.projectId && store.get("view") === "studio") {
+    try {
+      await setProjectTab(route.tab || "data");
+    } catch {
+      restoreProjectHash(previousProjectId, previousTab, store.get("currentImage")?.id);
+      return;
+    }
+    if (route.tab === "annotate") {
+      const images = store.get("images") || [];
+      const target =
+        route.imageId && images.some((item) => item.id === route.imageId)
+          ? route.imageId
+          : store.get("currentImage")?.id || images[0]?.id;
+      if (target) await openImage(target, route.projectId);
+    }
+    return;
+  }
+
   try {
-    await enterStudio(route.projectId, seq);
+    await enterProject(route, seq);
   } catch (err) {
     if (seq !== routeSeq) return;
     toast(err.message);
@@ -429,9 +534,12 @@ function copySelectedBox() {
     toast("На кадре нет рамок для копирования");
     return;
   }
+  const selectedId = store.get("selectedBoxId");
+  const selected = annotations.find((box) => box.id === selectedId);
+  const toCopy = selected ? [selected] : annotations;
   store.set("clipboardBox", {
     sourceImageId: image.id,
-    boxes: annotations.map((box) => ({
+    boxes: toCopy.map((box) => ({
       id: box.id,
       class_id: box.class_id,
       x_center: box.x_center,
@@ -440,11 +548,11 @@ function copySelectedBox() {
       height: box.height,
     })),
   });
-  const n = annotations.length;
+  const n = toCopy.length;
   toast(
     n === 1
-      ? "Аннотация скопирована. Откройте другой кадр и нажмите «Вставить»"
-      : `Скопировано аннотаций: ${n}. Откройте другой кадр и нажмите «Вставить»`
+      ? "Аннотация скопирована. Откройте другой кадр и нажмите Ctrl+Shift+V"
+      : `Скопировано аннотаций: ${n}. Откройте другой кадр и нажмите Ctrl+Shift+V`
   );
   syncClipboardButtons();
 }
@@ -642,6 +750,32 @@ async function rejectAllPending() {
   }
 }
 
+async function markCurrentAsBackground() {
+  const image = store.get("currentImage");
+  if (!image) {
+    toast("Нет открытого кадра");
+    return;
+  }
+  const boxes = store.get("annotations") || [];
+  if (boxes.length) {
+    toast("Сначала очистите кадр от объектов");
+    return;
+  }
+  if (store.get("hasUnsavedChanges")) {
+    await saveCurrent({ silent: true });
+  }
+  try {
+    const updated = await api.markBackground(image.id);
+    patchImageStatus(updated.id, updated.status, {
+      is_background: updated.is_background,
+    });
+    setBoxCount(image.id, 0);
+    toast("Кадр отмечен как бэкграунд (negative sample)");
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 function frameHasPending() {
   return (store.get("annotations") || []).some(
     (box) => box.verification_status === "PENDING_REVIEW"
@@ -683,6 +817,130 @@ async function rejectSelectedBox() {
   if (selectedId) await deleteBoxById(selectedId);
 }
 
+function hideQuickClassPopover() {
+  quickClassBoxId = null;
+  store.set("quickClassOpen", false);
+  document.getElementById("quick-class-popover")?.classList.add("hidden");
+}
+
+function showQuickClassPopover(boxId, screenX, screenY) {
+  const pop = document.getElementById("quick-class-popover");
+  if (!pop) return;
+  const classes = [...(store.get("classes") || [])]
+    .sort((a, b) => a.index_id - b.index_id)
+    .slice(0, 9);
+  if (!classes.length) {
+    hideQuickClassPopover();
+    return;
+  }
+  quickClassBoxId = boxId;
+  store.set("quickClassOpen", true);
+  pop.innerHTML = classes
+    .map(
+      (cls, index) => `
+      <button type="button" data-quick-class="${cls.id}"
+        class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-xs hover:bg-zinc-800 text-zinc-200">
+        <span class="font-mono text-zinc-500 w-4">[${index + 1}]</span>
+        <span class="w-2.5 h-2.5 rounded-sm shrink-0" style="background:${escapeHtml(cls.color_hex)}"></span>
+        <span class="truncate">${escapeHtml(cls.name)}</span>
+      </button>`
+    )
+    .join("");
+
+  const container = document.getElementById("canvas-container");
+  const maxX = (container?.clientWidth || 400) - 160;
+  const maxY = (container?.clientHeight || 400) - 8 - classes.length * 34;
+  pop.style.left = `${Math.max(8, Math.min(screenX + 8, maxX))}px`;
+  pop.style.top = `${Math.max(8, Math.min(screenY + 8, maxY))}px`;
+  pop.classList.remove("hidden");
+
+  pop.querySelectorAll("[data-quick-class]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      applyQuickClass(btn.dataset.quickClass);
+    });
+  });
+}
+
+function applyQuickClass(classId) {
+  if (!quickClassBoxId || !classId) {
+    hideQuickClassPopover();
+    return false;
+  }
+  const boxId = quickClassBoxId;
+  store.patch({
+    annotations: (store.get("annotations") || []).map((box) =>
+      box.id === boxId ? { ...box, class_id: classId } : box
+    ),
+    activeClassId: classId,
+    selectedBoxId: boxId,
+    hasUnsavedChanges: true,
+    saveStatus: "unsaved",
+  });
+  hideQuickClassPopover();
+  return true;
+}
+
+function applyQuickClassDigit(digit) {
+  const classes = [...(store.get("classes") || [])].sort((a, b) => a.index_id - b.index_id);
+  const cls = classes[digit - 1];
+  if (!cls || !store.get("quickClassOpen")) return false;
+  return applyQuickClass(cls.id);
+}
+
+function syncHideButtons() {
+  const hidden = store.get("hideAnnotations") === true;
+  const tool = document.getElementById("tool-toggle-hide");
+  const shell = document.getElementById("btn-shell-toggle-hide");
+  const active = "p-2 rounded-lg hover:bg-zinc-800 text-amber-400 bg-zinc-800/80";
+  const idle = "p-2 rounded-lg hover:bg-zinc-800 text-zinc-400";
+  if (tool) tool.className = hidden ? active : idle;
+  if (shell) {
+    shell.classList.toggle("bg-zinc-800", hidden);
+    shell.classList.toggle("text-amber-300", hidden);
+  }
+}
+
+function toggleHideAnnotations() {
+  store.set("hideAnnotations", !store.get("hideAnnotations"));
+  syncHideButtons();
+}
+
+function applySidebarCollapsed() {
+  const leftCollapsed = store.get("leftSidebarCollapsed");
+  const rightCollapsed = store.get("rightSidebarCollapsed");
+  const left = document.getElementById("studio-left-sidebar");
+  const right = document.getElementById("studio-right-sidebar");
+  const expandLeft = document.getElementById("btn-expand-filmstrip");
+  const expandRight = document.getElementById("btn-expand-right-sidebar");
+  left?.classList.toggle("hidden", leftCollapsed);
+  right?.classList.toggle("hidden", rightCollapsed);
+  expandLeft?.classList.toggle("hidden", !leftCollapsed || store.get("projectTab") !== "annotate");
+  expandRight?.classList.toggle("hidden", !rightCollapsed || store.get("projectTab") !== "annotate");
+  if (store.get("projectTab") === "annotate") {
+    requestAnimationFrame(() => {
+      canvas?.resize();
+    });
+  }
+  refreshIcons(document.getElementById("tab-view-annotate"));
+}
+
+function toggleLeftSidebar() {
+  store.set("leftSidebarCollapsed", !store.get("leftSidebarCollapsed"));
+  applySidebarCollapsed();
+}
+
+function toggleRightSidebar() {
+  store.set("rightSidebarCollapsed", !store.get("rightSidebarCollapsed"));
+  applySidebarCollapsed();
+}
+
+function goAnnotate(imageId = null) {
+  const project = store.get("currentProject");
+  if (!project) return;
+  navigate(projectPath(project.id, "annotate", imageId));
+}
+
 function boot() {
   canvas = new AnnotationCanvas(
     document.getElementById("annotation-canvas"),
@@ -690,12 +948,12 @@ function boot() {
   );
 
   initProjectsHub({
-    onOpenProject: (id) => navigate(`/projects/${id}`),
+    onOpenProject: (id) => navigate(projectPath(id, "data")),
     onCreateProject: async (name, description) => {
       try {
         const created = await api.createProject(name, description);
         await loadProjectsHub();
-        navigate(`/projects/${created.id}`);
+        navigate(projectPath(created.id, "data"));
       } catch (err) {
         toast(err.message);
         throw err;
@@ -715,7 +973,11 @@ function boot() {
     },
   });
 
-  initFilmstrip({ onOpenImage: openImage });
+  initFilmstrip({
+    onOpenImage: (id) => {
+      openImage(id);
+    },
+  });
   initSidebar({
     onError: toast,
     onDeleteBox: (id) => {
@@ -734,7 +996,8 @@ function boot() {
       const images = await api.listImages(project.id);
       store.set("images", images);
       toast(`Загружено. Всего кадров: ${images.length}`);
-      if (!store.get("currentImage") && uploaded?.[0]) {
+      dataHub?.refresh?.().catch(() => {});
+      if (store.get("projectTab") === "annotate" && !store.get("currentImage") && uploaded?.[0]) {
         await openImage(uploaded[0].id, project.id);
       }
     },
@@ -746,9 +1009,79 @@ function boot() {
     onError: toast,
     onCreated: (version) => {
       toast(
-        `Версия ${version.name} готова: Train ${version.train_count}, Valid ${version.valid_count}, Test ${version.test_count}`
+        `Версия ${version.name}: ${version.train_count}+${version.valid_count}+${version.test_count} кадров → ${version.train_file_count} train-файлов`
       );
+      modelsHub?.refresh?.().catch(() => {});
     },
+  });
+
+  autoLabelModal = initAutoLabelModal({
+    getProject: () => store.get("currentProject"),
+    getImages: () => store.get("images") || [],
+    onError: toast,
+    onDone: async (job) => {
+      toast(
+        `Авторазметка: ${job.total_predictions_generated} объектов на ${job.total_images_processed} кадрах`
+      );
+      const project = store.get("currentProject");
+      if (!project) return;
+      const images = await api.listImages(project.id);
+      store.set("images", images);
+      dataHub?.refresh?.().catch(() => {});
+      modelsHub?.refresh?.().catch(() => {});
+      const current = store.get("currentImage");
+      if (current && store.get("projectTab") === "annotate") {
+        await openImage(current.id, project.id);
+      }
+    },
+  });
+
+  trainingDrawer = initTrainingDrawer({
+    getProject: () => store.get("currentProject"),
+    onError: toast,
+    onCompleted: () => {
+      toast("Модель обучена");
+      modelsHub?.refresh?.().catch(() => {});
+    },
+    onUseForAutoLabel: (modelId) => autoLabelModal?.open(modelId),
+  });
+
+  dataHub = initDataHub({
+    onOpenImage: (id) => goAnnotate(id),
+    onStartAnnotate: (id) => goAnnotate(id),
+  });
+
+  modelsHub = initModelsHub({
+    getProject: () => store.get("currentProject"),
+    onTrain: () => trainingDrawer?.open(),
+    onTrainDataset: (versionId) => trainingDrawer?.open(versionId),
+    onAutoLabel: () => autoLabelModal?.open(),
+    onUseModel: (modelId) => autoLabelModal?.open(modelId),
+    onCreateDataset: () => datasetModal?.open(),
+    onError: toast,
+    onChanged: () => {
+      trainingDrawer?.refreshSelectors?.().catch(() => {});
+      autoLabelModal?.refreshModels?.().catch(() => {});
+    },
+  });
+
+  document.getElementById("btn-train-model")?.addEventListener("click", () => {
+    trainingDrawer?.open();
+  });
+  document.getElementById("btn-auto-label")?.addEventListener("click", () => {
+    autoLabelModal?.open();
+  });
+
+  document.getElementById("tab-btn-data")?.addEventListener("click", () => {
+    const project = store.get("currentProject");
+    if (project) navigate(projectPath(project.id, "data"));
+  });
+  document.getElementById("tab-btn-annotate")?.addEventListener("click", () => {
+    goAnnotate(store.get("currentImage")?.id || null);
+  });
+  document.getElementById("tab-btn-models")?.addEventListener("click", () => {
+    const project = store.get("currentProject");
+    if (project) navigate(projectPath(project.id, "models"));
   });
 
   initHotkeys({
@@ -764,6 +1097,14 @@ function boot() {
     verifyAll: () => verifyAllPending({ goNext: true }).catch(() => {}),
     rejectAll: () => rejectAllPending().catch(() => {}),
     hasPending: frameHasPending,
+    copySelected: () => copySelectedBox(),
+    pastePropagate: () => {
+      pastePropagateBox().catch(() => {});
+    },
+    toggleHide: toggleHideAnnotations,
+    toggleLeftSidebar,
+    toggleRightSidebar,
+    applyQuickClassDigit,
   });
 
   document.getElementById("btn-copy-annotations")?.addEventListener("click", () => {
@@ -787,9 +1128,42 @@ function boot() {
   document.getElementById("canvas-container").addEventListener("need-class", () => {
     toast("Сначала создайте и выберите класс");
   });
+  document.getElementById("canvas-container").addEventListener("box-drawn", (event) => {
+    const { boxId, screenX, screenY } = event.detail || {};
+    if (boxId) showQuickClassPopover(boxId, screenX, screenY);
+  });
+
   document.getElementById("tool-select").addEventListener("click", () => setMode("SELECT"));
   document.getElementById("tool-draw").addEventListener("click", () => setMode("DRAW"));
   document.getElementById("tool-fit").addEventListener("click", () => canvas.fitToScreen());
+  document.getElementById("tool-toggle-hide")?.addEventListener("click", toggleHideAnnotations);
+  document.getElementById("btn-shell-toggle-hide")?.addEventListener("click", toggleHideAnnotations);
+  document.getElementById("btn-toggle-filmstrip")?.addEventListener("click", toggleLeftSidebar);
+  document.getElementById("btn-expand-filmstrip")?.addEventListener("click", toggleLeftSidebar);
+  document.getElementById("btn-toggle-right-sidebar")?.addEventListener("click", toggleRightSidebar);
+  document.getElementById("btn-expand-right-sidebar")?.addEventListener("click", toggleRightSidebar);
+
+  document.getElementById("tool-opacity")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    document.getElementById("opacity-popover")?.classList.toggle("hidden");
+  });
+  document.getElementById("canvas-opacity-slider")?.addEventListener("input", (event) => {
+    store.set("boxOpacity", Number(event.target.value));
+  });
+  document.addEventListener("click", (event) => {
+    const pop = document.getElementById("opacity-popover");
+    const tool = document.getElementById("tool-opacity");
+    if (!pop || pop.classList.contains("hidden")) return;
+    if (pop.contains(event.target) || tool?.contains(event.target)) return;
+    pop.classList.add("hidden");
+  });
+  document.addEventListener("mousedown", (event) => {
+    const pop = document.getElementById("quick-class-popover");
+    if (!pop || pop.classList.contains("hidden")) return;
+    if (pop.contains(event.target)) return;
+    hideQuickClassPopover();
+  });
+
   document.getElementById("btn-back-projects").addEventListener("click", leaveStudio);
   document.getElementById("btn-prev").addEventListener("click", () => go(-1));
   document.getElementById("btn-next").addEventListener("click", () => go(1));
@@ -809,6 +1183,9 @@ function boot() {
     pendingClearImageId = image.id;
     showModal(document.getElementById("clear-modal"), true);
   });
+  document.getElementById("btn-mark-background")?.addEventListener("click", () => {
+    markCurrentAsBackground().catch(() => {});
+  });
   document.getElementById("btn-cancel-clear").addEventListener("click", () => {
     pendingClearImageId = null;
     showModal(document.getElementById("clear-modal"), false);
@@ -823,6 +1200,11 @@ function boot() {
   store.addEventListener("change:currentImage", updateStudioChrome);
   store.addEventListener("change:images", updateStudioChrome);
   store.addEventListener("change:currentProject", updateStudioChrome);
+  store.addEventListener("change:quickClassOpen", () => {
+    if (!store.get("quickClassOpen")) {
+      document.getElementById("quick-class-popover")?.classList.add("hidden");
+    }
+  });
 
   window.addEventListener("hashchange", () => {
     onRoute().catch((err) => toast(err.message));
@@ -834,6 +1216,8 @@ function boot() {
   });
 
   setMode("SELECT");
+  syncTabChrome("data");
+  applySidebarCollapsed();
   refreshIcons();
   ensureHash();
   onRoute().catch((err) => toast(err.message));
