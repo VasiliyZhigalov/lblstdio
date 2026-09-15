@@ -9,6 +9,11 @@ class ProjectCreate(BaseModel):
     description: str | None = None
 
 
+class ProjectUpdate(BaseModel):
+    name: str = Field(min_length=1)
+    description: str | None = None
+
+
 class ProjectRead(BaseModel):
     id: UUID
     name: str
@@ -221,8 +226,8 @@ class RenameRequest(BaseModel):
 class ModelVersionRead(BaseModel):
     id: UUID
     project_id: UUID
-    dataset_version_id: UUID
-    training_job_id: UUID
+    dataset_version_id: UUID | None = None
+    training_job_id: UUID | None = None
     version_number: int
     name: str
     weights_path: str

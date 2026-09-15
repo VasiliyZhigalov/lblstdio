@@ -291,3 +291,24 @@ def test_delete_project_removes_files(tmp_path: Path) -> None:
         assert deleted.status_code == 204
         assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
         assert list(storage.rglob("*.png")) == []
+
+
+def test_update_project(tmp_path: Path) -> None:
+    app = create_app(
+        database_url=f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}",
+        storage_root=tmp_path / "storage",
+    )
+    with TestClient(app) as client:
+        project_id = client.post(
+            "/api/v1/projects", json={"name": "Old", "description": "d1"}
+        ).json()["id"]
+        updated = client.patch(
+            f"/api/v1/projects/{project_id}",
+            json={"name": "New", "description": "d2"},
+        )
+        assert updated.status_code == 200, updated.text
+        body = updated.json()
+        assert body["name"] == "New"
+        assert body["description"] == "d2"
+        fetched = client.get(f"/api/v1/projects/{project_id}")
+        assert fetched.json()["name"] == "New"

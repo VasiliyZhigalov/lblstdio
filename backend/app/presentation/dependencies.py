@@ -33,12 +33,14 @@ from app.application.use_cases.projects.create_project import (
     CreateProjectUseCase,
     GetProjectUseCase,
     ListProjectsUseCase,
+    UpdateProjectUseCase,
 )
 from app.application.use_cases.ml.batch_auto_label import BatchAutoLabelUseCase
 from app.application.use_cases.ml.manage_model_version import (
     DeleteModelVersionUseCase,
     ExportModelVersionUseCase,
     RenameModelVersionUseCase,
+    UploadModelVersionUseCase,
 )
 from app.application.use_cases.ml.train_model import (
     GetTrainingJobUseCase,
@@ -136,6 +138,13 @@ def get_create_project_use_case(
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ) -> CreateProjectUseCase:
     return CreateProjectUseCase(projects, uow)
+
+
+def get_update_project_use_case(
+    projects: SqliteProjectRepository = Depends(get_project_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> UpdateProjectUseCase:
+    return UpdateProjectUseCase(projects, uow)
 
 
 def get_list_projects_use_case(
@@ -382,6 +391,43 @@ def get_list_model_versions_use_case(
     models: SqliteModelVersionRepository = Depends(get_model_version_repo),
 ) -> ListModelVersionsUseCase:
     return ListModelVersionsUseCase(models)
+
+
+def get_rename_model_version_use_case(
+    models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> RenameModelVersionUseCase:
+    return RenameModelVersionUseCase(models, uow)
+
+
+def get_export_model_version_use_case(
+    models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    packer: ZipArchivePacker = Depends(get_packer),
+) -> ExportModelVersionUseCase:
+    return ExportModelVersionUseCase(models, storage, packer)
+
+
+def get_delete_model_version_use_case(
+    models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+    jobs: SqliteTrainingJobRepository = Depends(get_training_job_repo),
+    auto_jobs: SqliteAutoLabelJobRepository = Depends(get_auto_label_job_repo),
+    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> DeleteModelVersionUseCase:
+    return DeleteModelVersionUseCase(
+        models, jobs, auto_jobs, annotations, storage, uow
+    )
+
+
+def get_upload_model_version_use_case(
+    projects: SqliteProjectRepository = Depends(get_project_repo),
+    models: SqliteModelVersionRepository = Depends(get_model_version_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> UploadModelVersionUseCase:
+    return UploadModelVersionUseCase(projects, models, storage, uow)
 
 
 def get_batch_auto_label_use_case(

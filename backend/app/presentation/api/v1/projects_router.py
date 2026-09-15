@@ -9,6 +9,7 @@ from app.application.use_cases.projects.create_project import (
     CreateProjectUseCase,
     GetProjectUseCase,
     ListProjectsUseCase,
+    UpdateProjectUseCase,
 )
 from app.application.use_cases.projects.delete_project import DeleteProjectUseCase
 from app.presentation.dependencies import (
@@ -20,8 +21,15 @@ from app.presentation.dependencies import (
     get_get_project_use_case,
     get_list_classes_use_case,
     get_list_projects_use_case,
+    get_update_project_use_case,
 )
-from app.presentation.schemas import ClassCreate, ClassRead, ProjectCreate, ProjectRead
+from app.presentation.schemas import (
+    ClassCreate,
+    ClassRead,
+    ProjectCreate,
+    ProjectRead,
+    ProjectUpdate,
+)
 
 router = APIRouter(tags=["projects"])
 
@@ -49,6 +57,16 @@ async def get_project(
     use_case: GetProjectUseCase = Depends(get_get_project_use_case),
 ) -> ProjectRead:
     project = await use_case.execute(project_id)
+    return ProjectRead.model_validate(project, from_attributes=True)
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectRead)
+async def update_project(
+    project_id: UUID,
+    payload: ProjectUpdate,
+    use_case: UpdateProjectUseCase = Depends(get_update_project_use_case),
+) -> ProjectRead:
+    project = await use_case.execute(project_id, payload.name, payload.description)
     return ProjectRead.model_validate(project, from_attributes=True)
 
 

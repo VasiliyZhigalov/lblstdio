@@ -209,8 +209,8 @@ class ModelVersionRow(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    dataset_version_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    training_job_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    dataset_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    training_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     weights_path: Mapped[str] = mapped_column(String(1024), nullable=False)

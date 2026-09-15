@@ -18,5 +18,9 @@ class IProjectRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def update(self, project: Project) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete(self, project_id: UUID) -> None:
         raise NotImplementedError

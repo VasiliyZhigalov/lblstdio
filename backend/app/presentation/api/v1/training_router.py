@@ -1,8 +1,14 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile, status
 
 from app.application.use_cases.ml.batch_auto_label import BatchAutoLabelUseCase
+from app.application.use_cases.ml.manage_model_version import (
+    DeleteModelVersionUseCase,
+    ExportModelVersionUseCase,
+    RenameModelVersionUseCase,
+    UploadModelVersionUseCase,
+)
 from app.application.use_cases.ml.train_model import (
     GetTrainingJobUseCase,
     ListModelVersionsUseCase,
@@ -10,14 +16,19 @@ from app.application.use_cases.ml.train_model import (
 )
 from app.presentation.dependencies import (
     get_batch_auto_label_use_case,
+    get_delete_model_version_use_case,
+    get_export_model_version_use_case,
     get_get_training_job_use_case,
     get_list_model_versions_use_case,
+    get_rename_model_version_use_case,
     get_train_model_use_case,
+    get_upload_model_version_use_case,
 )
 from app.presentation.schemas import (
     AutoLabelJobRead,
     AutoLabelRequest,
     ModelVersionRead,
+    RenameRequest,
     TrainModelRequest,
     TrainingDeviceRead,
     TrainingJobRead,
@@ -137,6 +148,66 @@ async def list_models(
     use_case: ListModelVersionsUseCase = Depends(get_list_model_versions_use_case),
 ) -> list[ModelVersionRead]:
     return [_model_to_read(item) for item in await use_case.execute(project_id)]
+
+
+@router.post(
+    "/projects/{project_id}/models/upload",
+    response_model=ModelVersionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_model(
+    project_id: UUID,
+    file: UploadFile = File(...),
+    name: str | None = Form(default=None),
+    use_case: UploadModelVersionUseCase = Depends(get_upload_model_version_use_case),
+) -> ModelVersionRead:
+    raw = await file.read()
+    model = await use_case.execute(
+        project_id,
+        filename=file.filename or "best.pt",
+        data=raw,
+        name=name,
+    )
+    return _model_to_read(model)
+
+
+@router.patch(
+    "/projects/{project_id}/models/{model_id}",
+    response_model=ModelVersionRead,
+)
+async def rename_model(
+    project_id: UUID,
+    model_id: UUID,
+    payload: RenameRequest,
+    use_case: RenameModelVersionUseCase = Depends(get_rename_model_version_use_case),
+) -> ModelVersionRead:
+    return _model_to_read(await use_case.execute(project_id, model_id, payload.name))
+
+
+@router.get("/projects/{project_id}/models/{model_id}/export")
+async def export_model(
+    project_id: UUID,
+    model_id: UUID,
+    use_case: ExportModelVersionUseCase = Depends(get_export_model_version_use_case),
+) -> Response:
+    archive, filename = await use_case.execute(project_id, model_id)
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.delete(
+    "/projects/{project_id}/models/{model_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_model(
+    project_id: UUID,
+    model_id: UUID,
+    use_case: DeleteModelVersionUseCase = Depends(get_delete_model_version_use_case),
+) -> None:
+    await use_case.execute(project_id, model_id)
 
 
 @router.post(

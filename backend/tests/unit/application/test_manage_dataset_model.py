@@ -28,6 +28,9 @@ class _FakeUow:
     async def commit(self) -> None:
         return None
 
+    async def rollback(self) -> None:
+        return None
+
 
 class _FakeVersions:
     def __init__(self, version: DatasetVersion) -> None:
@@ -77,6 +80,9 @@ class _FakeJobs:
             for item in self.items
             if item.dataset_version_id == dataset_version_id
         ]
+
+    async def update(self, job) -> None:
+        self.items = [job if item.id == job.id else item for item in self.items]
 
     async def delete_by_dataset_version(self, dataset_version_id) -> None:
         self.items = [
@@ -160,10 +166,10 @@ def _model(dataset_version_id, **kwargs) -> ModelVersion:
     )
 
 
-def _job(dataset_version_id, status=TrainingJobStatus.COMPLETED) -> TrainingJob:
+def _job(dataset_version_id, status=TrainingJobStatus.COMPLETED, **kwargs) -> TrainingJob:
     return TrainingJob(
-        id=uuid4(),
-        project_id=uuid4(),
+        id=kwargs.get("id", uuid4()),
+        project_id=kwargs.get("project_id", uuid4()),
         dataset_version_id=dataset_version_id,
         status=status,
         epochs=10,
@@ -214,9 +220,15 @@ async def test_export_dataset_version_zip() -> None:
 @pytest.mark.asyncio
 async def test_delete_dataset_cascades_models() -> None:
     version = _ready_dataset()
-    model = _model(version.id, weights_path="projects/p/models/v1/best.pt")
+    job = _job(version.id, project_id=version.project_id)
+    model = _model(
+        version.id,
+        project_id=version.project_id,
+        training_job_id=job.id,
+        weights_path=f"projects/{version.project_id}/models/v1/best.pt",
+    )
     models = _FakeModels([model])
-    jobs = _FakeJobs([_job(version.id)])
+    jobs = _FakeJobs([job])
     auto = _FakeAutoJobs()
     annotations = _FakeAnnotations()
     storage = _FakeStorage()
@@ -231,7 +243,8 @@ async def test_delete_dataset_cascades_models() -> None:
     assert model.id not in models.store
     assert model.id in auto.deleted
     assert model.id in annotations.cleared
-    assert "projects/p/models/v1" in storage.deleted_dirs
+    assert f"projects/{version.project_id}/models/v1" in storage.deleted_dirs
+    assert f"projects/{version.project_id}/models/_train_{job.id}" in storage.deleted_dirs
     assert version.yaml_path.rsplit("/", 1)[0] in storage.deleted_dirs
 
 
@@ -257,7 +270,7 @@ async def test_rename_and_export_model() -> None:
     model = _model(uuid4(), name="Model v1", weights_path="projects/p/models/v1/best.pt")
     models = _FakeModels([model])
     renamed = await RenameModelVersionUseCase(models, _FakeUow()).execute(
-        model.id, "best-detector"
+        model.project_id, model.id, "best-detector"
     )
     assert renamed.name == "best-detector"
     assert "best-detector" in renamed.display_name
@@ -266,7 +279,7 @@ async def test_rename_and_export_model() -> None:
     storage.files[model.weights_path] = b"weights-bytes"
     archive, filename = await ExportModelVersionUseCase(
         models, storage, ZipArchivePacker()
-    ).execute(model.id)
+    ).execute(model.project_id, model.id)
     assert filename.startswith("model-")
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         assert "best.pt" in zf.namelist()
@@ -277,9 +290,37 @@ async def test_rename_and_export_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delete_model_removes_weights_and_train_dir() -> None:
+    job = _job(uuid4(), status=TrainingJobStatus.COMPLETED)
+    model = _model(
+        job.dataset_version_id,
+        project_id=job.project_id,
+        training_job_id=job.id,
+        weights_path=f"projects/{job.project_id}/models/v1/best.pt",
+    )
+    job.model_version_id = model.id
+    storage = _FakeStorage()
+    use_case = DeleteModelVersionUseCase(
+        _FakeModels([model]),
+        _FakeJobs([job]),
+        _FakeAutoJobs(),
+        _FakeAnnotations(),
+        storage,
+        _FakeUow(),
+    )
+    await use_case.execute(model.project_id, model.id)
+    assert f"projects/{job.project_id}/models/v1" in storage.deleted_dirs
+    assert f"projects/{job.project_id}/models/_train_{job.id}" in storage.deleted_dirs
+
+
+@pytest.mark.asyncio
 async def test_delete_model_blocked_while_training() -> None:
     job = _job(uuid4(), status=TrainingJobStatus.QUEUED)
-    model = _model(job.dataset_version_id, training_job_id=job.id)
+    model = _model(
+        job.dataset_version_id,
+        project_id=job.project_id,
+        training_job_id=job.id,
+    )
     use_case = DeleteModelVersionUseCase(
         _FakeModels([model]),
         _FakeJobs([job]),
@@ -289,4 +330,4 @@ async def test_delete_model_blocked_while_training() -> None:
         _FakeUow(),
     )
     with pytest.raises(DomainValidationException, match="training"):
-        await use_case.execute(model.id)
+        await use_case.execute(model.project_id, model.id)

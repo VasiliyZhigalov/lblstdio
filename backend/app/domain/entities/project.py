@@ -40,6 +40,8 @@ class Project:
         self.name = name.strip()
         if not self.name:
             raise DomainValidationException("project name must not be empty")
-        if description is not None:
-            self.description = description
+        if description is None or not str(description).strip():
+            self.description = None
+        else:
+            self.description = str(description).strip()
         self.updated_at = datetime.now(UTC)

@@ -7,6 +7,7 @@ from app.application.use_cases.projects.create_project import (
     CreateProjectUseCase,
     GetProjectUseCase,
     ListProjectsUseCase,
+    UpdateProjectUseCase,
 )
 from app.application.use_cases.projects.delete_project import DeleteProjectUseCase
 from app.domain.entities.annotation import Annotation
@@ -33,6 +34,9 @@ class _FakeProjects:
     async def list_all(self):
         return list(self.items)
 
+    async def update(self, project: Project) -> None:
+        self.items = [project if item.id == project.id else item for item in self.items]
+
     async def delete(self, project_id) -> None:
         self.ops.append("db")
         self.items = [item for item in self.items if item.id != project_id]
@@ -51,6 +55,9 @@ class _FakeStorage:
 
 class _FakeUow:
     async def commit(self) -> None:
+        return None
+
+    async def rollback(self) -> None:
         return None
 
 
@@ -83,6 +90,31 @@ async def test_create_list_and_get_project() -> None:
     assert listed == [created]
     assert fetched.name == "Alpha"
     assert fetched.description == "desc"
+
+
+@pytest.mark.asyncio
+async def test_update_project_name_and_description() -> None:
+    projects = _FakeProjects()
+    created = await CreateProjectUseCase(projects, _FakeUow()).execute("Alpha", "desc")
+    updated = await UpdateProjectUseCase(projects, _FakeUow()).execute(
+        created.id, "Beta", "new desc"
+    )
+    assert updated.name == "Beta"
+    assert updated.description == "new desc"
+    assert updated.updated_at >= created.updated_at
+
+    cleared = await UpdateProjectUseCase(projects, _FakeUow()).execute(
+        created.id, "Beta", None
+    )
+    assert cleared.description is None
+
+
+@pytest.mark.asyncio
+async def test_update_missing_project() -> None:
+    with pytest.raises(ResourceNotFoundException):
+        await UpdateProjectUseCase(_FakeProjects(), _FakeUow()).execute(
+            uuid4(), "Nope", None
+        )
 
 
 @pytest.mark.asyncio

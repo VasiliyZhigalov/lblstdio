@@ -241,3 +241,8 @@ def test_dataset_version_rename_export_delete(client: TestClient) -> None:
     listed = client.get(f"/api/v1/projects/{project_id}/dataset-versions")
     assert listed.status_code == 200
     assert listed.json() == []
+
+    yaml_path = created.json()["yaml_path"]
+    assert yaml_path
+    dataset_dir = Path(client.app.state.storage.get_absolute_path(yaml_path)).parent
+    assert not dataset_dir.exists()

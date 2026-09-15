@@ -11,8 +11,8 @@ from app.domain.exceptions import DomainValidationException
 class ModelVersion:
     id: UUID
     project_id: UUID
-    dataset_version_id: UUID
-    training_job_id: UUID
+    dataset_version_id: UUID | None
+    training_job_id: UUID | None
     version_number: int
     weights_path: str
     map50: float | None
@@ -35,8 +35,8 @@ class ModelVersion:
     def create(
         cls,
         project_id: UUID,
-        dataset_version_id: UUID,
-        training_job_id: UUID,
+        dataset_version_id: UUID | None,
+        training_job_id: UUID | None,
         version_number: int,
         weights_path: str,
         *,
@@ -46,6 +46,7 @@ class ModelVersion:
         recall: float | None = None,
         name: str | None = None,
         model_id: UUID | None = None,
+        is_active_for_stream: bool = True,
     ) -> ModelVersion:
         return cls(
             id=model_id or uuid4(),
@@ -59,6 +60,27 @@ class ModelVersion:
             precision=precision,
             recall=recall,
             name=(name or f"Model v{version_number}").strip(),
+            is_active_for_stream=is_active_for_stream,
+        )
+
+    @classmethod
+    def create_uploaded(
+        cls,
+        project_id: UUID,
+        version_number: int,
+        weights_path: str,
+        *,
+        name: str | None = None,
+        model_id: UUID | None = None,
+    ) -> ModelVersion:
+        return cls.create(
+            project_id=project_id,
+            dataset_version_id=None,
+            training_job_id=None,
+            version_number=version_number,
+            weights_path=weights_path,
+            name=name,
+            model_id=model_id,
             is_active_for_stream=True,
         )
 

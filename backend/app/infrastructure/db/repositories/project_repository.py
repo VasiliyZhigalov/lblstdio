@@ -27,6 +27,15 @@ class SqliteProjectRepository(IProjectRepository):
         )
         return [row_to_project(row) for row in result]
 
+    async def update(self, project: Project) -> None:
+        row = await self._session.get(ProjectRow, str(project.id))
+        if row is None:
+            return
+        row.name = project.name
+        row.description = project.description
+        row.updated_at = project.updated_at
+        await self._session.flush()
+
     async def delete(self, project_id: UUID) -> None:
         row = await self._session.get(ProjectRow, str(project_id))
         if row is not None:

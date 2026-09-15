@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import logging
 from pathlib import Path
 from uuid import UUID
 
@@ -21,15 +21,26 @@ from app.application.ports.storage.archive_packer import IArchivePacker
 from app.application.ports.storage.file_storage import IFileStorage
 from app.application.ports.unit_of_work import IUnitOfWork
 from app.domain.entities.dataset_version import DatasetVersion
-from app.domain.entities.model_version import ModelVersion
 from app.domain.enums import DatasetVersionStatus, TrainingJobStatus
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
 
 _ACTIVE_TRAINING = {TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING}
+logger = logging.getLogger(__name__)
 
 
 def _parent_rel(relative_path: str) -> str:
     return Path(relative_path).parent.as_posix()
+
+
+def _train_work_rel(project_id: UUID, job_id: UUID) -> str:
+    return f"projects/{project_id}/models/_train_{job_id}"
+
+
+async def _safe_delete_directory(storage: IFileStorage, relative_dir: str) -> None:
+    try:
+        await storage.delete_directory(relative_dir)
+    except Exception:
+        logger.warning("failed to delete directory %s", relative_dir, exc_info=True)
 
 
 class RenameDatasetVersionUseCase:
@@ -119,133 +130,31 @@ class DeleteDatasetVersionUseCase:
 
         linked_models = await self._models.list_by_dataset_version(version_id)
         model_ids = [item.id for item in linked_models]
+        dirs_to_delete: list[str] = []
+        for model in linked_models:
+            if model.weights_path:
+                dirs_to_delete.append(_parent_rel(model.weights_path))
+            if model.training_job_id is not None:
+                dirs_to_delete.append(
+                    _train_work_rel(model.project_id, model.training_job_id)
+                )
+        for job in training_jobs:
+            dirs_to_delete.append(_train_work_rel(job.project_id, job.id))
+        if version.yaml_path:
+            dirs_to_delete.append(_parent_rel(version.yaml_path))
+
         await self._auto_jobs.delete_by_model_versions(model_ids)
         for model in linked_models:
             await self._annotations.clear_model_version_refs(model.id)
             await self._models.delete(model.id)
-            if model.weights_path:
-                try:
-                    await self._storage.delete_directory(_parent_rel(model.weights_path))
-                except Exception:
-                    pass
 
         await self._jobs.delete_by_dataset_version(version_id)
         await self._versions.delete(version_id)
         await self._uow.commit()
 
-        if version.yaml_path:
-            try:
-                await self._storage.delete_directory(_parent_rel(version.yaml_path))
-            except Exception:
-                pass
-
-
-class RenameModelVersionUseCase:
-    def __init__(
-        self,
-        models: IModelVersionRepository,
-        uow: IUnitOfWork,
-    ) -> None:
-        self._models = models
-        self._uow = uow
-
-    async def execute(self, model_id: UUID, name: str) -> ModelVersion:
-        model = await self._models.get_by_id(model_id)
-        if model is None:
-            raise ResourceNotFoundException(f"model {model_id} not found")
-        model.rename(name)
-        await self._models.update(model)
-        await self._uow.commit()
-        return model
-
-
-class ExportModelVersionUseCase:
-    def __init__(
-        self,
-        models: IModelVersionRepository,
-        storage: IFileStorage,
-        packer: IArchivePacker,
-    ) -> None:
-        self._models = models
-        self._storage = storage
-        self._packer = packer
-
-    async def execute(self, model_id: UUID) -> tuple[bytes, str]:
-        model = await self._models.get_by_id(model_id)
-        if model is None:
-            raise ResourceNotFoundException(f"model {model_id} not found")
-        try:
-            weights = await self._storage.read(model.weights_path)
-        except Exception as exc:
-            raise DomainValidationException(
-                f"weights not found: {model.weights_path}"
-            ) from exc
-
-        metadata = {
-            "id": str(model.id),
-            "project_id": str(model.project_id),
-            "dataset_version_id": str(model.dataset_version_id),
-            "training_job_id": str(model.training_job_id),
-            "version_number": model.version_number,
-            "name": model.name,
-            "display_name": model.display_name,
-            "weights_path": model.weights_path,
-            "map50": model.map50,
-            "map50_95": model.map50_95,
-            "precision": model.precision,
-            "recall": model.recall,
-            "is_active_for_stream": model.is_active_for_stream,
-            "created_at": model.created_at.isoformat(),
-        }
-        weights_name = Path(model.weights_path).name or "best.pt"
-        archive = self._packer.pack(
-            {
-                weights_name: weights,
-                "metadata.json": json.dumps(metadata, indent=2).encode("utf-8"),
-            }
-        )
-        safe_name = "".join(
-            ch if ch.isalnum() or ch in "-_." else "_" for ch in model.name
-        )
-        filename = f"model-{safe_name or model.version_number}.zip"
-        return archive, filename
-
-
-class DeleteModelVersionUseCase:
-    def __init__(
-        self,
-        models: IModelVersionRepository,
-        jobs: ITrainingJobRepository,
-        auto_jobs: IAutoLabelJobRepository,
-        annotations: IAnnotationRepository,
-        storage: IFileStorage,
-        uow: IUnitOfWork,
-    ) -> None:
-        self._models = models
-        self._jobs = jobs
-        self._auto_jobs = auto_jobs
-        self._annotations = annotations
-        self._storage = storage
-        self._uow = uow
-
-    async def execute(self, model_id: UUID) -> None:
-        model = await self._models.get_by_id(model_id)
-        if model is None:
-            raise ResourceNotFoundException(f"model {model_id} not found")
-
-        job = await self._jobs.get_by_id(model.training_job_id)
-        if job is not None and job.status in _ACTIVE_TRAINING:
-            raise DomainValidationException(
-                "cannot delete model while its training job is queued or running"
-            )
-
-        await self._auto_jobs.delete_by_model_version(model.id)
-        await self._annotations.clear_model_version_refs(model.id)
-        await self._models.delete(model.id)
-        await self._uow.commit()
-
-        if model.weights_path:
-            try:
-                await self._storage.delete_directory(_parent_rel(model.weights_path))
-            except Exception:
-                pass
+        seen: set[str] = set()
+        for relative_dir in dirs_to_delete:
+            if relative_dir in seen:
+                continue
+            seen.add(relative_dir)
+            await _safe_delete_directory(self._storage, relative_dir)

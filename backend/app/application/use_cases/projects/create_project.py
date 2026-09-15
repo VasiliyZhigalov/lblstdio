@@ -18,6 +18,26 @@ class CreateProjectUseCase:
         return project
 
 
+class UpdateProjectUseCase:
+    def __init__(self, projects: IProjectRepository, uow: IUnitOfWork) -> None:
+        self._projects = projects
+        self._uow = uow
+
+    async def execute(
+        self,
+        project_id: UUID,
+        name: str,
+        description: str | None = None,
+    ) -> Project:
+        project = await self._projects.get_by_id(project_id)
+        if project is None:
+            raise ResourceNotFoundException(f"project {project_id} not found")
+        project.rename(name, description)
+        await self._projects.update(project)
+        await self._uow.commit()
+        return project
+
+
 class ListProjectsUseCase:
     def __init__(self, projects: IProjectRepository) -> None:
         self._projects = projects

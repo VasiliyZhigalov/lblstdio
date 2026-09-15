@@ -15,8 +15,12 @@ def _to_row(version: ModelVersion) -> ModelVersionRow:
     return ModelVersionRow(
         id=str(version.id),
         project_id=str(version.project_id),
-        dataset_version_id=str(version.dataset_version_id),
-        training_job_id=str(version.training_job_id),
+        dataset_version_id=(
+            str(version.dataset_version_id) if version.dataset_version_id else None
+        ),
+        training_job_id=(
+            str(version.training_job_id) if version.training_job_id else None
+        ),
         version_number=version.version_number,
         name=version.name or f"Model v{version.version_number}",
         weights_path=version.weights_path,
@@ -33,8 +37,10 @@ def _from_row(row: ModelVersionRow) -> ModelVersion:
     return ModelVersion(
         id=UUID(row.id),
         project_id=UUID(row.project_id),
-        dataset_version_id=UUID(row.dataset_version_id),
-        training_job_id=UUID(row.training_job_id),
+        dataset_version_id=(
+            UUID(row.dataset_version_id) if row.dataset_version_id else None
+        ),
+        training_job_id=UUID(row.training_job_id) if row.training_job_id else None,
         version_number=row.version_number,
         name=getattr(row, "name", None) or f"Model v{row.version_number}",
         weights_path=row.weights_path,

@@ -204,3 +204,65 @@ class TestTrainingAndAutoLabelApi:
         assert all(item["verification_status"] == "VERIFIED" for item in verified.json())
         after = client.get(f"/api/v1/images/{raw_id}")
         assert after.json()["status"] == "VERIFIED"
+
+    def test_delete_model_removes_weights_from_disk(self, client: TestClient) -> None:
+        project_id, version_id, _raw_id = _seed_ready_dataset(client)
+        start = client.post(
+            f"/api/v1/projects/{project_id}/train",
+            json={"dataset_version_id": version_id, "epochs": 3},
+        )
+        assert start.status_code == 202, start.text
+        job_id = start.json()["id"]
+
+        deadline = time.time() + 15
+        payload = None
+        while time.time() < deadline:
+            response = client.get(f"/api/v1/training-jobs/{job_id}")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            if payload["status"] in {"COMPLETED", "FAILED"}:
+                break
+            time.sleep(0.2)
+
+        assert payload is not None
+        assert payload["status"] == "COMPLETED", payload
+        model = client.get(f"/api/v1/projects/{project_id}/models").json()[0]
+        weights = Path(client.app.state.storage.get_absolute_path(model["weights_path"]))
+        weights_dir = weights.parent
+        train_dir = Path(
+            client.app.state.storage.get_absolute_path(
+                f"projects/{project_id}/models/_train_{job_id}"
+            )
+        )
+        # Training runner cleans work dir on success; recreate to assert delete path.
+        train_dir.mkdir(parents=True, exist_ok=True)
+        (train_dir / "leftover.bin").write_bytes(b"x")
+        assert weights.is_file()
+        assert train_dir.is_dir()
+
+        deleted = client.delete(f"/api/v1/projects/{project_id}/models/{model['id']}")
+        assert deleted.status_code == 204, deleted.text
+        assert client.get(f"/api/v1/projects/{project_id}/models").json() == []
+        assert not weights_dir.exists()
+        assert not train_dir.exists()
+
+    def test_upload_model_pt_registers_version(self, client: TestClient) -> None:
+        project_id = client.post("/api/v1/projects", json={"name": "Upload"}).json()["id"]
+        uploaded = client.post(
+            f"/api/v1/projects/{project_id}/models/upload",
+            files={"file": ("custom.pt", b"yolo-weights-bytes", "application/octet-stream")},
+            data={"name": "From Disk"},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        body = uploaded.json()
+        assert body["name"] == "From Disk"
+        assert body["dataset_version_id"] is None
+        assert body["training_job_id"] is None
+        weights = Path(client.app.state.storage.get_absolute_path(body["weights_path"]))
+        assert weights.is_file()
+        assert weights.read_bytes() == b"yolo-weights-bytes"
+
+        listed = client.get(f"/api/v1/projects/{project_id}/models")
+        assert listed.status_code == 200
+        assert len(listed.json()) == 1
+        assert listed.json()[0]["id"] == body["id"]
