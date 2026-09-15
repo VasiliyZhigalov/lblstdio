@@ -137,6 +137,10 @@ def pair_images_and_labels(
     Same basename across train/valid/test is allowed (Roboflow layout).
     Prefer sibling ``labels/`` next to ``images/``, then same directory,
     then a unique global stem match only when exactly one image has that stem.
+
+    When several images share a stem and a given image has no sibling/same-dir
+    label, leave it unpaired instead of failing the whole upload (common when a
+    zip contains both ``images/`` and ``train/images/`` copies).
     """
     labels_by_stem: dict[str, list[str]] = {}
     for path in labels:
@@ -168,12 +172,13 @@ def pair_images_and_labels(
             paired[image_path] = candidates[0]
             continue
 
+        if images_per_stem.get(stem, 0) > 1:
+            # Cannot safely attach a non-local label when the stem is shared.
+            paired[image_path] = None
+            continue
+
         raise DomainValidationException(
-            f"ambiguous labels for image '{image_path}': "
-            f"stem '{stem}' matches {images_per_stem.get(stem, 0)} images; "
-            f"use sibling labels/ or same-directory .txt files"
-            if images_per_stem.get(stem, 0) > 1
-            else f"ambiguous labels for image '{image_path}': {', '.join(sorted(candidates))}"
+            f"ambiguous labels for image '{image_path}': {', '.join(sorted(candidates))}"
         )
     return paired
 

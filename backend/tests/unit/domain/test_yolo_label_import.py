@@ -68,16 +68,30 @@ def test_pair_rejects_ambiguous_labels_without_sibling() -> None:
         )
 
 
-def test_pair_rejects_shared_stem_with_single_global_label() -> None:
+def test_pair_skips_shared_stem_without_sibling_instead_of_failing() -> None:
     """One global label must not attach to every image with the same stem."""
-    with pytest.raises(DomainValidationException, match="ambiguous"):
-        pair_images_and_labels(
-            {
-                "a/x.jpg": b"img-a",
-                "b/x.jpg": b"img-b",
-            },
-            {"labels/x.txt": b"0 0.5 0.5 0.1 0.1\n"},
-        )
+    paired = pair_images_and_labels(
+        {
+            "a/x.jpg": b"img-a",
+            "b/x.jpg": b"img-b",
+        },
+        {"labels/x.txt": b"0 0.5 0.5 0.1 0.1\n"},
+    )
+    assert paired["a/x.jpg"] is None
+    assert paired["b/x.jpg"] is None
+
+
+def test_pair_duplicate_flat_and_split_keeps_sibling_only() -> None:
+    """Roboflow zips may contain both images/ and train/images/ for the same stem."""
+    paired = pair_images_and_labels(
+        {
+            "images/x.jpg": b"flat",
+            "train/images/x.jpg": b"split",
+        },
+        {"train/labels/x.txt": b"0 0.5 0.5 0.1 0.1\n"},
+    )
+    assert paired["train/images/x.jpg"] == "train/labels/x.txt"
+    assert paired["images/x.jpg"] is None
 
 
 def test_pair_allows_unique_global_stem_for_single_image() -> None:
