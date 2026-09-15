@@ -13,6 +13,11 @@ _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 _LABEL_EXTENSIONS = {".txt"}
 _CLASS_FILE_NAMES = {"data.yaml", "data.yml", "classes.txt"}
 
+MAX_ZIP_MEMBERS = 10_000
+MAX_ZIP_MEMBER_BYTES = 20 * 1024 * 1024
+MAX_ZIP_TOTAL_UNCOMPRESSED = 200 * 1024 * 1024
+MAX_ZIP_COMPRESSION_RATIO = 100.0
+
 
 @dataclass(frozen=True)
 class ParsedYoloBox:
@@ -24,8 +29,11 @@ class ParsedYoloBox:
 
 
 def _normalize_path(path: str) -> str:
-    cleaned = path.replace("\\", "/").lstrip("./")
-    parts = [part for part in PurePosixPath(cleaned).parts if part not in ("", ".")]
+    cleaned = path.replace("\\", "/")
+    pure = PurePosixPath(cleaned)
+    if pure.is_absolute():
+        raise DomainValidationException(f"invalid path '{path}'")
+    parts = [part for part in pure.parts if part not in ("", ".")]
     if ".." in parts:
         raise DomainValidationException(f"invalid path '{path}'")
     return "/".join(parts)
@@ -84,7 +92,15 @@ def parse_class_names(
         if names is None:
             return None
         if isinstance(names, dict):
-            ordered = [names[key] for key in sorted(names.keys(), key=lambda item: int(item))]
+            try:
+                ordered = [
+                    names[key]
+                    for key in sorted(names.keys(), key=lambda item: int(item))
+                ]
+            except (TypeError, ValueError) as exc:
+                raise DomainValidationException(
+                    f"{name}: 'names' keys must be integers"
+                ) from exc
             return [str(item).strip() for item in ordered if str(item).strip()]
         if isinstance(names, list):
             return [str(item).strip() for item in names if str(item).strip()]
@@ -116,21 +132,21 @@ def pair_images_and_labels(
     images: dict[str, bytes],
     labels: dict[str, bytes],
 ) -> dict[str, str | None]:
-    stems: dict[str, list[str]] = {}
-    for path in images:
-        stems.setdefault(_stem(path), []).append(path)
-    for stem, paths in stems.items():
-        if len(paths) > 1:
-            joined = ", ".join(sorted(paths))
-            raise DomainValidationException(
-                f"duplicate image stem '{stem}': {joined}"
-            )
+    """Pair images to labels.
 
+    Same basename across train/valid/test is allowed (Roboflow layout).
+    Prefer sibling ``labels/`` next to ``images/``, then same directory,
+    then a unique global stem match only when exactly one image has that stem.
+    """
     labels_by_stem: dict[str, list[str]] = {}
     for path in labels:
         labels_by_stem.setdefault(_stem(path), []).append(path)
 
     paired: dict[str, str | None] = {}
+    images_per_stem: dict[str, int] = {}
+    for image_path in images:
+        images_per_stem[_stem(image_path)] = images_per_stem.get(_stem(image_path), 0) + 1
+
     for image_path in images:
         stem = _stem(image_path)
         candidates = labels_by_stem.get(stem, [])
@@ -148,14 +164,37 @@ def pair_images_and_labels(
             paired[image_path] = same_dir
             continue
 
-        if len(candidates) == 1:
+        if len(candidates) == 1 and images_per_stem.get(stem, 0) == 1:
             paired[image_path] = candidates[0]
             continue
 
         raise DomainValidationException(
-            f"ambiguous labels for image '{image_path}': {', '.join(sorted(candidates))}"
+            f"ambiguous labels for image '{image_path}': "
+            f"stem '{stem}' matches {images_per_stem.get(stem, 0)} images; "
+            f"use sibling labels/ or same-directory .txt files"
+            if images_per_stem.get(stem, 0) > 1
+            else f"ambiguous labels for image '{image_path}': {', '.join(sorted(candidates))}"
         )
     return paired
+
+
+def _check_zip_member(info: zipfile.ZipInfo, *, total_uncompressed: int) -> int:
+    size = int(info.file_size)
+    if size < 0:
+        raise DomainValidationException("invalid zip member size")
+    if size > MAX_ZIP_MEMBER_BYTES:
+        raise DomainValidationException(
+            f"zip member '{info.filename}' exceeds the size limit"
+        )
+    compressed = int(info.compress_size) if info.compress_size else 0
+    if compressed > 0 and size / compressed > MAX_ZIP_COMPRESSION_RATIO:
+        raise DomainValidationException(
+            f"zip member '{info.filename}' looks like a zip bomb"
+        )
+    next_total = total_uncompressed + size
+    if next_total > MAX_ZIP_TOTAL_UNCOMPRESSED:
+        raise DomainValidationException("zip archive uncompressed size exceeds the limit")
+    return next_total
 
 
 def expand_upload_bundle(
@@ -164,11 +203,15 @@ def expand_upload_bundle(
     images: dict[str, bytes] = {}
     labels: dict[str, bytes] = {}
     class_files: dict[str, bytes] = {}
+    seen_paths: set[str] = set()
 
     def _ingest(path: str, content: bytes) -> None:
         normalized = _normalize_path(path)
         if not normalized:
             return
+        if normalized in seen_paths:
+            raise DomainValidationException(f"duplicate path '{normalized}' in upload")
+        seen_paths.add(normalized)
         name = PurePosixPath(normalized).name.lower()
         suffix = PurePosixPath(normalized).suffix.lower()
         if name in _CLASS_FILE_NAMES:
@@ -190,13 +233,25 @@ def expand_upload_bundle(
         if suffix == ".zip":
             try:
                 with zipfile.ZipFile(io.BytesIO(content)) as archive:
-                    for info in archive.infolist():
-                        if info.is_dir():
-                            continue
+                    members = [info for info in archive.infolist() if not info.is_dir()]
+                    if len(members) > MAX_ZIP_MEMBERS:
+                        raise DomainValidationException(
+                            f"zip archive '{filename}' has too many files"
+                        )
+                    total_uncompressed = 0
+                    for info in members:
+                        total_uncompressed = _check_zip_member(
+                            info, total_uncompressed=total_uncompressed
+                        )
                         member = _normalize_path(info.filename)
                         if not member:
                             continue
-                        _ingest(member, archive.read(info))
+                        payload = archive.read(info)
+                        if len(payload) > MAX_ZIP_MEMBER_BYTES:
+                            raise DomainValidationException(
+                                f"zip member '{info.filename}' exceeds the size limit"
+                            )
+                        _ingest(member, payload)
             except zipfile.BadZipFile as exc:
                 raise DomainValidationException(
                     f"invalid zip archive '{filename}'"

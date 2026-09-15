@@ -202,19 +202,27 @@ class TestUploadImagesUseCase:
         assert uow.committed is False
 
     @pytest.mark.asyncio
-    async def test_validates_before_saving(self) -> None:
-        use_case, _, _, uow, project, *_ = _use_case()
-        storage = use_case._storage
-        with pytest.raises(DomainValidationException, match="duplicate"):
-            await use_case.execute(
-                project.id,
-                [
-                    UploadedFile(filename="train/images/a.png", content=b"one"),
-                    UploadedFile(filename="valid/images/a.png", content=b"two"),
-                ],
-            )
-        assert storage.saved == []
-        assert uow.committed is False
+    async def test_allows_same_stem_across_roboflow_splits(self) -> None:
+        use_case, _, _, uow, project, annotations, _ = _use_case()
+        result = await use_case.execute(
+            project.id,
+            [
+                UploadedFile(filename="train/images/x.png", content=b"one"),
+                UploadedFile(filename="train/labels/x.txt", content=b"0 0.5 0.5 0.1 0.1\n"),
+                UploadedFile(filename="valid/images/x.png", content=b"two"),
+                UploadedFile(filename="valid/labels/x.txt", content=b"\n"),
+                UploadedFile(filename="classes.txt", content=b"obj\n"),
+            ],
+        )
+        by_path = {item.file_name: item for item in result}
+        # Storage may UUID-suffix one of the colliding basenames.
+        assert len(result) == 2
+        verified = [item for item in result if item.status.value == "VERIFIED"]
+        assert len(verified) == 2
+        backgrounds = [item for item in result if item.is_background]
+        assert len(backgrounds) == 1
+        assert sum(len(boxes) for boxes in annotations.replaced.values()) == 1
+        assert uow.committed is True
 
     @pytest.mark.asyncio
     async def test_cleans_up_files_when_persist_fails(self) -> None:

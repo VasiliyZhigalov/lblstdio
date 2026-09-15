@@ -87,10 +87,10 @@ def _bbox_params() -> A.BboxParams:
     return A.BboxParams(**kwargs)
 
 
-def _coarse_dropout() -> A.BasicTransform:
+def _coarse_dropout() -> A.BasicTransform | None:
     cls = getattr(A, "CoarseDropout", None) or getattr(A, "Cutout", None)
     if cls is None:
-        return A.GaussNoise(p=1.0)
+        return None
     kwargs: dict = {"p": 1.0}
     if _supports_param(cls, "num_holes_range"):
         kwargs["num_holes_range"] = (1, 3)
@@ -138,24 +138,26 @@ class AlbumentationsAugmentationService(IAugmentationService):
             )
         return A.Rotate(limit=15, border_mode=cv2.BORDER_CONSTANT, p=probability)
 
-    def _shear_op(self, *, force: bool) -> A.BasicTransform:
+    def _shear_op(self, *, force: bool) -> A.BasicTransform | None:
         probability = 1.0 if force else 0.5
         fill_kwargs = _affine_fill_kwargs()
-        if hasattr(A, "Affine") and _supports_param(A.Affine, "shear"):
-            return A.Affine(
-                shear={"x": (-10, 10), "y": (-10, 10)},
-                border_mode=cv2.BORDER_CONSTANT,
-                p=probability,
-                **fill_kwargs,
-            )
-        return A.ShiftScaleRotate(
-            shift_limit=0.0,
-            scale_limit=0.0,
-            rotate_limit=0,
-            border_mode=cv2.BORDER_CONSTANT,
-            p=probability,
-            **fill_kwargs,
-        )
+        if not hasattr(A, "Affine") or not _supports_param(A.Affine, "shear"):
+            return None
+        # Prefer axis-wise shear; fall back to a single range if needed.
+        for shear_arg in (
+            {"x": (-10, 10), "y": (-10, 10)},
+            (-10, 10),
+        ):
+            try:
+                return A.Affine(
+                    shear=shear_arg,
+                    border_mode=cv2.BORDER_CONSTANT,
+                    p=probability,
+                    **fill_kwargs,
+                )
+            except (TypeError, ValueError):
+                continue
+        return None
 
     def _enabled_forced_ops(
         self, config: AugmentationConfig
@@ -168,7 +170,12 @@ class AlbumentationsAugmentationService(IAugmentationService):
         if config.effective_rotate:
             ops.append(self._rotate_op(force=True))
         if config.effective_shear:
-            ops.append(self._shear_op(force=True))
+            shear = self._shear_op(force=True)
+            if shear is None:
+                raise RuntimeError(
+                    "shear is enabled but Albumentations Affine.shear is unavailable"
+                )
+            ops.append(shear)
         if config.hue_saturation:
             ops.append(
                 A.HueSaturationValue(
@@ -206,7 +213,12 @@ class AlbumentationsAugmentationService(IAugmentationService):
         if config.grayscale:
             ops.append(A.ToGray(p=1.0))
         if config.cutout:
-            ops.append(_coarse_dropout())
+            cutout = _coarse_dropout()
+            if cutout is None:
+                raise RuntimeError(
+                    "cutout is enabled but Albumentations CoarseDropout/Cutout is unavailable"
+                )
+            ops.append(cutout)
         return ops
 
     def _variant_pipeline(

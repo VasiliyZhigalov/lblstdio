@@ -42,8 +42,9 @@ class TestLabeledUploadApi:
             f"/api/v1/projects/{project_id}/images/upload",
             files=[
                 ("files", ("bundle.zip", zip_buf.getvalue(), "application/zip")),
-                ("files", ("raw/images/loose.png", _png((1, 2, 3)), "image/png")),
+                ("files", ("loose.png", _png((1, 2, 3)), "image/png")),
             ],
+            data={"relative_paths": ["bundle.zip", "raw/images/loose.png"]},
         )
         assert response.status_code == 201, response.text
         images = {item["file_name"]: item for item in response.json()}
@@ -60,6 +61,36 @@ class TestLabeledUploadApi:
 
         classes = client.get(f"/api/v1/projects/{project_id}/classes").json()
         assert any(item["name"] == "crack" for item in classes)
+
+    def test_folder_upload_uses_relative_paths_when_filename_is_basename(
+        self, client: TestClient
+    ) -> None:
+        """Browsers often strip directories from multipart filename=; paths come separately."""
+        project_id = client.post("/api/v1/projects", json={"name": "Folder"}).json()["id"]
+        response = client.post(
+            f"/api/v1/projects/{project_id}/images/upload",
+            files=[
+                ("files", ("x.png", _png((10, 20, 30)), "image/png")),
+                ("files", ("x.txt", b"0 0.5 0.5 0.2 0.2\n", "text/plain")),
+                ("files", ("x.png", _png((40, 50, 60)), "image/png")),
+                ("files", ("x.txt", b"\n", "text/plain")),
+                ("files", ("classes.txt", b"obj\n", "text/plain")),
+            ],
+            data={
+                "relative_paths": [
+                    "train/images/x.png",
+                    "train/labels/x.txt",
+                    "valid/images/x.png",
+                    "valid/labels/x.txt",
+                    "classes.txt",
+                ]
+            },
+        )
+        assert response.status_code == 201, response.text
+        payload = response.json()
+        assert len(payload) == 2
+        assert all(item["status"] == "VERIFIED" for item in payload)
+        assert sum(1 for item in payload if item["is_background"]) == 1
 
     def test_dataset_version_split_ratios_ignore_upload_stub(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch

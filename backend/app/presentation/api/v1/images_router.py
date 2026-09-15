@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 from fastapi.responses import FileResponse
 
 from app.application.dto import UploadedFile
@@ -62,12 +62,22 @@ def _annotation_to_read(annotation) -> AnnotationRead:
 async def upload_images(
     project_id: UUID,
     files: list[UploadFile] = File(...),
+    relative_paths: list[str] | None = Form(default=None),
     use_case: UploadImagesUseCase = Depends(get_upload_images_use_case),
 ) -> list[ImageRead]:
-    uploaded = [
-        UploadedFile(filename=item.filename or "upload.bin", content=await item.read())
-        for item in files
-    ]
+    paths = relative_paths or []
+    if paths and len(paths) != len(files):
+        raise DomainValidationException(
+            "relative_paths count must match files count"
+        )
+    uploaded: list[UploadedFile] = []
+    for index, item in enumerate(files):
+        raw_name = paths[index] if paths else (item.filename or "upload.bin")
+        # Browsers may use backslashes; normalize early.
+        filename = str(raw_name).replace("\\", "/")
+        uploaded.append(
+            UploadedFile(filename=filename, content=await item.read())
+        )
     images = await use_case.execute(project_id, uploaded)
     return [_image_to_read(item) for item in images]
 
