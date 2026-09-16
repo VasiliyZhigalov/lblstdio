@@ -194,6 +194,12 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       btn.addEventListener("click", async (ev) => {
         ev.stopPropagation();
         const id = btn.getAttribute("data-delete-stream");
+        const s = streams.find((item) => item.id === id);
+        if (!s) return;
+        const ok = window.confirm(
+          `Удалить источник «${s.name}»? Это действие необратимо.`
+        );
+        if (!ok) return;
         try {
           await api.deleteStream(id);
           if (selectedId === id) selectedId = null;
