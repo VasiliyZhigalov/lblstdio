@@ -1,1 +1,71 @@
-(frontend/js/components/streamHub.js is a source file, and there are no build artifacts, dependencies, or temporary files in the changes)
+```gitignore
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+*.min.js
+*.bundle.js
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+*.coverage
+.coverage.*
+!.coveragerc
+
+# Distribution / packaging
+.Python
+env/
+venv/
+.venv/
+.ENV
+.venv.bak
+env.bak
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+
+# Node
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+```
