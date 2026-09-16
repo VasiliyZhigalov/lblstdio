@@ -1,12 +1,1 @@
-*.db
-cv_trainer.db
-__pycache__/
-.pytest_cache/
-.venv/
-storage/
-*.pyc
-*.pt
-* (2).*
-* (2).js
-* (2).db
-backend/config.yaml
+(frontend/js/components/streamHub.js is a source file, and there are no build artifacts, dependencies, or temporary files in the changes)
