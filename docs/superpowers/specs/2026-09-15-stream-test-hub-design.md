@@ -17,7 +17,7 @@ Hooks already exist (`ImageSourceType.STREAM_INGEST`, `Image.stream_source_id`, 
 
 - Full Stream & Test Hub in one delivery: RTSP, local video file, webcam/DEVICE.
 - Live MJPEG preview with boxes, tracks, and virtual tripwire overlay.
-- Conditional capture: timer + uncertainty window; tripwire line crossing with direction + debounce.
+- Conditional capture: track-stability (ByteTrack N frames + avg conf + size variation); tripwire line crossing with direction + debounce.
 - HITL ingest: clean frame → `STREAM_INGEST` / `REQUIRES_REVIEW` + `MODEL_PREDICTION` / `PENDING_REVIEW`.
 - Fourth project tab: **Стрим и Сбор**.
 - At most **one active stream per project**.
@@ -77,22 +77,25 @@ One background `threading.Thread` per running stream:
 
 ### `StreamTriggerConfig`
 
-- `timer_enabled: bool`, `timer_interval_seconds: float`
+- `track_stable_enabled: bool` (default `true`)
+- `track_stable_min_frames: int` (default `12`) — continuous ByteTrack presence required
+- `track_stable_max_size_variation: float` (default `0.35`) — max relative box-area span `max/min - 1`
+- `track_stable_min_avg_conf: float` (default `0.75`, not exposed in UI)
+- `track_stable_interval_seconds: float` (default `5.0`) — per-`track_id` gap between saves
 - `tripwire_enabled: bool`
 - `tripwire_line: tuple[float, float, float, float] | None` — normalized `(x1,y1,x2,y2)` in `[0,1]`
 - `tripwire_classes: list[UUID]` — empty = all classes
 - `tripwire_direction: TripwireDirection` — `ANY` | `FORWARD` | `BACKWARD`  
   (`FORWARD` = left→right / top→bottom relative to line normal; `BACKWARD` = opposite)
 - `tripwire_debounce_seconds: float` (default `3.0`)
-- `uncertainty_range: tuple[float, float]` (default `(0.70, 0.90)`)
-- `cooldown_seconds: float` (default `3.0`) — global gap between any two saves from this stream
+- `cooldown_seconds: float` (default `3.0`) — global gap for tripwire saves
 
 ### Invariants
 
 1. **One active stream per project:** starting stream A stops any other active stream in the same project.
 2. **HITL on ingest:** clean JPEG (no overlay) saved via file storage; `Image` with `source_type=STREAM_INGEST`, `status=REQUIRES_REVIEW`, `stream_source_id` set; annotations with `source=MODEL_PREDICTION`, `verification_status=PENDING_REVIEW`, `confidence` set.
-3. **Timer capture:** fire only if interval elapsed AND ≥1 detection **of any class** with confidence in `uncertainty_range` AND global cooldown elapsed. (Class filter is tripwire-only in v1.)
-4. **Tripwire capture:** segment intersection of motion vector `(P_{t-1}, P_t)` with line `(A,B)`, optional `tripwire_classes` filter, direction filter, per-`track_id` debounce; uncertainty window is **not** required for tripwire (event-driven). Global cooldown still applies.
+3. **Track-stable capture:** for each `track_id`, require ≥ N continuous frames, mean confidence ≥ `track_stable_min_avg_conf`, and size variation ≤ `track_stable_max_size_variation`. On trigger, save the **best-confidence** frame from the window; then enforce per-track `track_stable_interval_seconds` before another save of the same id.
+4. **Tripwire capture:** segment intersection of motion vector `(P_{t-1}, P_t)` with line `(A,B)`, optional `tripwire_classes` filter, direction filter, per-`track_id` debounce; track-stable gate is **not** required for tripwire (event-driven). Global cooldown still applies.
 5. **VIDEO_FILE:** loop from start on EOF by default.
 
 ## Runtime details

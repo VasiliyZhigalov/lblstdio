@@ -83,10 +83,10 @@ async def test_create_rtsp_and_configure() -> None:
     uc, project, streams, _ = _uc()
     src = await uc.create_rtsp(project.id, "Gate", "rtsp://127.0.0.1/stream")
     assert src.source_type == StreamSourceType.RTSP
-    cfg = StreamTriggerConfig(timer_enabled=True, timer_interval_seconds=2.0)
+    cfg = StreamTriggerConfig(track_stable_enabled=True, track_stable_interval_seconds=2.0)
     updated = await uc.configure_triggers(src.id, cfg)
-    assert updated.config.timer_enabled is True
-    assert streams.by_id[src.id].config.timer_interval_seconds == 2.0
+    assert updated.config.track_stable_enabled is True
+    assert streams.by_id[src.id].config.track_stable_interval_seconds == 2.0
 
 
 @pytest.mark.asyncio
@@ -104,6 +104,23 @@ async def test_delete_video_removes_file() -> None:
     await uc.delete(src.id)
     assert src.id not in streams.by_id
     assert src.source_uri not in storage.files
+
+
+@pytest.mark.asyncio
+async def test_upload_video_rejects_oversized(monkeypatch) -> None:
+    import app.application.use_cases.streaming.manage_stream_source as mod
+
+    monkeypatch.setattr(mod, "_MAX_VIDEO_BYTES", 10)
+    uc, project, _, _ = _uc()
+    with pytest.raises(DomainValidationException):
+        await uc.upload_video(project.id, "big", "a.mp4", b"x" * 11)
+
+
+@pytest.mark.asyncio
+async def test_create_rtsp_rejects_metadata_host() -> None:
+    uc, project, _, _ = _uc()
+    with pytest.raises(DomainValidationException):
+        await uc.create_rtsp(project.id, "bad", "rtsp://169.254.169.254/latest")
 
 
 @pytest.mark.asyncio

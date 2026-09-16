@@ -1,15 +1,17 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from app.application.dto import UploadedFile
+from app.application.use_cases.images.delete_image import DeleteImageUseCase
 from app.application.use_cases.images.get_image import GetImageUseCase, ListImagesUseCase
 from app.application.use_cases.images.upload_images import UploadImagesUseCase
 from app.domain.enums import ImageStatus, SplitType
 from app.domain.exceptions import DomainValidationException
 from app.infrastructure.storage.local_storage import LocalFileStorage
 from app.presentation.dependencies import (
+    get_delete_image_use_case,
     get_get_image_use_case,
     get_list_images_use_case,
     get_storage,
@@ -136,3 +138,16 @@ async def get_image_file(
         filename=image.file_name,
         content_disposition_type="inline",
     )
+
+
+@router.delete(
+    "/images/{image_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_image(
+    image_id: UUID,
+    use_case: DeleteImageUseCase = Depends(get_delete_image_use_case),
+) -> Response:
+    await use_case.execute(image_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

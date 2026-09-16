@@ -3,6 +3,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.application.use_cases.annotations.verify_annotation import (
+    ClearReviewImagesAnnotationsUseCase,
     DeleteAnnotationUseCase,
     RejectAllPendingAnnotationsUseCase,
     VerifyAllAnnotationsUseCase,
@@ -16,19 +17,33 @@ from app.domain.value_objects.bounding_box import BoundingBox
 
 
 class _FakeImages:
-    def __init__(self, image: Image) -> None:
-        self.image = image
+    def __init__(self, image: Image | list[Image]) -> None:
+        items = image if isinstance(image, list) else [image]
+        self.by_id = {item.id: item for item in items}
 
     async def get_by_id(self, image_id: UUID) -> Image | None:
-        return self.image if self.image.id == image_id else None
+        return self.by_id.get(image_id)
+
+    async def list_by_project(self, project_id: UUID) -> list[Image]:
+        return [item for item in self.by_id.values() if item.project_id == project_id]
 
     async def update(self, image: Image) -> None:
-        self.image = image
+        self.by_id[image.id] = image
+
+    @property
+    def image(self) -> Image:
+        return next(iter(self.by_id.values()))
+
+    @image.setter
+    def image(self, value: Image) -> None:
+        self.by_id[value.id] = value
 
 
 class _FakeAnnotations:
     def __init__(self, items: list[Annotation]) -> None:
-        self.store = {items[0].image_id: list(items)} if items else {}
+        self.store: dict[UUID, list[Annotation]] = {}
+        for item in items:
+            self.store.setdefault(item.image_id, []).append(item)
 
     async def list_by_image(self, image_id: UUID) -> list[Annotation]:
         return list(self.store.get(image_id, []))
@@ -141,6 +156,50 @@ class TestRejectAllPendingAnnotationsUseCase:
         assert len(remaining) == 1
         assert remaining[0].id == manual.id
         assert image.status == ImageStatus.VERIFIED
+        assert uow.committed is True
+
+
+class TestClearReviewImagesAnnotationsUseCase:
+    @pytest.mark.asyncio
+    async def test_clears_only_requires_review_images(self) -> None:
+        project_id = uuid4()
+        review = Image.create(
+            project_id=project_id,
+            file_path="projects/p/images/r.png",
+            file_name="r.png",
+            width=100,
+            height=80,
+            split=SplitType.TRAIN,
+        )
+        verified = Image.create(
+            project_id=project_id,
+            file_path="projects/p/images/v.png",
+            file_name="v.png",
+            width=100,
+            height=80,
+            split=SplitType.TRAIN,
+        )
+        pending = _pending(review.id)
+        keep = Annotation.create_manual(
+            image_id=verified.id,
+            class_id=uuid4(),
+            bbox=BoundingBox(0.3, 0.3, 0.1, 0.1),
+        )
+        review.recalculate_status([pending])
+        verified.recalculate_status([keep])
+        images = _FakeImages([review, verified])
+        annotations = _FakeAnnotations([pending, keep])
+        uow = _FakeUow()
+
+        result = await ClearReviewImagesAnnotationsUseCase(
+            images, annotations, uow
+        ).execute(project_id)
+
+        assert result == {"cleared_images": 1, "deleted_annotations": 1}
+        assert annotations.store[review.id] == []
+        assert images.by_id[review.id].status == ImageStatus.UNANNOTATED
+        assert len(annotations.store[verified.id]) == 1
+        assert images.by_id[verified.id].status == ImageStatus.VERIFIED
         assert uow.committed is True
 
 

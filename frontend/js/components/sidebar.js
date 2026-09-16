@@ -22,16 +22,27 @@ export function initSidebar({ onError, onDeleteBox }) {
         const hotkey = index < 9 ? index + 1 : "";
         const selected = cls.id === active;
         return `
-          <button type="button" data-class-id="${cls.id}"
-            class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-sm ${
-              selected ? "bg-zinc-800 text-white" : "hover:bg-zinc-800/60 text-zinc-300"
-            }">
-            <span class="font-mono text-[10px] text-zinc-500 w-4">${hotkey}</span>
-            <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:${cls.color_hex}"></span>
-            <span class="truncate">${escapeHtml(cls.name)}</span>
-          </button>`;
+          <div class="flex items-stretch gap-0.5 group/class">
+            <button type="button" data-class-id="${cls.id}"
+              class="flex-1 flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-sm min-w-0 ${
+                selected ? "bg-zinc-800 text-white" : "hover:bg-zinc-800/60 text-zinc-300"
+              }">
+              <span class="font-mono text-[10px] text-zinc-500 w-4 shrink-0">${hotkey}</span>
+              <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:${escapeHtml(cls.color_hex)}"></span>
+              <span class="truncate" data-class-name="${cls.id}">${escapeHtml(cls.name)}</span>
+            </button>
+            <button type="button" data-rename-class="${cls.id}" title="Переименовать"
+              class="px-1.5 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/80 opacity-0 group-hover/class:opacity-100">
+              <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+            </button>
+            <button type="button" data-delete-class="${cls.id}" title="Удалить класс"
+              class="px-1.5 rounded-md text-zinc-500 hover:text-red-400 hover:bg-red-950/40 opacity-0 group-hover/class:opacity-100">
+              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>`;
       })
       .join("");
+    refreshIcons();
   }
 
   let annotationsSignature = "";
@@ -71,7 +82,78 @@ export function initSidebar({ onError, onDeleteBox }) {
     refreshIcons();
   }
 
-  classesList.addEventListener("click", (event) => {
+  classesList.addEventListener("click", async (event) => {
+    const deleteBtn = event.target.closest("[data-delete-class]");
+    if (deleteBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const classId = deleteBtn.getAttribute("data-delete-class");
+      const project = store.get("currentProject");
+      const current = (store.get("classes") || []).find((item) => item.id === classId);
+      if (!project || !current) return;
+      const ok = window.confirm(
+        `Удалить класс «${current.name}»? Аннотации этого класса будут удалены.`
+      );
+      if (!ok) return;
+      try {
+        await api.deleteClass(project.id, classId);
+        const [classes, images] = await Promise.all([
+          api.listClasses(project.id),
+          api.listImages(project.id),
+        ]);
+        const annotations = (store.get("annotations") || []).filter(
+          (box) => box.class_id !== classId
+        );
+        const activeClassId =
+          store.get("activeClassId") === classId
+            ? classes[0]?.id || null
+            : store.get("activeClassId");
+        const selectedBoxId = store.get("selectedBoxId");
+        const selectedStillExists = annotations.some((box) => box.id === selectedBoxId);
+        const openImage = store.get("currentImage");
+        const currentImage = openImage
+          ? images.find((item) => item.id === openImage.id) || openImage
+          : null;
+        store.patch({
+          classes,
+          images,
+          currentImage,
+          annotations,
+          activeClassId,
+          selectedBoxId: selectedStillExists ? selectedBoxId : null,
+          hasUnsavedChanges: false,
+          saveStatus: "saved",
+        });
+      } catch (err) {
+        onError(err.message);
+      }
+      return;
+    }
+    const renameBtn = event.target.closest("[data-rename-class]");
+    if (renameBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const classId = renameBtn.getAttribute("data-rename-class");
+      const project = store.get("currentProject");
+      const current = (store.get("classes") || []).find((item) => item.id === classId);
+      if (!project || !current) return;
+      const next = window.prompt("Новое имя класса", current.name);
+      if (next == null) return;
+      const name = next.trim();
+      if (!name || name === current.name) return;
+      try {
+        const updated = await api.renameClass(project.id, classId, name);
+        store.set(
+          "classes",
+          (store.get("classes") || []).map((item) =>
+            item.id === classId ? updated : item
+          )
+        );
+      } catch (err) {
+        onError(err.message);
+      }
+      return;
+    }
     const btn = event.target.closest("[data-class-id]");
     if (!btn) return;
     const classId = btn.dataset.classId;

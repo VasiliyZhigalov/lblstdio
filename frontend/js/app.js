@@ -110,6 +110,8 @@ async function setProjectTab(tab, { skipSave = false } = {}) {
   }
   if (tab === "stream") {
     streamHub?.refresh?.().catch((err) => toast(err.message));
+  } else {
+    streamHub?.destroy?.();
   }
 }
 
@@ -679,7 +681,7 @@ async function deleteBoxById(boxId) {
       });
       patchImageStatus(image.id, statusFromAnnotations(remaining));
       setBoxCount(image.id, remaining.length);
-      toast("Перенос отклонён");
+      toast("Аннотация удалена");
     } catch (err) {
       toast(err.message);
     }
@@ -693,6 +695,44 @@ async function deleteBoxById(boxId) {
     hasUnsavedChanges: true,
     saveStatus: "unsaved",
   });
+}
+
+async function deleteCurrentImage() {
+  const image = store.get("currentImage");
+  if (!image) return;
+  const ok = window.confirm(
+    `Удалить изображение «${image.file_name}» безвозвратно? Аннотации тоже будут удалены.`
+  );
+  if (!ok) return;
+
+  const filmstrip = getFilmstripImages();
+  const idx = filmstrip.findIndex((item) => item.id === image.id);
+  const nextCandidate = filmstrip[idx + 1] || filmstrip[idx - 1] || null;
+
+  try {
+    await api.deleteImage(image.id);
+    const images = (store.get("images") || []).filter((item) => item.id !== image.id);
+    store.patch({
+      images,
+      currentImage: null,
+      annotations: [],
+      selectedBoxId: null,
+      hoveredBoxId: null,
+      hasUnsavedChanges: false,
+      saveStatus: "saved",
+    });
+    toast("Изображение удалено");
+    dataHub?.refresh?.().catch(() => {});
+    if (nextCandidate && images.some((item) => item.id === nextCandidate.id)) {
+      await openImage(nextCandidate.id);
+    } else {
+      canvas.clearImage();
+      updateStudioChrome();
+      syncAnnotateHash(null);
+    }
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 async function verifyAllPending({ goNext = true } = {}) {
@@ -726,7 +766,7 @@ async function verifyAllPending({ goNext = true } = {}) {
   }
 }
 
-async function rejectAllPending() {
+async function rejectAllPending({ goNext = true } = {}) {
   const image = store.get("currentImage");
   if (!image) return;
   const pending = (store.get("annotations") || []).filter(
@@ -749,7 +789,55 @@ async function rejectAllPending() {
     });
     patchImageStatus(image.id, statusFromAnnotations(remaining));
     setBoxCount(image.id, remaining.length);
-    toast(`Отклонено гипотез: ${pending.length}`);
+    toast(`Удалено аннотаций: ${pending.length}`);
+    if (goNext) await go(1);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function clearAllReviewAnnotations() {
+  const project = store.get("currentProject");
+  if (!project) {
+    toast("Нет открытого проекта");
+    return;
+  }
+  const reviewCount = (store.get("images") || []).filter(
+    (item) => item.status === "REQUIRES_REVIEW"
+  ).length;
+  if (!reviewCount) {
+    toast("Нет кадров, требующих проверки");
+    return;
+  }
+  const ok = window.confirm(
+    `Удалить все аннотации с ${reviewCount} кадр(ов), требующих проверки?`
+  );
+  if (!ok) return;
+
+  try {
+    const result = await api.clearReviewAnnotations(project.id);
+    const images = await api.listImages(project.id);
+    store.set("images", images);
+    const current = store.get("currentImage");
+    if (current) {
+      const refreshed = images.find((item) => item.id === current.id);
+      if (refreshed) {
+        const detail = await api.getImage(current.id);
+        store.patch({
+          currentImage: refreshed,
+          annotations: detail.annotations || [],
+          selectedBoxId: null,
+          hoveredBoxId: null,
+          hasUnsavedChanges: false,
+          saveStatus: "saved",
+        });
+        setBoxCount(current.id, (detail.annotations || []).length);
+      }
+    }
+    dataHub?.refresh?.().catch(() => {});
+    toast(
+      `Очищено кадров: ${result.cleared_images}, удалено аннотаций: ${result.deleted_annotations}`
+    );
   } catch (err) {
     toast(err.message);
   }
@@ -1008,6 +1096,7 @@ function boot() {
   initReviewBar({
     onApproveAll: () => verifyAllPending({ goNext: true }).catch(() => {}),
     onRejectAll: () => rejectAllPending().catch(() => {}),
+    onDeleteImage: () => deleteCurrentImage().catch(() => {}),
   });
   initUploadModal({
     onError: toast,
@@ -1070,6 +1159,10 @@ function boot() {
   dataHub = initDataHub({
     onOpenImage: (id) => goAnnotate(id),
     onStartAnnotate: (id) => goAnnotate(id),
+    onError: toast,
+    onDeleted: (count) => {
+      toast(`Удалено кадров: ${count}`);
+    },
   });
 
   modelsHub = initModelsHub({
@@ -1097,7 +1190,8 @@ function boot() {
 
   streamHub = initStreamHub({
     toast,
-    setProjectTab,
+    navigate,
+    projectPath,
   });
 
   document.getElementById("btn-train-model")?.addEventListener("click", () => {
@@ -1135,6 +1229,7 @@ function boot() {
     save: () => saveCurrent({ force: true, celebrate: true }).catch(() => {}),
     verifyAll: () => verifyAllPending({ goNext: true }).catch(() => {}),
     rejectAll: () => rejectAllPending().catch(() => {}),
+    deleteImage: () => deleteCurrentImage().catch(() => {}),
     hasPending: frameHasPending,
     copySelected: () => copySelectedBox(),
     pastePropagate: () => {
@@ -1163,11 +1258,17 @@ function boot() {
     event.stopPropagation();
     rejectSelectedBox().catch(() => {});
   });
+  document.getElementById("btn-delete-image-box")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    deleteCurrentImage().catch(() => {});
+  });
 
   document.getElementById("canvas-container").addEventListener("need-class", () => {
     toast("Сначала создайте и выберите класс");
   });
   document.getElementById("canvas-container").addEventListener("box-drawn", (event) => {
+    const classes = store.get("classes") || [];
+    if (classes.length <= 1) return;
     const { boxId, screenX, screenY } = event.detail || {};
     if (boxId) showQuickClassPopover(boxId, screenX, screenY);
   });
@@ -1222,6 +1323,9 @@ function boot() {
     pendingClearImageId = image.id;
     showModal(document.getElementById("clear-modal"), true);
   });
+  document.getElementById("btn-clear-review-annotations")?.addEventListener("click", () => {
+    clearAllReviewAnnotations().catch(() => {});
+  });
   document.getElementById("btn-mark-background")?.addEventListener("click", () => {
     markCurrentAsBackground().catch(() => {});
   });
@@ -1254,7 +1358,7 @@ function boot() {
     event.returnValue = "";
   });
 
-  setMode("SELECT");
+  setMode("DRAW");
   syncTabChrome("data");
   applySidebarCollapsed();
   refreshIcons();

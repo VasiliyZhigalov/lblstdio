@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from functools import partial
 from uuid import UUID
 
 from app.application.ports.repositories.class_repository import IClassRepository
@@ -78,10 +80,10 @@ class StartStreamUseCase:
         if active is not None and active.id != stream_id:
             active.deactivate()
             await self._streams.update(active)
-            self._runner.stop(active.id)
+            await asyncio.to_thread(self._runner.stop, active.id)
             await self._uow.commit()
 
-        self._runner.stop_project(stream.project_id)
+        await asyncio.to_thread(self._runner.stop_project, stream.project_id)
 
         project_classes = await self._classes.list_by_project(stream.project_id)
         allowed = allowed_class_indices_for(stream.config, project_classes)
@@ -97,14 +99,19 @@ class StartStreamUseCase:
             captured_frames_count=stream.captured_frames_count,
             created_at=stream.created_at,
         )
-        self._runner.start(
-            runner_stream,
-            weights_abs,
-            allowed_class_indices=allowed,
+        await asyncio.to_thread(
+            partial(
+                self._runner.start,
+                runner_stream,
+                weights_abs,
+                allowed_class_indices=allowed,
+            )
         )
-        status = self._runner.wait_until_ready(stream_id, timeout=45.0)
+        status = await asyncio.to_thread(
+            self._runner.wait_until_ready, stream_id, 45.0
+        )
         if status.state != "running" or not status.is_running:
-            self._runner.stop(stream_id)
+            await asyncio.to_thread(self._runner.stop, stream_id)
             message = status.error_message or f"stream failed to start ({status.state})"
             raise DomainValidationException(message)
 
@@ -129,7 +136,7 @@ class StopStreamUseCase:
         stream = await self._streams.get_by_id(stream_id)
         if stream is None:
             raise ResourceNotFoundException(f"stream source {stream_id} not found")
-        self._runner.stop(stream_id)
+        await asyncio.to_thread(self._runner.stop, stream_id)
         stream.deactivate()
         await self._streams.update(stream)
         await self._uow.commit()

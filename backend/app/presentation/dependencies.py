@@ -8,6 +8,7 @@ from app.application.use_cases.annotations.mark_background import (
 )
 from app.application.use_cases.annotations.save_annotations import SaveAnnotationsUseCase
 from app.application.use_cases.annotations.verify_annotation import (
+    ClearReviewImagesAnnotationsUseCase,
     DeleteAnnotationUseCase,
     RejectAllPendingAnnotationsUseCase,
     VerifyAllAnnotationsUseCase,
@@ -15,6 +16,7 @@ from app.application.use_cases.annotations.verify_annotation import (
 )
 from app.application.use_cases.classes.create_class import CreateClassUseCase, ListClassesUseCase
 from app.application.use_cases.classes.delete_class import DeleteClassUseCase
+from app.application.use_cases.classes.rename_class import RenameClassUseCase
 from app.application.use_cases.dataset.create_dataset_version import (
     CreateDatasetVersionUseCase,
     GetDatasetVersionUseCase,
@@ -26,6 +28,7 @@ from app.application.use_cases.dataset.manage_dataset_version import (
     ExportDatasetVersionUseCase,
     RenameDatasetVersionUseCase,
 )
+from app.application.use_cases.images.delete_image import DeleteImageUseCase
 from app.application.use_cases.images.get_image import GetImageUseCase, ListImagesUseCase
 from app.application.use_cases.images.upload_images import UploadImagesUseCase
 from app.application.use_cases.keypoints.propagate_box import PropagateBoxViaKeypointsUseCase
@@ -265,6 +268,14 @@ def get_delete_class_use_case(
     return DeleteClassUseCase(projects, classes, uow, images, annotations)
 
 
+def get_rename_class_use_case(
+    projects: SqliteProjectRepository = Depends(get_project_repo),
+    classes: SqliteClassRepository = Depends(get_class_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> RenameClassUseCase:
+    return RenameClassUseCase(projects, classes, uow)
+
+
 def get_upload_images_use_case(
     projects: SqliteProjectRepository = Depends(get_project_repo),
     images: SqliteImageRepository = Depends(get_image_repo),
@@ -290,6 +301,15 @@ def get_get_image_use_case(
     annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
 ) -> GetImageUseCase:
     return GetImageUseCase(images, annotations)
+
+
+def get_delete_image_use_case(
+    images: SqliteImageRepository = Depends(get_image_repo),
+    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> DeleteImageUseCase:
+    return DeleteImageUseCase(images, annotations, storage, uow)
 
 
 def get_save_annotations_use_case(
@@ -323,6 +343,14 @@ def get_reject_all_pending_use_case(
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ) -> RejectAllPendingAnnotationsUseCase:
     return RejectAllPendingAnnotationsUseCase(images, annotations, uow)
+
+
+def get_clear_review_annotations_use_case(
+    images: SqliteImageRepository = Depends(get_image_repo),
+    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> ClearReviewImagesAnnotationsUseCase:
+    return ClearReviewImagesAnnotationsUseCase(images, annotations, uow)
 
 
 def get_mark_background_use_case(
@@ -426,14 +454,10 @@ def get_delete_dataset_version_use_case(
     versions: SqliteDatasetVersionRepository = Depends(get_dataset_version_repo),
     models: SqliteModelVersionRepository = Depends(get_model_version_repo),
     jobs: SqliteTrainingJobRepository = Depends(get_training_job_repo),
-    auto_jobs: SqliteAutoLabelJobRepository = Depends(get_auto_label_job_repo),
-    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
     storage: LocalFileStorage = Depends(get_storage),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ) -> DeleteDatasetVersionUseCase:
-    return DeleteDatasetVersionUseCase(
-        versions, models, jobs, auto_jobs, annotations, storage, uow
-    )
+    return DeleteDatasetVersionUseCase(versions, models, jobs, storage, uow)
 
 
 def get_predictor() -> UltralyticsPredictor:
@@ -441,6 +465,7 @@ def get_predictor() -> UltralyticsPredictor:
 
 
 def get_train_model_use_case(
+    request: Request,
     projects: SqliteProjectRepository = Depends(get_project_repo),
     versions: SqliteDatasetVersionRepository = Depends(get_dataset_version_repo),
     jobs: SqliteTrainingJobRepository = Depends(get_training_job_repo),
@@ -448,7 +473,15 @@ def get_train_model_use_case(
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     models: SqliteModelVersionRepository = Depends(get_model_version_repo),
 ) -> TrainModelUseCase:
-    return TrainModelUseCase(projects, versions, jobs, storage, uow, models=models)
+    return TrainModelUseCase(
+        projects,
+        versions,
+        jobs,
+        storage,
+        uow,
+        models=models,
+        runner=getattr(request.app.state, "training_runner", None),
+    )
 
 
 def get_get_training_job_use_case(
@@ -501,6 +534,7 @@ def get_upload_model_version_use_case(
 
 
 def get_batch_auto_label_use_case(
+    request: Request,
     models: SqliteModelVersionRepository = Depends(get_model_version_repo),
     images: SqliteImageRepository = Depends(get_image_repo),
     annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
@@ -511,7 +545,15 @@ def get_batch_auto_label_use_case(
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ) -> BatchAutoLabelUseCase:
     return BatchAutoLabelUseCase(
-        models, images, annotations, classes, jobs, storage, predictor, uow
+        models,
+        images,
+        annotations,
+        classes,
+        jobs,
+        storage,
+        predictor,
+        uow,
+        runner=getattr(request.app.state, "auto_label_runner", None),
     )
 
 

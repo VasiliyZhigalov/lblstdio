@@ -37,7 +37,7 @@ def test_stream_start_status_live_buffer_stop(client: TestClient) -> None:
 
     configured = client.put(
         f"/api/v1/streams/{stream_id}/triggers",
-        json={"config": {"timer_enabled": True}, "model_version_id": model["id"]},
+        json={"config": {"track_stable_enabled": True}, "model_version_id": model["id"]},
     )
     assert configured.status_code == 200, configured.text
 
@@ -57,6 +57,19 @@ def test_stream_start_status_live_buffer_stop(client: TestClient) -> None:
     stopped = client.post(f"/api/v1/streams/{stream_id}/stop")
     assert stopped.status_code == 200
     assert stopped.json()["is_active"] is False
+    assert client.app.state.stream_runner.latest_jpeg(UUID(stream_id)) is None
+
+
+def test_rtsp_credentials_redacted_in_api(client: TestClient) -> None:
+    project_id = client.post("/api/v1/projects", json={"name": "Cred"}).json()["id"]
+    stream = client.post(
+        f"/api/v1/projects/{project_id}/streams/rtsp",
+        json={"name": "Cam", "rtsp_url": "rtsp://user:secret@192.168.0.5/path"},
+    ).json()
+    assert "secret" not in stream["source_uri"]
+    assert stream["source_uri"].startswith("rtsp://***@")
+    listed = client.get(f"/api/v1/projects/{project_id}/streams").json()
+    assert "secret" not in listed[0]["source_uri"]
 
 
 def test_stream_start_failure_keeps_inactive(client: TestClient) -> None:

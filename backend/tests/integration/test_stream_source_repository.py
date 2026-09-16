@@ -46,7 +46,7 @@ async def test_stream_source_crud_and_active_lookup(session: AsyncSession) -> No
     assert await streams.get_active_for_project(project.id) is None
 
     cfg = StreamTriggerConfig(
-        timer_enabled=True,
+        track_stable_enabled=True,
         tripwire_line=(0.1, 0.2, 0.9, 0.2),
         tripwire_direction=TripwireDirection.FORWARD,
     )

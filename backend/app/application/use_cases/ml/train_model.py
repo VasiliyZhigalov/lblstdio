@@ -250,26 +250,21 @@ class TrainingJobRunner:
         from app.infrastructure.db.repositories.model_version_repository import (
             SqliteModelVersionRepository,
         )
+        from app.infrastructure.db.repositories.project_repository import (
+            SqliteProjectRepository,
+        )
         from app.infrastructure.db.repositories.training_job_repository import (
             SqliteTrainingJobRepository,
         )
         from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
+        from app.domain.services.slugify import trained_model_name
 
-        async with self._session_factory() as session:
-            jobs = SqliteTrainingJobRepository(session)
-            versions = SqliteDatasetVersionRepository(session)
-            models = SqliteModelVersionRepository(session)
-            uow = SqlAlchemyUnitOfWork(session)
+        work_rel: str | None = None
 
-            job = await jobs.get_by_id(job_id)
-            if job is None:
-                return
-            if job.status in {TrainingJobStatus.COMPLETED, TrainingJobStatus.FAILED}:
-                return
-
-            work_rel = f"projects/{job.project_id}/models/_train_{job.id}"
-
-            async def _fail(message: str) -> None:
+        async def _fail(message: str) -> None:
+            async with self._session_factory() as session:
+                jobs = SqliteTrainingJobRepository(session)
+                uow = SqlAlchemyUnitOfWork(session)
                 fresh = await jobs.get_by_id(job_id)
                 if fresh is None:
                     return
@@ -282,7 +277,19 @@ class TrainingJobRunner:
                 await jobs.update(fresh)
                 await uow.commit()
 
-            try:
+        try:
+            async with self._session_factory() as session:
+                jobs = SqliteTrainingJobRepository(session)
+                versions = SqliteDatasetVersionRepository(session)
+                uow = SqlAlchemyUnitOfWork(session)
+
+                job = await jobs.get_by_id(job_id)
+                if job is None:
+                    return
+                if job.status in {TrainingJobStatus.COMPLETED, TrainingJobStatus.FAILED}:
+                    return
+
+                work_rel = f"projects/{job.project_id}/models/_train_{job.id}"
                 version = await versions.get_by_id(job.dataset_version_id)
                 if version is None:
                     await _fail("dataset version missing")
@@ -292,55 +299,76 @@ class TrainingJobRunner:
                 await jobs.update(job)
                 await uow.commit()
 
-                device = self._resolve_device(job.device)
-                yaml_abs = self._storage.get_absolute_path(version.yaml_path)
-                work_abs = self._storage.get_absolute_path(work_rel)
-                Path(work_abs).mkdir(parents=True, exist_ok=True)
-
-                epoch_queue: queue.Queue = queue.Queue()
-                loop = asyncio.get_running_loop()
-
-                def on_epoch(metrics: dict) -> None:
-                    epoch_queue.put(metrics)
-
-                train_future = loop.run_in_executor(
-                    None,
-                    lambda: self._trainer.train(
-                        TrainingConfig(
-                            data_yaml_path=yaml_abs,
-                            output_dir=work_abs,
-                            epochs=job.epochs,
-                            batch_size=job.batch_size,
-                            imgsz=job.imgsz,
-                            device=device,
-                            base_weights=job.base_weights,
-                            patience=job.patience,
-                        ),
-                        on_epoch_end=on_epoch,
-                    ),
+                train_cfg = TrainingConfig(
+                    data_yaml_path=self._storage.get_absolute_path(version.yaml_path),
+                    output_dir=self._storage.get_absolute_path(work_rel),
+                    epochs=job.epochs,
+                    batch_size=job.batch_size,
+                    imgsz=job.imgsz,
+                    device=self._resolve_device(job.device),
+                    base_weights=job.base_weights,
+                    patience=job.patience,
                 )
+                project_id = job.project_id
+                dataset_version_id = job.dataset_version_id
 
-                while not train_future.done():
-                    drained = False
-                    while True:
-                        try:
-                            metrics = epoch_queue.get_nowait()
-                        except queue.Empty:
-                            break
-                        drained = True
-                        job.append_epoch_metrics(metrics)
-                    if drained:
-                        await jobs.update(job)
-                        await uow.commit()
-                    await asyncio.sleep(0.4)
+            Path(train_cfg.output_dir).mkdir(parents=True, exist_ok=True)
 
-                result = await train_future
+            epoch_queue: queue.Queue = queue.Queue()
+            loop = asyncio.get_running_loop()
 
+            def on_epoch(metrics: dict) -> None:
+                epoch_queue.put(metrics)
+
+            train_future = loop.run_in_executor(
+                None,
+                lambda: self._trainer.train(train_cfg, on_epoch_end=on_epoch),
+            )
+
+            while not train_future.done():
+                batch: list[dict] = []
                 while True:
                     try:
-                        metrics = epoch_queue.get_nowait()
+                        batch.append(epoch_queue.get_nowait())
                     except queue.Empty:
                         break
+                if batch:
+                    async with self._session_factory() as session:
+                        jobs = SqliteTrainingJobRepository(session)
+                        uow = SqlAlchemyUnitOfWork(session)
+                        job = await jobs.get_by_id(job_id)
+                        if job is not None:
+                            for metrics in batch:
+                                job.append_epoch_metrics(metrics)
+                            await jobs.update(job)
+                            await uow.commit()
+                await asyncio.sleep(0.4)
+
+            result = await train_future
+
+            leftover: list[dict] = []
+            while True:
+                try:
+                    leftover.append(epoch_queue.get_nowait())
+                except queue.Empty:
+                    break
+
+            best_src = Path(result.best_weights_path)
+            if not best_src.is_file():
+                await _fail(f"best.pt missing at {result.best_weights_path}")
+                return
+
+            async with self._session_factory() as session:
+                jobs = SqliteTrainingJobRepository(session)
+                models = SqliteModelVersionRepository(session)
+                projects = SqliteProjectRepository(session)
+                uow = SqlAlchemyUnitOfWork(session)
+
+                job = await jobs.get_by_id(job_id)
+                if job is None:
+                    return
+
+                for metrics in leftover:
                     job.append_epoch_metrics(metrics)
 
                 if result.metrics_history:
@@ -355,27 +383,22 @@ class TrainingJobRunner:
                 await jobs.update(job)
                 await uow.commit()
 
-                best_src = Path(result.best_weights_path)
-                if not best_src.is_file():
-                    await _fail(f"best.pt missing at {result.best_weights_path}")
-                    return
-
                 model = None
                 for attempt in range(_VERSION_ALLOC_ATTEMPTS):
-                    version_number = await models.next_version_number(job.project_id)
-                    dest_rel_dir = (
-                        f"projects/{job.project_id}/models/v{version_number}"
-                    )
+                    version_number = await models.next_version_number(project_id)
+                    dest_rel_dir = f"projects/{project_id}/models/v{version_number}"
                     dest_abs_dir = Path(self._storage.get_absolute_path(dest_rel_dir))
                     dest_abs_dir.mkdir(parents=True, exist_ok=True)
                     dest_abs = dest_abs_dir / "best.pt"
                     await asyncio.to_thread(shutil.copy2, best_src, dest_abs)
                     weights_rel = f"{dest_rel_dir}/best.pt"
 
-                    await models.deactivate_stream_models(job.project_id)
+                    await models.deactivate_stream_models(project_id)
+                    project = await projects.get_by_id(project_id)
+                    project_name = project.name if project is not None else "model"
                     candidate = ModelVersion.create(
-                        project_id=job.project_id,
-                        dataset_version_id=job.dataset_version_id,
+                        project_id=project_id,
+                        dataset_version_id=dataset_version_id,
                         training_job_id=job.id,
                         version_number=version_number,
                         weights_path=weights_rel,
@@ -383,6 +406,7 @@ class TrainingJobRunner:
                         map50_95=result.map50_95,
                         precision=result.precision,
                         recall=result.recall,
+                        name=trained_model_name(project_name, version_number),
                     )
                     try:
                         await models.add(candidate)
@@ -406,12 +430,13 @@ class TrainingJobRunner:
                 )
                 await jobs.update(job)
                 await uow.commit()
-            except Exception as exc:
-                try:
-                    await _fail(str(exc))
-                except Exception:
-                    pass
-            finally:
+        except Exception as exc:
+            try:
+                await _fail(str(exc))
+            except Exception:
+                pass
+        finally:
+            if work_rel is not None:
                 try:
                     await self._storage.delete_directory(work_rel)
                 except Exception:

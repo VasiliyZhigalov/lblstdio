@@ -8,6 +8,7 @@ from app.application.use_cases.annotations.mark_background import (
 )
 from app.application.use_cases.annotations.save_annotations import SaveAnnotationsUseCase
 from app.application.use_cases.annotations.verify_annotation import (
+    ClearReviewImagesAnnotationsUseCase,
     DeleteAnnotationUseCase,
     RejectAllPendingAnnotationsUseCase,
     VerifyAllAnnotationsUseCase,
@@ -15,6 +16,7 @@ from app.application.use_cases.annotations.verify_annotation import (
 )
 from app.presentation.api.v1.images_router import _annotation_to_read, _image_to_read
 from app.presentation.dependencies import (
+    get_clear_review_annotations_use_case,
     get_delete_annotation_use_case,
     get_mark_background_use_case,
     get_reject_all_pending_use_case,
@@ -22,8 +24,12 @@ from app.presentation.dependencies import (
     get_verify_all_annotations_use_case,
     get_verify_annotation_use_case,
 )
-from app.presentation.schemas import AnnotationRead, ImageRead, SaveAnnotationsRequest
-
+from app.presentation.schemas import (
+    AnnotationRead,
+    ClearReviewAnnotationsResult,
+    ImageRead,
+    SaveAnnotationsRequest,
+)
 router = APIRouter(tags=["annotations"])
 
 
@@ -81,6 +87,20 @@ async def reject_all_pending_annotations(
 ) -> list[AnnotationRead]:
     remaining = await use_case.execute(image_id)
     return [_annotation_to_read(item) for item in remaining]
+
+
+@router.post(
+    "/projects/{project_id}/clear-review-annotations",
+    response_model=ClearReviewAnnotationsResult,
+)
+async def clear_review_annotations(
+    project_id: UUID,
+    use_case: ClearReviewImagesAnnotationsUseCase = Depends(
+        get_clear_review_annotations_use_case
+    ),
+) -> ClearReviewAnnotationsResult:
+    result = await use_case.execute(project_id)
+    return ClearReviewAnnotationsResult(**result)
 
 
 @router.post("/images/{image_id}/mark-background", response_model=ImageRead)

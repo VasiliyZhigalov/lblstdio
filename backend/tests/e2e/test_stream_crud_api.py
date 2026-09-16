@@ -35,15 +35,17 @@ def test_stream_crud_api(client: TestClient) -> None:
         f"/api/v1/streams/{stream_id}/triggers",
         json={
             "config": {
-                "timer_enabled": True,
-                "timer_interval_seconds": 4.0,
-                "uncertainty_range": [0.6, 0.85],
+                "track_stable_enabled": True,
+                "track_stable_min_frames": 10,
+                "track_stable_max_size_variation": 0.25,
+                "track_stable_interval_seconds": 4.0,
             }
         },
     )
     assert updated.status_code == 200, updated.text
-    assert updated.json()["config"]["timer_enabled"] is True
-    assert updated.json()["config"]["timer_interval_seconds"] == 4.0
+    assert updated.json()["config"]["track_stable_enabled"] is True
+    assert updated.json()["config"]["track_stable_min_frames"] == 10
+    assert updated.json()["config"]["track_stable_interval_seconds"] == 4.0
 
     deleted = client.delete(f"/api/v1/streams/{stream_id}")
     assert deleted.status_code == 204

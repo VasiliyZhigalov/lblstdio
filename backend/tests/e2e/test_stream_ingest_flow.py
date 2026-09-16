@@ -49,7 +49,7 @@ def test_stream_ingest_flow_creates_requires_review(client: TestClient) -> None:
     ).json()
     client.put(
         f"/api/v1/streams/{stream['id']}/triggers",
-        json={"config": {"timer_enabled": True}, "model_version_id": model["id"]},
+        json={"config": {"track_stable_enabled": True}, "model_version_id": model["id"]},
     )
     assert client.post(f"/api/v1/streams/{stream['id']}/start").status_code == 200
 

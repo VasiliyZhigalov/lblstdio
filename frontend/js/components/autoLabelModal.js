@@ -65,12 +65,18 @@ export function initAutoLabelModal({
       event.target.value
     ).toFixed(2);
   });
+  document.getElementById("autolabel-iou")?.addEventListener("input", (event) => {
+    document.getElementById("autolabel-iou-label").textContent = Number(
+      event.target.value
+    ).toFixed(2);
+  });
   document.getElementById("btn-close-autolabel")?.addEventListener("click", close);
   document.getElementById("btn-cancel-autolabel")?.addEventListener("click", close);
   document.getElementById("btn-submit-autolabel")?.addEventListener("click", async () => {
     const project = getProject();
     const modelId = document.getElementById("autolabel-model")?.value;
     const conf = Number(document.getElementById("autolabel-conf")?.value || 0.05);
+    const iou = Number(document.getElementById("autolabel-iou")?.value || 0.7);
     const allUnannotated = Boolean(
       document.getElementById("autolabel-all-unannotated")?.checked
     );
@@ -86,6 +92,7 @@ export function initAutoLabelModal({
       onStarted?.();
       const body = {
         confidence_threshold: conf,
+        iou_threshold: iou,
         all_unannotated: allUnannotated,
       };
       if (!allUnannotated) {

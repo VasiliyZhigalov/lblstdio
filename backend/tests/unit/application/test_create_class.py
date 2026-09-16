@@ -188,3 +188,34 @@ async def test_delete_class_recalculates_image_status() -> None:
     )
 
     assert images.images[0].status == ImageStatus.UNANNOTATED
+
+
+@pytest.mark.asyncio
+async def test_rename_class_updates_name() -> None:
+    from app.application.use_cases.classes.rename_class import RenameClassUseCase
+
+    project = Project.create("P")
+    classes = _FakeClasses()
+    created = await CreateClassUseCase(_FakeProjects(project), classes, _FakeUow()).execute(
+        project.id, "car", "#FF0000"
+    )
+    renamed = await RenameClassUseCase(_FakeProjects(project), classes, _FakeUow()).execute(
+        created.id, project.id, " vehicle "
+    )
+    assert renamed.name == "vehicle"
+    assert classes.items[0].name == "vehicle"
+
+
+@pytest.mark.asyncio
+async def test_rename_class_rejects_duplicate_name() -> None:
+    from app.application.use_cases.classes.rename_class import RenameClassUseCase
+
+    project = Project.create("P")
+    classes = _FakeClasses()
+    create = CreateClassUseCase(_FakeProjects(project), classes, _FakeUow())
+    await create.execute(project.id, "car", "#FF0000")
+    second = await create.execute(project.id, "truck", "#00FF00")
+    with pytest.raises(DomainValidationException, match="already exists"):
+        await RenameClassUseCase(_FakeProjects(project), classes, _FakeUow()).execute(
+            second.id, project.id, "car"
+        )

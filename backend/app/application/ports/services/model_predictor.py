@@ -20,6 +20,7 @@ class IModelPredictor(ABC):
         weights_path: str,
         image_paths: list[str],
         confidence_threshold: float,
+        iou_threshold: float = 0.7,
     ) -> dict[str, list[Detection]]:
         """Return mapping of absolute image path → detections (normalized YOLO boxes)."""
         raise NotImplementedError

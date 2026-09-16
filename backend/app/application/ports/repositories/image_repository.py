@@ -21,3 +21,7 @@ class IImageRepository(ABC):
     @abstractmethod
     async def update(self, image: Image) -> None:
         raise NotImplementedError
+
+    @abstractmethod
+    async def delete(self, image_id: UUID) -> None:
+        raise NotImplementedError

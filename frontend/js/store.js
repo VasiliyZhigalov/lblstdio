@@ -74,6 +74,10 @@ export const store = new Store({
   annotations: [],
   boxCounts: {},
   classCounts: {}, // { [classId]: number } for Data Hub bars
+  imageClassIds: {}, // { [imageId]: classId[] } for gallery class filter
+  gallerySelectedIds: [], // selected image ids in Data Hub
+  galleryClassFilter: [], // class ids and/or '__background__' (OR)
+  galleryStatusFilter: [], // 'UNANNOTATED' | 'VERIFIED' | 'REQUIRES_REVIEW' (OR)
   selectedBoxId: null,
   hoveredBoxId: null,
   activeClassId: null,

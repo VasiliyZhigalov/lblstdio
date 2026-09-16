@@ -89,6 +89,7 @@ class BatchAutoLabelUseCase:
         image_ids: Sequence[UUID] | None = None,
         all_unannotated: bool = False,
         confidence_threshold: float = 0.05,
+        iou_threshold: float = 0.7,
     ) -> AutoLabelJob:
         model = await self._models.get_by_id(model_version_id)
         if model is None or model.project_id != project_id:
@@ -130,6 +131,7 @@ class BatchAutoLabelUseCase:
             model_version_id=model_version_id,
             image_ids=[item.id for item in selected],
             confidence_threshold=confidence_threshold,
+            iou_threshold=iou_threshold,
         )
         await self._jobs.add(job)
         await self._uow.commit()
@@ -194,6 +196,7 @@ class BatchAutoLabelUseCase:
                 weights_abs,
                 abs_paths,
                 job.confidence_threshold,
+                job.iou_threshold,
             )
 
             total_predictions = 0

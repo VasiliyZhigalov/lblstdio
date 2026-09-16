@@ -15,6 +15,7 @@ class UltralyticsPredictor(IModelPredictor):
         weights_path: str,
         image_paths: list[str],
         confidence_threshold: float,
+        iou_threshold: float = 0.7,
     ) -> dict[str, list[Detection]]:
         if not image_paths:
             return {}
@@ -24,6 +25,7 @@ class UltralyticsPredictor(IModelPredictor):
         results = model.predict(
             source=image_paths,
             conf=confidence_threshold,
+            iou=iou_threshold,
             verbose=False,
         )
         by_resolved = {_norm(path): path for path in image_paths}

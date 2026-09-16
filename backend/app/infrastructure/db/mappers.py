@@ -275,6 +275,11 @@ def row_to_dataset_version(row: DatasetVersionRow) -> DatasetVersion:
 
 def stream_trigger_config_to_dict(config: StreamTriggerConfig) -> dict:
     return {
+        "track_stable_enabled": config.track_stable_enabled,
+        "track_stable_min_frames": config.track_stable_min_frames,
+        "track_stable_max_size_variation": config.track_stable_max_size_variation,
+        "track_stable_min_avg_conf": config.track_stable_min_avg_conf,
+        "track_stable_interval_seconds": config.track_stable_interval_seconds,
         "timer_enabled": config.timer_enabled,
         "timer_interval_seconds": config.timer_interval_seconds,
         "tripwire_enabled": config.tripwire_enabled,
@@ -282,15 +287,28 @@ def stream_trigger_config_to_dict(config: StreamTriggerConfig) -> dict:
         "tripwire_classes": [str(item) for item in config.tripwire_classes],
         "tripwire_direction": config.tripwire_direction.value,
         "tripwire_debounce_seconds": config.tripwire_debounce_seconds,
-        "uncertainty_range": list(config.uncertainty_range),
         "cooldown_seconds": config.cooldown_seconds,
     }
 
 
 def dict_to_stream_trigger_config(raw: dict) -> StreamTriggerConfig:
     line = raw.get("tripwire_line")
-    unc = raw.get("uncertainty_range") or (0.70, 0.90)
+    if "track_stable_enabled" in raw:
+        track_enabled = bool(raw.get("track_stable_enabled"))
+    else:
+        # Legacy: timer-only configs stay timer; new default enables track-stable.
+        track_enabled = True
+    interval = raw.get("track_stable_interval_seconds")
+    if interval is None:
+        interval = 5.0
     return StreamTriggerConfig(
+        track_stable_enabled=track_enabled,
+        track_stable_min_frames=int(raw.get("track_stable_min_frames", 12)),
+        track_stable_max_size_variation=float(
+            raw.get("track_stable_max_size_variation", 0.35)
+        ),
+        track_stable_min_avg_conf=float(raw.get("track_stable_min_avg_conf", 0.75)),
+        track_stable_interval_seconds=float(interval),
         timer_enabled=bool(raw.get("timer_enabled", False)),
         timer_interval_seconds=float(raw.get("timer_interval_seconds", 5.0)),
         tripwire_enabled=bool(raw.get("tripwire_enabled", False)),
@@ -300,7 +318,6 @@ def dict_to_stream_trigger_config(raw: dict) -> StreamTriggerConfig:
             raw.get("tripwire_direction", TripwireDirection.ANY.value)
         ),
         tripwire_debounce_seconds=float(raw.get("tripwire_debounce_seconds", 3.0)),
-        uncertainty_range=(float(unc[0]), float(unc[1])),
         cooldown_seconds=float(raw.get("cooldown_seconds", 3.0)),
     )
 

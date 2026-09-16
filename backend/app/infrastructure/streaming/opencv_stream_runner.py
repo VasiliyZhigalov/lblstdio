@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
+import sys
 import threading
 import time
 from datetime import UTC, datetime
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID
 
 import cv2
@@ -15,7 +18,9 @@ from app.application.ports.services.stream_runner import IngestJob, StreamStatus
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
 from app.domain.services.stream_capture_rules import (
+    TrackStableSample,
     should_capture_timer,
+    should_capture_track_stable,
     should_capture_tripwire,
 )
 from app.domain.services.tripwire import TripwireDebouncer
@@ -25,13 +30,18 @@ logger = logging.getLogger(__name__)
 
 _VIDEO_FAIL_LIMIT = 30
 _VIDEO_FAIL_SLEEP_S = 0.05
+_INGEST_QUEUE_MAXSIZE = 64
+_RECONNECT_DELAY_INITIAL_S = 1.0
+_RECONNECT_DELAY_MAX_S = 30.0
 
 
 class OpenCVStreamRunner:
     """Unified capture → track → trigger → MJPEG buffer runner."""
 
     def __init__(self) -> None:
-        self.ingest_queue: queue.Queue[IngestJob] = queue.Queue()
+        self.ingest_queue: queue.Queue[IngestJob] = queue.Queue(
+            maxsize=_INGEST_QUEUE_MAXSIZE
+        )
         self._lock = threading.Lock()
         self._threads: dict[UUID, threading.Thread] = {}
         self._stops: dict[UUID, threading.Event] = {}
@@ -41,6 +51,7 @@ class OpenCVStreamRunner:
         self._project_streams: dict[UUID, UUID] = {}
         self._live_config: dict[UUID, StreamTriggerConfig] = {}
         self._allowed_classes: dict[UUID, frozenset[int] | None] = {}
+        self._ingest_acks: dict[UUID, list[tuple[bool, float]]] = {}
 
     def start(
         self,
@@ -110,6 +121,8 @@ class OpenCVStreamRunner:
             self._ready.pop(stream_id, None)
             self._live_config.pop(stream_id, None)
             self._allowed_classes.pop(stream_id, None)
+            self._latest_jpeg.pop(stream_id, None)
+            self._ingest_acks.pop(stream_id, None)
             status = self._status.get(stream_id)
             if status is not None:
                 self._status[stream_id] = StreamStatus(
@@ -147,6 +160,18 @@ class OpenCVStreamRunner:
         with self._lock:
             return self._latest_jpeg.get(stream_id)
 
+    def ack_ingest(
+        self, stream_id: UUID, *, success: bool, captured_at: float
+    ) -> None:
+        with self._lock:
+            self._ingest_acks.setdefault(stream_id, []).append((success, captured_at))
+
+    def _pop_ingest_acks(self, stream_id: UUID) -> list[tuple[bool, float]]:
+        with self._lock:
+            items = self._ingest_acks.get(stream_id) or []
+            self._ingest_acks[stream_id] = []
+            return list(items)
+
     def push_ingest_for_tests(self, job: IngestJob) -> None:
         self.ingest_queue.put(job)
 
@@ -183,10 +208,66 @@ class OpenCVStreamRunner:
         )
         ready.set()
 
+    @staticmethod
+    def _encode_rtsp_userinfo(uri: str) -> str:
+        """Percent-encode RTSP user/password so special chars (e.g. !) do not break FFMPEG."""
+        parts = urlsplit(uri)
+        if parts.scheme.lower() != "rtsp" or "@" not in parts.netloc:
+            return uri
+        userinfo, hostport = parts.netloc.rsplit("@", 1)
+        if ":" in userinfo:
+            user, password = userinfo.split(":", 1)
+            userinfo = f"{quote(user, safe='')}:{quote(password, safe='')}"
+        else:
+            userinfo = quote(userinfo, safe="")
+        return urlunsplit(
+            (parts.scheme, f"{userinfo}@{hostport}", parts.path, parts.query, parts.fragment)
+        )
+
     def _open_capture(self, stream: StreamSource) -> cv2.VideoCapture:
         if stream.source_type == StreamSourceType.DEVICE:
-            return cv2.VideoCapture(int(stream.source_uri))
-        return cv2.VideoCapture(stream.source_uri)
+            index = int(stream.source_uri)
+            backends: list[int] = []
+            if sys.platform.startswith("win"):
+                backends.extend(
+                    [
+                        getattr(cv2, "CAP_DSHOW", 700),
+                        getattr(cv2, "CAP_MSMF", 1400),
+                    ]
+                )
+            backends.append(getattr(cv2, "CAP_ANY", 0))
+            last = cv2.VideoCapture()
+            for backend in backends:
+                cap = cv2.VideoCapture(index, backend)
+                if cap.isOpened():
+                    return cap
+                cap.release()
+                last = cap
+            return last
+
+        uri = stream.source_uri
+        if stream.source_type == StreamSourceType.RTSP:
+            os.environ.setdefault(
+                "OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp"
+            )
+            candidates = [uri, self._encode_rtsp_userinfo(uri)]
+            # de-dupe while preserving order
+            seen: set[str] = set()
+            ordered: list[str] = []
+            for candidate in candidates:
+                if candidate not in seen:
+                    seen.add(candidate)
+                    ordered.append(candidate)
+            last = cv2.VideoCapture()
+            for candidate in ordered:
+                cap = cv2.VideoCapture(candidate, cv2.CAP_FFMPEG)
+                if cap.isOpened():
+                    return cap
+                cap.release()
+                last = cap
+            return last
+
+        return cv2.VideoCapture(uri)
 
     def _run(
         self,
@@ -205,20 +286,59 @@ class OpenCVStreamRunner:
 
         cap = self._open_capture(stream)
         if not cap.isOpened():
-            self._fail_ready(stream.id, ready_event, "failed to open video source")
+            if stream.source_type == StreamSourceType.RTSP:
+                message = (
+                    "failed to open RTSP source - check URL/credentials/path "
+                    "(OpenCV/FFmpeg could not connect; try the same URL in VLC)"
+                )
+            elif stream.source_type == StreamSourceType.DEVICE:
+                message = (
+                    "failed to open camera device - index may be wrong or "
+                    "OpenCV build has no webcam backend"
+                )
+            else:
+                message = "failed to open video source"
+            self._fail_ready(stream.id, ready_event, message)
             return
 
         debouncer = TripwireDebouncer(stream.config.tripwire_debounce_seconds)
         prev_centers: dict[int, tuple[float, float]] = {}
+        track_series: dict[int, list[tuple[TrackStableSample, bytes, list[Detection]]]] = {}
+        track_last_saved: dict[int, float] = {}
         last_timer_at: float | None = None
         last_any_at: float | None = None
+        pending_stable_track: int | None = None
+        pending_stable_at: float | None = None
+        pending_timer_at: float | None = None
+        ingest_in_flight = False
         frames = 0
         t0 = time.monotonic()
         video_fail_streak = 0
         marked_ready = False
+        reconnect_delay = _RECONNECT_DELAY_INITIAL_S
 
         try:
             while not stop_event.is_set():
+                for success, captured_at in self._pop_ingest_acks(stream.id):
+                    ingest_in_flight = False
+                    if success:
+                        last_any_at = captured_at
+                        if (
+                            pending_stable_track is not None
+                            and pending_stable_at is not None
+                            and abs(pending_stable_at - captured_at) < 1e-6
+                        ):
+                            track_last_saved[pending_stable_track] = pending_stable_at
+                            track_series.pop(pending_stable_track, None)
+                        if (
+                            pending_timer_at is not None
+                            and abs(pending_timer_at - captured_at) < 1e-6
+                        ):
+                            last_timer_at = pending_timer_at
+                    pending_stable_track = None
+                    pending_stable_at = None
+                    pending_timer_at = None
+
                 ok, frame = cap.read()
                 if not ok:
                     if stream.source_type == StreamSourceType.VIDEO_FILE:
@@ -235,16 +355,20 @@ class OpenCVStreamRunner:
                         continue
                     video_fail_streak = 0
                     self._set_status(stream.id, state="reconnecting")
-                    time.sleep(1.0)
+                    time.sleep(reconnect_delay)
                     cap.release()
                     cap = self._open_capture(stream)
                     if not cap.isOpened():
-                        time.sleep(2.0)
+                        reconnect_delay = min(
+                            reconnect_delay * 2.0, _RECONNECT_DELAY_MAX_S
+                        )
                     else:
+                        reconnect_delay = _RECONNECT_DELAY_INITIAL_S
                         self._set_status(stream.id, state="running", is_running=True)
                     continue
 
                 video_fail_streak = 0
+                reconnect_delay = _RECONNECT_DELAY_INITIAL_S
                 h, w = frame.shape[:2]
                 results = model.track(
                     frame, persist=True, tracker="bytetrack.yaml", verbose=False
@@ -252,13 +376,14 @@ class OpenCVStreamRunner:
                 detections, track_meta, box_xyxy = self._parse_results(results, w, h)
                 now = time.monotonic()
                 config, allowed = self._get_live(stream.id)
+                debouncer.set_debounce_seconds(config.tripwire_debounce_seconds)
                 captured = False
 
                 if config.tripwire_enabled and config.tripwire_line is not None:
-                    for track_id, (center, class_index, conf) in track_meta.items():
+                    for track_id, (center, class_index, conf, _area) in track_meta.items():
                         prev = prev_centers.get(track_id)
                         prev_centers[track_id] = center
-                        if prev is None:
+                        if ingest_in_flight or prev is None:
                             continue
                         class_ok = allowed is None or class_index in allowed
                         if should_capture_tripwire(
@@ -273,15 +398,75 @@ class OpenCVStreamRunner:
                             last_any_at=last_any_at,
                             cooldown=config.cooldown_seconds,
                         ):
-                            self._enqueue_ingest(
+                            if self._enqueue_ingest(
                                 stream.id, frame, detections, "tripwire", now
+                            ):
+                                ingest_in_flight = True
+                                captured = True
+                            break
+
+                if (
+                    not captured
+                    and not ingest_in_flight
+                    and config.track_stable_enabled
+                ):
+                    jpeg_bytes: bytes | None = None
+                    live_ids = set(track_meta)
+                    for stale in list(track_series):
+                        if stale not in live_ids:
+                            track_series.pop(stale, None)
+                    for gone in list(prev_centers):
+                        if gone not in live_ids:
+                            prev_centers.pop(gone, None)
+
+                    for track_id, (center, class_index, conf, area) in track_meta.items():
+                        prev_centers[track_id] = center
+                        if jpeg_bytes is None:
+                            ok_jpg, buf = cv2.imencode(".jpg", frame)
+                            if not ok_jpg:
+                                break
+                            jpeg_bytes = buf.tobytes()
+                        series = track_series.setdefault(track_id, [])
+                        series.append(
+                            (
+                                TrackStableSample(confidence=conf, area=area),
+                                jpeg_bytes,
+                                list(detections),
                             )
-                            last_any_at = now
+                        )
+                        max_keep = max(config.track_stable_min_frames * 2, 24)
+                        if len(series) > max_keep:
+                            del series[:-max_keep]
+
+                        best_i = should_capture_track_stable(
+                            samples=[item[0] for item in series],
+                            now=now,
+                            last_saved_at=track_last_saved.get(track_id),
+                            interval_seconds=config.track_stable_interval_seconds,
+                            min_frames=config.track_stable_min_frames,
+                            min_avg_conf=config.track_stable_min_avg_conf,
+                            max_size_variation=config.track_stable_max_size_variation,
+                        )
+                        if best_i is None:
+                            continue
+                        _sample, best_jpeg, best_dets = series[best_i]
+                        if self._enqueue_ingest(
+                            stream.id,
+                            frame,
+                            best_dets,
+                            "track_stable",
+                            now,
+                            jpeg_bytes=best_jpeg,
+                        ):
+                            pending_stable_track = track_id
+                            pending_stable_at = now
+                            ingest_in_flight = True
                             captured = True
                             break
 
                 if (
                     not captured
+                    and not ingest_in_flight
                     and config.timer_enabled
                     and should_capture_timer(
                         now=now,
@@ -289,14 +474,14 @@ class OpenCVStreamRunner:
                         last_any_at=last_any_at,
                         interval=config.timer_interval_seconds,
                         cooldown=config.cooldown_seconds,
-                        confidences=[d.confidence for d in detections],
-                        unc_range=config.uncertainty_range,
                     )
                 ):
-                    self._enqueue_ingest(stream.id, frame, detections, "timer", now)
-                    last_timer_at = now
-                    last_any_at = now
-                    captured = True
+                    if self._enqueue_ingest(
+                        stream.id, frame, detections, "timer", now
+                    ):
+                        pending_timer_at = now
+                        ingest_in_flight = True
+                        captured = True
 
                 overlay = frame.copy()
                 self._draw_overlay(overlay, track_meta, box_xyxy, config, w, h)
@@ -338,23 +523,31 @@ class OpenCVStreamRunner:
         detections: list[Detection],
         reason: str,
         now: float,
-    ) -> None:
-        ok, buf = cv2.imencode(".jpg", frame)
-        if not ok:
-            return
-        self.ingest_queue.put(
-            IngestJob(
-                stream_id=stream_id,
-                jpeg_bytes=buf.tobytes(),
-                detections=list(detections),
-                reason=reason,
-                captured_at=now,
-            )
+        *,
+        jpeg_bytes: bytes | None = None,
+    ) -> bool:
+        if jpeg_bytes is None:
+            ok, buf = cv2.imencode(".jpg", frame)
+            if not ok:
+                return False
+            jpeg_bytes = buf.tobytes()
+        job = IngestJob(
+            stream_id=stream_id,
+            jpeg_bytes=jpeg_bytes,
+            detections=list(detections),
+            reason=reason,
+            captured_at=now,
         )
+        try:
+            self.ingest_queue.put_nowait(job)
+            return True
+        except queue.Full:
+            logger.warning("ingest queue full; dropping %s frame for %s", reason, stream_id)
+            return False
 
     def _parse_results(self, results, width: int, height: int):
         detections: list[Detection] = []
-        track_meta: dict[int, tuple[tuple[float, float], int, float]] = {}
+        track_meta: dict[int, tuple[tuple[float, float], int, float, float]] = {}
         box_xyxy: dict[int, tuple[int, int, int, int]] = {}
         if not results:
             return detections, track_meta, box_xyxy
@@ -387,7 +580,7 @@ class OpenCVStreamRunner:
                     height=bh,
                 )
             )
-            track_meta[tid] = ((x, y), cls_i, conf)
+            track_meta[tid] = ((x, y), cls_i, conf, bw * bh)
             x1, y1, x2, y2 = map(int, xyxy[i])
             box_xyxy[tid] = (x1, y1, x2, y2)
         return detections, track_meta, box_xyxy
@@ -401,7 +594,7 @@ class OpenCVStreamRunner:
         w: int,
         h: int,
     ) -> None:
-        for track_id, ((x, y), cls_i, conf) in track_meta.items():
+        for track_id, ((x, y), cls_i, conf, _area) in track_meta.items():
             if track_id in box_xyxy:
                 x1, y1, x2, y2 = box_xyxy[track_id]
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
@@ -429,7 +622,7 @@ class FakeStreamRunner:
     """In-memory runner for API tests without OpenCV/YOLO."""
 
     def __init__(self) -> None:
-        self.ingest_queue: queue.Queue[IngestJob] = queue.Queue()
+        self.ingest_queue: queue.Queue[IngestJob] = queue.Queue(maxsize=_INGEST_QUEUE_MAXSIZE)
         self._running: dict[UUID, StreamSource] = {}
         self._project: dict[UUID, UUID] = {}
         self._jpeg: dict[UUID, bytes] = {}
@@ -437,6 +630,7 @@ class FakeStreamRunner:
         self._live_config: dict[UUID, StreamTriggerConfig] = {}
         self._allowed: dict[UUID, frozenset[int] | None] = {}
         self.fail_start_message: str | None = None
+        self.acks: list[tuple] = []
 
     def start(
         self,
@@ -483,6 +677,7 @@ class FakeStreamRunner:
         self._running.pop(stream_id, None)
         self._live_config.pop(stream_id, None)
         self._allowed.pop(stream_id, None)
+        self._jpeg.pop(stream_id, None)
         for pid, sid in list(self._project.items()):
             if sid == stream_id:
                 self._project.pop(pid, None)
@@ -512,6 +707,11 @@ class FakeStreamRunner:
 
     def latest_jpeg(self, stream_id: UUID) -> bytes | None:
         return self._jpeg.get(stream_id)
+
+    def ack_ingest(
+        self, stream_id: UUID, *, success: bool, captured_at: float
+    ) -> None:
+        self.acks.append((stream_id, success, captured_at))
 
     def push_ingest_for_tests(self, job: IngestJob) -> None:
         self.ingest_queue.put(job)

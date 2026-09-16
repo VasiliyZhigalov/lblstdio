@@ -348,7 +348,7 @@ export function initModelsHub({
           pendingDelete = { kind: "dataset", id };
           deleteTitle.textContent = "Удалить датасет?";
           deleteText.textContent =
-            `Удалить «${name || id}»? Будут удалены связанные модели и веса. Это действие нельзя отменить.`;
+            `Удалить «${name || id}»? Связанные модели останутся. Это действие нельзя отменить.`;
           showModal(deleteModal, true);
         },
         onRenameModel: (id, name) => {

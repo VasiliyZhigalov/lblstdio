@@ -57,6 +57,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, color_hex }),
     }),
+  renameClass: (projectId, classId, name) =>
+    request(`/projects/${projectId}/classes/${classId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  deleteClass: (projectId, classId) =>
+    request(`/projects/${projectId}/classes/${classId}`, {
+      method: "DELETE",
+    }),
 
   listImages: (projectId) => request(`/projects/${projectId}/images`),
   getImage: (imageId) => request(`/images/${imageId}`),
@@ -129,6 +138,11 @@ export const api = {
       method: "POST",
     }),
 
+  clearReviewAnnotations: (projectId) =>
+    request(`/projects/${projectId}/clear-review-annotations`, {
+      method: "POST",
+    }),
+
   markBackground: (imageId) =>
     request(`/images/${imageId}/mark-background`, {
       method: "POST",
@@ -136,6 +150,11 @@ export const api = {
 
   deleteAnnotation: (imageId, annotationId) =>
     request(`/images/${imageId}/annotations/${annotationId}`, {
+      method: "DELETE",
+    }),
+
+  deleteImage: (imageId) =>
+    request(`/images/${imageId}`, {
       method: "DELETE",
     }),
 

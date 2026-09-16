@@ -80,8 +80,10 @@ class _FakePredictor:
         self.mapping = mapping
         self.calls = []
 
-    def predict(self, weights_path, image_paths, confidence_threshold):
-        self.calls.append((weights_path, list(image_paths), confidence_threshold))
+    def predict(self, weights_path, image_paths, confidence_threshold, iou_threshold=0.7):
+        self.calls.append(
+            (weights_path, list(image_paths), confidence_threshold, iou_threshold)
+        )
         return {path: list(self.mapping.get(path, [])) for path in image_paths}
 
 
@@ -148,6 +150,20 @@ def _setup():
         _FakeUow(),
     )
     return use_case, image, model, annotations, images, jobs, predictor
+
+
+@pytest.mark.asyncio
+async def test_auto_label_passes_iou_threshold_to_predictor() -> None:
+    use_case, image, model, _, _, _, predictor = _setup()
+    await use_case.execute(
+        image.project_id,
+        model.id,
+        image_ids=[image.id],
+        confidence_threshold=0.5,
+        iou_threshold=0.35,
+    )
+    assert predictor.calls[-1][2] == 0.5
+    assert predictor.calls[-1][3] == 0.35
 
 
 @pytest.mark.asyncio

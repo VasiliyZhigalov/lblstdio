@@ -229,7 +229,6 @@ export function initTrainingDrawer({
       return;
     }
     try {
-      onStarted?.();
       const job = await api.startTraining(project.id, {
         dataset_version_id: versionId,
         epochs,
@@ -253,6 +252,9 @@ export function initTrainingDrawer({
           onError?.(err.message);
         }
       }, 1500);
+      // Close drawer so labeling / other hubs stay usable; polling continues.
+      close();
+      onStarted?.();
     } catch (err) {
       onError?.(err.message);
     }

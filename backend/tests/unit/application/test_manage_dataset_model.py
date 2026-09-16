@@ -218,7 +218,7 @@ async def test_export_dataset_version_zip() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_dataset_cascades_models() -> None:
+async def test_delete_dataset_keeps_linked_models() -> None:
     version = _ready_dataset()
     job = _job(version.id, project_id=version.project_id)
     model = _model(
@@ -229,21 +229,18 @@ async def test_delete_dataset_cascades_models() -> None:
     )
     models = _FakeModels([model])
     jobs = _FakeJobs([job])
-    auto = _FakeAutoJobs()
-    annotations = _FakeAnnotations()
     storage = _FakeStorage()
     versions = _FakeVersions(version)
 
     use_case = DeleteDatasetVersionUseCase(
-        versions, models, jobs, auto, annotations, storage, _FakeUow()
+        versions, models, jobs, storage, _FakeUow()
     )
     await use_case.execute(version.id)
 
     assert version.id not in versions.store
-    assert model.id not in models.store
-    assert model.id in auto.deleted
-    assert model.id in annotations.cleared
-    assert f"projects/{version.project_id}/models/v1" in storage.deleted_dirs
+    assert model.id in models.store
+    assert models.store[model.id].dataset_version_id is None
+    assert f"projects/{version.project_id}/models/v1" not in storage.deleted_dirs
     assert f"projects/{version.project_id}/models/_train_{job.id}" in storage.deleted_dirs
     assert version.yaml_path.rsplit("/", 1)[0] in storage.deleted_dirs
 
@@ -256,8 +253,6 @@ async def test_delete_dataset_blocked_while_training() -> None:
         _FakeVersions(version),
         _FakeModels(),
         jobs,
-        _FakeAutoJobs(),
-        _FakeAnnotations(),
         _FakeStorage(),
         _FakeUow(),
     )

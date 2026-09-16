@@ -8,7 +8,6 @@ const MODAL_IDS = [
   "rename-asset-modal",
   "delete-asset-modal",
   "dataset-modal",
-  "training-drawer",
   "autolabel-modal",
 ];
 
@@ -44,6 +43,7 @@ export function initHotkeys({
   save,
   verifyAll,
   rejectAll,
+  deleteImage,
   hasPending,
   copySelected,
   pastePropagate,
@@ -51,7 +51,6 @@ export function initHotkeys({
   toggleLeftSidebar,
   toggleRightSidebar,
   applyQuickClassDigit,
-  openQuickClass,
 }) {
   window.addEventListener("keydown", (event) => {
     if (isTypingTarget(event.target)) return;
@@ -116,12 +115,6 @@ export function initHotkeys({
       return;
     }
 
-    if (code === "KeyC" && !event.shiftKey) {
-      event.preventDefault();
-      if (!event.repeat) openQuickClass?.();
-      return;
-    }
-
     if (code === "Escape" && store.get("quickClassOpen")) {
       event.preventDefault();
       store.set("quickClassOpen", false);
@@ -163,6 +156,10 @@ export function initHotkeys({
     }
     if (code === "Delete" || code === "Backspace") {
       event.preventDefault();
+      if (event.shiftKey) {
+        if (!event.repeat && hasPending?.()) deleteImage?.();
+        return;
+      }
       deleteSelected();
       return;
     }

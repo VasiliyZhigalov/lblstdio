@@ -1,13 +1,13 @@
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.repositories.image_repository import IImageRepository
 from app.domain.entities.image import Image
 from app.infrastructure.db.mappers import image_to_row, row_to_image
-from app.infrastructure.db.tables import ImageRow
+from app.infrastructure.db.tables import DatasetItemRow, ImageRow
 
 
 class SqliteImageRepository(IImageRepository):
@@ -45,4 +45,14 @@ class SqliteImageRepository(IImageRepository):
         row.stream_source_id = (
             str(image.stream_source_id) if image.stream_source_id else None
         )
+        await self._session.flush()
+
+    async def delete(self, image_id: UUID) -> None:
+        await self._session.execute(
+            delete(DatasetItemRow).where(DatasetItemRow.image_id == str(image_id))
+        )
+        row = await self._session.get(ImageRow, str(image_id))
+        if row is None:
+            return
+        await self._session.delete(row)
         await self._session.flush()

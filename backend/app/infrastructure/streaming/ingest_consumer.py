@@ -24,6 +24,11 @@ _MAX_INGEST_ATTEMPTS = 3
 
 
 class StreamIngestConsumer:
+    """Background worker: drain runner.ingest_queue into HITL images.
+
+    Lives in infrastructure because it wires SQLAlchemy repos / storage.
+    """
+
     def __init__(self, session_factory, storage: LocalFileStorage, runner) -> None:
         self._session_factory = session_factory
         self._storage = storage
@@ -59,6 +64,9 @@ class StreamIngestConsumer:
         for attempt in range(1, _MAX_INGEST_ATTEMPTS + 1):
             try:
                 await self._handle(job)
+                self._runner.ack_ingest(
+                    job.stream_id, success=True, captured_at=job.captured_at
+                )
                 return
             except Exception as exc:
                 last_error = exc
@@ -70,6 +78,9 @@ class StreamIngestConsumer:
                     exc,
                 )
                 await asyncio.sleep(0.2 * attempt)
+        self._runner.ack_ingest(
+            job.stream_id, success=False, captured_at=job.captured_at
+        )
         logger.error(
             "failed to ingest stream frame after %s attempts (stream=%s reason=%s): %s",
             _MAX_INGEST_ATTEMPTS,

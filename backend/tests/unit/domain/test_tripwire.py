@@ -25,3 +25,10 @@ def test_debouncer_blocks_same_track_within_window():
     assert debouncer.allow(track_id=7, now=100.0) is True
     assert debouncer.allow(track_id=7, now=101.0) is False
     assert debouncer.allow(track_id=7, now=104.0) is True
+
+
+def test_debouncer_set_debounce_seconds_applies_immediately():
+    debouncer = TripwireDebouncer(debounce_seconds=3.0)
+    assert debouncer.allow(track_id=1, now=10.0) is True
+    debouncer.set_debounce_seconds(0.5)
+    assert debouncer.allow(track_id=1, now=10.6) is True

@@ -44,3 +44,9 @@ class AnnotationClass:
             color_hex=color_hex,
             index_id=index_id,
         )
+
+    def rename(self, name: str) -> None:
+        normalized = name.strip()
+        if not normalized:
+            raise DomainValidationException("name must not be empty")
+        self.name = normalized

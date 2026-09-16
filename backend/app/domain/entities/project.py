@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 
 from app.domain.exceptions import DomainValidationException
 
+_UNSET = object()
+
 
 @dataclass
 class Project:
@@ -36,12 +38,17 @@ class Project:
             updated_at=now,
         )
 
-    def rename(self, name: str, description: str | None = None) -> None:
+    def rename(
+        self,
+        name: str,
+        description: str | None | object = _UNSET,
+    ) -> None:
         self.name = name.strip()
         if not self.name:
             raise DomainValidationException("project name must not be empty")
-        if description is None or not str(description).strip():
-            self.description = None
-        else:
-            self.description = str(description).strip()
+        if description is not _UNSET:
+            if description is None or not str(description).strip():
+                self.description = None
+            else:
+                self.description = str(description).strip()
         self.updated_at = datetime.now(UTC)

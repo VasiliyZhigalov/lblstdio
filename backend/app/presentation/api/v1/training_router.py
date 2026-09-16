@@ -1,8 +1,11 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
 
-from app.application.use_cases.ml.batch_auto_label import BatchAutoLabelUseCase
+from app.application.use_cases.ml.batch_auto_label import (
+    BatchAutoLabelUseCase,
+    GetAutoLabelJobUseCase,
+)
 from app.application.use_cases.ml.manage_model_version import (
     DeleteModelVersionUseCase,
     ExportModelVersionUseCase,
@@ -18,6 +21,7 @@ from app.presentation.dependencies import (
     get_batch_auto_label_use_case,
     get_delete_model_version_use_case,
     get_export_model_version_use_case,
+    get_get_auto_label_job_use_case,
     get_get_training_job_use_case,
     get_list_model_versions_use_case,
     get_rename_model_version_use_case,
@@ -88,6 +92,7 @@ def _auto_to_read(job) -> AutoLabelJobRead:
         project_id=job.project_id,
         model_version_id=job.model_version_id,
         confidence_threshold=job.confidence_threshold,
+        iou_threshold=job.iou_threshold,
         status=job.status.value,
         image_ids=list(job.image_ids),
         total_images_processed=job.total_images_processed,
@@ -112,11 +117,8 @@ async def get_training_device() -> TrainingDeviceRead:
 async def start_training(
     project_id: UUID,
     payload: TrainModelRequest,
-    request: Request,
     use_case: TrainModelUseCase = Depends(get_train_model_use_case),
 ) -> TrainingJobRead:
-    runner = getattr(request.app.state, "training_runner", None)
-    use_case._runner = runner
     job = await use_case.execute(
         project_id,
         payload.dataset_version_id,
@@ -213,7 +215,7 @@ async def delete_model(
 @router.post(
     "/projects/{project_id}/models/{model_id}/auto-label",
     response_model=AutoLabelJobRead,
-    status_code=status.HTTP_200_OK,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def auto_label(
     project_id: UUID,
@@ -227,5 +229,17 @@ async def auto_label(
         image_ids=payload.image_ids,
         all_unannotated=payload.all_unannotated,
         confidence_threshold=payload.confidence_threshold,
+        iou_threshold=payload.iou_threshold,
     )
     return _auto_to_read(job)
+
+
+@router.get(
+    "/auto-label-jobs/{job_id}",
+    response_model=AutoLabelJobRead,
+)
+async def get_auto_label_job(
+    job_id: UUID,
+    use_case: GetAutoLabelJobUseCase = Depends(get_get_auto_label_job_use_case),
+) -> AutoLabelJobRead:
+    return _auto_to_read(await use_case.execute(job_id))

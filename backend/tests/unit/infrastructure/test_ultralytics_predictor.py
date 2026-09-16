@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -39,7 +39,7 @@ def test_predictor_matches_resolved_paths_only_not_basename(tmp_path, monkeypatc
         def __init__(self, _weights: str) -> None:
             pass
 
-        def predict(self, source, conf, verbose=False):
+        def predict(self, source, conf, iou=0.7, verbose=False):
             return [result]
 
     ultralytics = MagicMock(YOLO=_YOLO)
@@ -73,10 +73,28 @@ def test_predictor_does_not_attach_unmatched_paths(tmp_path, monkeypatch) -> Non
         def __init__(self, _weights: str) -> None:
             pass
 
-        def predict(self, source, conf, verbose=False):
+        def predict(self, source, conf, iou=0.7, verbose=False):
             return [result]
 
     monkeypatch.setitem(__import__("sys").modules, "ultralytics", MagicMock(YOLO=_YOLO))
 
     out = UltralyticsPredictor().predict("w.pt", [str(img)], 0.5)
     assert out[str(img)] == []
+
+def test_predictor_passes_iou_threshold_to_yolo(tmp_path, monkeypatch) -> None:
+    img = tmp_path / "frame.jpg"
+    img.write_bytes(b"x")
+    calls: list[dict] = []
+
+    class _YOLO:
+        def __init__(self, _weights: str) -> None:
+            pass
+
+        def predict(self, source, conf, iou=0.7, verbose=False):
+            calls.append({"source": source, "conf": conf, "iou": iou, "verbose": verbose})
+            return []
+
+    monkeypatch.setitem(__import__("sys").modules, "ultralytics", MagicMock(YOLO=_YOLO))
+
+    UltralyticsPredictor().predict("w.pt", [str(img)], 0.25, iou_threshold=0.4)
+    assert calls == [{"source": [str(img)], "conf": 0.25, "iou": 0.4, "verbose": False}]

@@ -18,9 +18,11 @@ from app.application.use_cases.streaming.control_stream import allowed_class_ind
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
+from app.domain.services.rtsp_url import validate_rtsp_url
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
 
 _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
+_MAX_VIDEO_BYTES = 500 * 1024 * 1024
 
 
 class ManageStreamSourceUseCase:
@@ -51,9 +53,7 @@ class ManageStreamSourceUseCase:
         self, project_id: UUID, name: str, rtsp_url: str
     ) -> StreamSource:
         await self._require_project(project_id)
-        url = rtsp_url.strip()
-        if not url.lower().startswith("rtsp://"):
-            raise DomainValidationException("rtsp_url must start with rtsp://")
+        url = validate_rtsp_url(rtsp_url)
         stream = StreamSource.create(
             project_id=project_id,
             name=name,
@@ -95,6 +95,10 @@ class ManageStreamSourceUseCase:
             )
         if not data:
             raise DomainValidationException("video file is empty")
+        if len(data) > _MAX_VIDEO_BYTES:
+            raise DomainValidationException(
+                f"video file exceeds {_MAX_VIDEO_BYTES // (1024 * 1024)} MB limit"
+            )
         video_id = uuid4()
         relative_dir = f"projects/{project_id}/videos"
         stored_name = f"{video_id}{ext}"
@@ -145,10 +149,18 @@ class ManageStreamSourceUseCase:
         stream = await self._require_stream(stream_id)
         if stream.is_active:
             raise DomainValidationException("cannot delete an active stream; stop it first")
-        if stream.source_type == StreamSourceType.VIDEO_FILE:
-            await self._storage.delete(stream.source_uri)
+        video_path = (
+            stream.source_uri
+            if stream.source_type == StreamSourceType.VIDEO_FILE
+            else None
+        )
         await self._streams.delete(stream_id)
         await self._uow.commit()
+        if video_path is not None:
+            try:
+                await self._storage.delete(video_path)
+            except Exception:
+                pass
 
     async def _require_project(self, project_id: UUID) -> None:
         project = await self._projects.get_by_id(project_id)

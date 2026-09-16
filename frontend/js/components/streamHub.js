@@ -2,16 +2,19 @@ import { api } from "../api.js";
 import { store } from "../store.js";
 import { escapeHtml, refreshIcons } from "../utils/dom.js";
 
-export function initStreamHub({ toast, setProjectTab }) {
+export function initStreamHub({ toast, navigate, projectPath }) {
   let streams = [];
   let models = [];
   let classes = [];
   let selectedId = null;
   let pollTimer = null;
   let lastCaptured = 0;
+  let liveBoundId = null;
   let drawMode = false;
   let pendingPoint = null;
   let line = null;
+  let dragEndpoint = null;
+  let saveTimer = null;
 
   const els = {
     list: () => document.getElementById("stream-source-list"),
@@ -35,6 +38,14 @@ export function initStreamHub({ toast, setProjectTab }) {
     }
   }
 
+  function ensurePoll(running) {
+    if (running) {
+      if (!pollTimer) pollTimer = setInterval(pollStatus, 1000);
+    } else {
+      stopPoll();
+    }
+  }
+
   function flashCapture() {
     const frame = els.frame();
     if (!frame) return;
@@ -47,11 +58,18 @@ export function initStreamHub({ toast, setProjectTab }) {
     const placeholder = els.placeholder();
     if (!img) return;
     if (running && selectedId) {
-      img.src = `${api.streamLiveUrl(selectedId)}?t=${Date.now()}`;
+      if (liveBoundId !== selectedId) {
+        img.src = api.streamLiveUrl(selectedId);
+        liveBoundId = selectedId;
+      }
       img.classList.remove("hidden");
       placeholder?.classList.add("hidden");
-    } else {
+    } else if (liveBoundId !== null) {
       img.removeAttribute("src");
+      liveBoundId = null;
+      img.classList.add("hidden");
+      placeholder?.classList.remove("hidden");
+    } else {
       img.classList.add("hidden");
       placeholder?.classList.remove("hidden");
     }
@@ -88,6 +106,28 @@ export function initStreamHub({ toast, setProjectTab }) {
     ];
   }
 
+  function endpointHits(ev) {
+    if (!line) return null;
+    const canvas = els.canvas();
+    const img = els.img();
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    const content = contentRect(canvas, img);
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    const pts = [
+      [content.x + line[0] * content.w, content.y + line[1] * content.h],
+      [content.x + line[2] * content.w, content.y + line[3] * content.h],
+    ];
+    for (let i = 0; i < pts.length; i += 1) {
+      const dx = pts[i][0] - px;
+      const dy = pts[i][1] - py;
+      if (dx * dx + dy * dy <= 100) return i;
+    }
+    return null;
+  }
+
   function drawLineOverlay() {
     const canvas = els.canvas();
     const img = els.img();
@@ -97,7 +137,7 @@ export function initStreamHub({ toast, setProjectTab }) {
     canvas.width = rect.width;
     canvas.height = rect.height;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const active = line || selected()?.config?.tripwire_line;
+    const active = line;
     if (!active) return;
     const content = contentRect(canvas, img);
     const [x1, y1, x2, y2] = active;
@@ -142,12 +182,12 @@ export function initStreamHub({ toast, setProjectTab }) {
       btn.addEventListener("click", () => {
         selectedId = btn.getAttribute("data-stream-id");
         const s = selected();
-        if (s?.config?.tripwire_line) line = s.config.tripwire_line;
-        else line = null;
+        line = s?.config?.tripwire_line || null;
         fillFormFromSelected();
         renderList();
         drawLineOverlay();
         syncLiveImage(Boolean(s?.is_active));
+        ensurePoll(Boolean(s?.is_active));
       });
     });
     root.querySelectorAll("[data-delete-stream]").forEach((btn) => {
@@ -182,16 +222,16 @@ export function initStreamHub({ toast, setProjectTab }) {
           )
           .join("");
     }
-    const uncMin = document.getElementById("stream-unc-min");
-    const uncMax = document.getElementById("stream-unc-max");
-    const timerEn = document.getElementById("stream-timer-enabled");
-    const timerIv = document.getElementById("stream-timer-interval");
+    const trackEn = document.getElementById("stream-track-stable-enabled");
+    const trackN = document.getElementById("stream-track-stable-n");
+    const trackSize = document.getElementById("stream-track-stable-size");
+    const trackIv = document.getElementById("stream-track-stable-interval");
     const tripEn = document.getElementById("stream-tripwire-enabled");
     const tripDir = document.getElementById("stream-tripwire-direction");
-    if (uncMin) uncMin.value = cfg.uncertainty_range?.[0] ?? 0.7;
-    if (uncMax) uncMax.value = cfg.uncertainty_range?.[1] ?? 0.9;
-    if (timerEn) timerEn.checked = Boolean(cfg.timer_enabled);
-    if (timerIv) timerIv.value = cfg.timer_interval_seconds ?? 5;
+    if (trackEn) trackEn.checked = cfg.track_stable_enabled ?? true;
+    if (trackN) trackN.value = cfg.track_stable_min_frames ?? 12;
+    if (trackSize) trackSize.value = cfg.track_stable_max_size_variation ?? 0.35;
+    if (trackIv) trackIv.value = cfg.track_stable_interval_seconds ?? 5;
     if (tripEn) tripEn.checked = Boolean(cfg.tripwire_enabled);
     if (tripDir) tripDir.value = cfg.tripwire_direction || "ANY";
     renderClassChecks();
@@ -204,26 +244,33 @@ export function initStreamHub({ toast, setProjectTab }) {
     const classBoxes = [
       ...document.querySelectorAll("#stream-tripwire-classes input[type=checkbox]:checked"),
     ];
+    const s = selected();
     return {
-      timer_enabled: document.getElementById("stream-timer-enabled")?.checked || false,
-      timer_interval_seconds: Number(document.getElementById("stream-timer-interval")?.value || 5),
-      tripwire_enabled: document.getElementById("stream-tripwire-enabled")?.checked || false,
+      track_stable_enabled: Boolean(
+        document.getElementById("stream-track-stable-enabled")?.checked
+      ),
+      track_stable_min_frames: Number(
+        document.getElementById("stream-track-stable-n")?.value || 12
+      ),
+      track_stable_max_size_variation: Number(
+        document.getElementById("stream-track-stable-size")?.value || 0.35
+      ),
+      track_stable_interval_seconds: Number(
+        document.getElementById("stream-track-stable-interval")?.value || 5
+      ),
+      tripwire_enabled: Boolean(document.getElementById("stream-tripwire-enabled")?.checked),
       tripwire_line: line,
       tripwire_classes: classBoxes.map((el) => el.value),
       tripwire_direction: document.getElementById("stream-tripwire-direction")?.value || "ANY",
-      tripwire_debounce_seconds: 3,
-      uncertainty_range: [
-        Number(document.getElementById("stream-unc-min")?.value || 0.7),
-        Number(document.getElementById("stream-unc-max")?.value || 0.9),
-      ],
-      cooldown_seconds: 3,
+      tripwire_debounce_seconds: Number(s?.config?.tripwire_debounce_seconds ?? 3),
+      cooldown_seconds: Number(s?.config?.cooldown_seconds ?? 3),
     };
   }
 
   function renderClassChecks() {
     const root = document.getElementById("stream-tripwire-classes");
     if (!root) return;
-    const selected = new Set(selected()?.config?.tripwire_classes || []);
+    const checkedClasses = new Set(selected()?.config?.tripwire_classes || []);
     if (!classes.length) {
       root.innerHTML = `<p class="text-[10px] text-zinc-600">Нет классов проекта</p>`;
       return;
@@ -231,14 +278,17 @@ export function initStreamHub({ toast, setProjectTab }) {
     root.innerHTML = classes
       .map(
         (c) => `<label class="flex items-center gap-1.5 text-[11px] text-zinc-300">
-          <input type="checkbox" value="${c.id}" ${selected.has(c.id) ? "checked" : ""} class="rounded border-zinc-600" />
+          <input type="checkbox" value="${c.id}" ${checkedClasses.has(c.id) ? "checked" : ""} class="rounded border-zinc-600" />
           ${escapeHtml(c.name)}
         </label>`
       )
       .join("");
+    root.querySelectorAll("input").forEach((el) => {
+      el.addEventListener("change", scheduleSaveTriggers);
+    });
   }
 
-  async function saveTriggers() {
+  async function saveTriggers({ quiet = false } = {}) {
     if (!selectedId) throw new Error("Сначала выберите источник");
     const modelId = els.modelSelect()?.value || null;
     const updated = await api.putStreamTriggers(selectedId, {
@@ -248,11 +298,23 @@ export function initStreamHub({ toast, setProjectTab }) {
     const idx = streams.findIndex((s) => s.id === selectedId);
     if (idx >= 0) streams[idx] = updated;
     fillFormFromSelected();
-    toast("Настройки стрима сохранены");
+    if (!quiet) toast("Настройки стрима сохранены");
+  }
+
+  function scheduleSaveTriggers() {
+    if (!selectedId) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTriggers({ quiet: true }).catch((err) => toast(err.message));
+    }, 400);
+  }
+
+  function currentProjectId() {
+    return store.get("currentProject")?.id || null;
   }
 
   async function refresh() {
-    const projectId = store.get("projectId");
+    const projectId = currentProjectId();
     if (!projectId) return;
     const [streamList, modelList, classList] = await Promise.all([
       api.listStreams(projectId),
@@ -267,11 +329,13 @@ export function initStreamHub({ toast, setProjectTab }) {
       selectedId = streams[0]?.id || null;
     }
     const s = selected();
-    if (s?.config?.tripwire_line) line = s.config.tripwire_line;
+    line = s?.config?.tripwire_line || null;
     renderList();
     fillFormFromSelected();
     drawLineOverlay();
-    syncLiveImage(Boolean(s?.is_active));
+    const running = Boolean(s?.is_active);
+    syncLiveImage(running);
+    ensurePoll(running);
     refreshIcons();
   }
 
@@ -279,13 +343,24 @@ export function initStreamHub({ toast, setProjectTab }) {
     if (!selectedId) return;
     try {
       const st = await api.getStreamStatus(selectedId);
-      if (els.fps()) els.fps().textContent = `FPS: ${Number(st.fps || 0).toFixed(1)}`;
+      const fpsEl = els.fps();
+      if (fpsEl) {
+        if (st.state === "error" || st.state === "reconnecting") {
+          fpsEl.textContent = st.error_message
+            ? `${st.state}: ${st.error_message}`
+            : String(st.state);
+        } else {
+          fpsEl.textContent = `FPS: ${Number(st.fps || 0).toFixed(1)}`;
+        }
+      }
       if (els.captured()) els.captured().textContent = String(st.captured_count ?? 0);
       if ((st.captured_count || 0) > lastCaptured) {
         flashCapture();
         lastCaptured = st.captured_count || 0;
       }
-      syncLiveImage(Boolean(st.is_running));
+      const running = Boolean(st.is_running) && st.state !== "error";
+      syncLiveImage(running);
+      ensurePoll(running || st.state === "reconnecting" || st.state === "starting");
     } catch {
       /* ignore transient */
     }
@@ -293,7 +368,8 @@ export function initStreamHub({ toast, setProjectTab }) {
 
   document.getElementById("btn-stream-add-rtsp")?.addEventListener("click", async () => {
     try {
-      const projectId = store.get("projectId");
+      const projectId = currentProjectId();
+      if (!projectId) throw new Error("Сначала откройте проект");
       const name = document.getElementById("stream-rtsp-name")?.value?.trim() || "RTSP";
       const rtsp_url = document.getElementById("stream-rtsp-url")?.value?.trim();
       if (!rtsp_url) throw new Error("Укажите RTSP URL");
@@ -307,7 +383,8 @@ export function initStreamHub({ toast, setProjectTab }) {
 
   document.getElementById("btn-stream-add-device")?.addEventListener("click", async () => {
     try {
-      const projectId = store.get("projectId");
+      const projectId = currentProjectId();
+      if (!projectId) throw new Error("Сначала откройте проект");
       const device_index = Number(document.getElementById("stream-device-index")?.value || 0);
       const created = await api.createDeviceStream(projectId, {
         name: `Device ${device_index}`,
@@ -324,7 +401,8 @@ export function initStreamHub({ toast, setProjectTab }) {
     const file = ev.target.files?.[0];
     if (!file) return;
     try {
-      const projectId = store.get("projectId");
+      const projectId = currentProjectId();
+      if (!projectId) throw new Error("Сначала откройте проект");
       const created = await api.uploadStreamVideo(projectId, file, file.name);
       selectedId = created.id;
       await refresh();
@@ -343,14 +421,26 @@ export function initStreamHub({ toast, setProjectTab }) {
     }
   });
 
+  [
+    "stream-track-stable-enabled",
+    "stream-track-stable-n",
+    "stream-track-stable-size",
+    "stream-track-stable-interval",
+    "stream-tripwire-enabled",
+    "stream-tripwire-direction",
+    "stream-model-select",
+  ].forEach((id) => {
+    const el = document.getElementById(id);
+    el?.addEventListener("change", scheduleSaveTriggers);
+    el?.addEventListener("input", scheduleSaveTriggers);
+  });
+
   document.getElementById("btn-stream-start")?.addEventListener("click", async () => {
     try {
       if (!selectedId) throw new Error("Выберите источник");
-      await saveTriggers();
+      await saveTriggers({ quiet: true });
       await api.startStream(selectedId);
       await refresh();
-      stopPoll();
-      pollTimer = setInterval(pollStatus, 1000);
       toast("Стрим запущен");
     } catch (err) {
       toast(err.message);
@@ -362,6 +452,7 @@ export function initStreamHub({ toast, setProjectTab }) {
       if (!selectedId) return;
       await api.stopStream(selectedId);
       stopPoll();
+      syncLiveImage(false);
       await refresh();
       toast("Стрим остановлен");
     } catch (err) {
@@ -376,10 +467,43 @@ export function initStreamHub({ toast, setProjectTab }) {
   });
 
   document.getElementById("btn-stream-goto-review")?.addEventListener("click", () => {
-    setProjectTab("annotate").catch(() => {});
+    const project = store.get("currentProject");
+    if (!project) return;
+    store.set("filmstripFilter", "review");
+    navigate(projectPath(project.id, "annotate"));
   });
 
-  els.canvas()?.addEventListener("click", (ev) => {
+  const canvas = els.canvas();
+  canvas?.addEventListener("mousedown", (ev) => {
+    if (drawMode) return;
+    const hit = endpointHits(ev);
+    if (hit === null) return;
+    dragEndpoint = hit;
+    ev.preventDefault();
+  });
+  canvas?.addEventListener("mousemove", (ev) => {
+    if (dragEndpoint === null || !line) return;
+    const [x, y] = normFromClient(ev);
+    const next = [...line];
+    if (dragEndpoint === 0) {
+      next[0] = x;
+      next[1] = y;
+    } else {
+      next[2] = x;
+      next[3] = y;
+    }
+    line = next;
+    drawLineOverlay();
+  });
+  const endDrag = () => {
+    if (dragEndpoint === null) return;
+    dragEndpoint = null;
+    saveTriggers({ quiet: true }).catch((err) => toast(err.message));
+  };
+  canvas?.addEventListener("mouseup", endDrag);
+  canvas?.addEventListener("mouseleave", endDrag);
+
+  canvas?.addEventListener("click", (ev) => {
     if (!drawMode) return;
     const [x, y] = normFromClient(ev);
     if (!pendingPoint) {
@@ -392,7 +516,7 @@ export function initStreamHub({ toast, setProjectTab }) {
     drawLineOverlay();
     const trip = document.getElementById("stream-tripwire-enabled");
     if (trip) trip.checked = true;
-    saveTriggers().catch((err) => toast(err.message));
+    saveTriggers({ quiet: true }).catch((err) => toast(err.message));
   });
 
   els.img()?.addEventListener("load", () => drawLineOverlay());
@@ -403,6 +527,8 @@ export function initStreamHub({ toast, setProjectTab }) {
     refresh,
     destroy() {
       stopPoll();
+      if (saveTimer) clearTimeout(saveTimer);
+      syncLiveImage(false);
     },
   };
 }

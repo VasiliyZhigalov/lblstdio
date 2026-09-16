@@ -7,14 +7,22 @@ from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
 
 def test_defaults_are_valid():
     cfg = StreamTriggerConfig()
-    assert cfg.uncertainty_range == (0.70, 0.90)
+    assert cfg.track_stable_enabled is True
+    assert cfg.track_stable_min_frames == 12
+    assert cfg.track_stable_max_size_variation == 0.35
+    assert cfg.track_stable_min_avg_conf == 0.75
+    assert cfg.track_stable_interval_seconds == 5.0
     assert cfg.cooldown_seconds == 3.0
     assert cfg.tripwire_direction == TripwireDirection.ANY
 
 
-def test_rejects_inverted_uncertainty_range():
+def test_rejects_invalid_track_stable_params():
     with pytest.raises(DomainValidationException):
-        StreamTriggerConfig(uncertainty_range=(0.9, 0.5))
+        StreamTriggerConfig(track_stable_min_frames=1)
+    with pytest.raises(DomainValidationException):
+        StreamTriggerConfig(track_stable_max_size_variation=-0.1)
+    with pytest.raises(DomainValidationException):
+        StreamTriggerConfig(track_stable_min_avg_conf=0.0)
 
 
 def test_rejects_line_coords_outside_unit_square():

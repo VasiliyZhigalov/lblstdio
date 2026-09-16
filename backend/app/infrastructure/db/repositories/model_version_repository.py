@@ -104,6 +104,12 @@ class SqliteModelVersionRepository(IModelVersionRepository):
         if row is None:
             return
         row.name = version.name
+        row.dataset_version_id = (
+            str(version.dataset_version_id) if version.dataset_version_id else None
+        )
+        row.training_job_id = (
+            str(version.training_job_id) if version.training_job_id else None
+        )
         row.weights_path = version.weights_path
         row.map50 = version.map50
         row.map50_95 = version.map50_95

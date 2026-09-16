@@ -30,6 +30,10 @@ _MODEL_VERSION_COLUMNS = (
     ("name", "TEXT NOT NULL DEFAULT ''"),
 )
 
+_AUTO_LABEL_JOB_COLUMNS = (
+    ("iou_threshold", "FLOAT NOT NULL DEFAULT 0.7"),
+)
+
 
 def create_engine(database_url: str) -> AsyncEngine:
     kwargs: dict = {"echo": False}
@@ -57,6 +61,7 @@ def _ensure_sqlite_columns(connection) -> None:
     _ensure_table_columns(connection, "training_jobs", _TRAINING_JOB_COLUMNS)
     _ensure_table_columns(connection, "images", _IMAGE_COLUMNS)
     _ensure_table_columns(connection, "model_versions", _MODEL_VERSION_COLUMNS)
+    _ensure_table_columns(connection, "auto_label_jobs", _AUTO_LABEL_JOB_COLUMNS)
     _ensure_model_versions_nullable_fks(connection)
 
 

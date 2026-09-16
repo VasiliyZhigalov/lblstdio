@@ -41,7 +41,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        from app.application.use_cases.streaming.ingest_consumer import StreamIngestConsumer
+        from app.infrastructure.streaming.ingest_consumer import StreamIngestConsumer
         from app.infrastructure.streaming.opencv_stream_runner import OpenCVStreamRunner
 
         engine, factory = await create_session_factory(db_url)

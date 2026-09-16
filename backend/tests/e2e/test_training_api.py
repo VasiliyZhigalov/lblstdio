@@ -53,7 +53,7 @@ class _FakeTrainer:
 
 
 class _FakePredictor:
-    def predict(self, weights_path, image_paths, confidence_threshold):
+    def predict(self, weights_path, image_paths, confidence_threshold, iou_threshold=0.7):
         out = {}
         for path in image_paths:
             out[path] = [
@@ -173,9 +173,15 @@ class TestTrainingAndAutoLabelApi:
 
         labeled = client.post(
             f"/api/v1/projects/{project_id}/models/{model_id}/auto-label",
-            json={"image_ids": [raw_id], "confidence_threshold": 0.5},
+            json={
+                "image_ids": [raw_id],
+                "confidence_threshold": 0.5,
+                "iou_threshold": 0.42,
+            },
         )
         assert labeled.status_code == 202, labeled.text
+        assert labeled.json()["confidence_threshold"] == pytest.approx(0.5)
+        assert labeled.json()["iou_threshold"] == pytest.approx(0.42)
         auto_job_id = labeled.json()["id"]
 
         deadline = time.time() + 15
@@ -190,6 +196,7 @@ class TestTrainingAndAutoLabelApi:
 
         assert auto_payload is not None
         assert auto_payload["status"] == "COMPLETED", auto_payload
+        assert auto_payload["iou_threshold"] == pytest.approx(0.42)
         assert auto_payload["total_predictions_generated"] == 1
 
         detail = client.get(f"/api/v1/images/{raw_id}")

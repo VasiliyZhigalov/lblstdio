@@ -258,7 +258,7 @@ def matrix_to_transform_debug(matrix: np.ndarray, match_score: float) -> Transfo
     tx = float(matrix[0, 2])
     ty = float(matrix[1, 2])
     scale = float(np.hypot(a, b))
-    rotation_deg = float(np.degrees(np.atan2(b, a)))
+    rotation_deg = float(np.degrees(np.arctan2(b, a)))
     return TransformDebug(
         tx=tx,
         ty=ty,

@@ -2,6 +2,26 @@ import { store } from "../store.js";
 import { api } from "../api.js";
 import { escapeHtml, refreshIcons } from "../utils/dom.js";
 
+const BACKGROUND_FILTER = "__background__";
+
+const STATUS_FILTERS = [
+  {
+    id: "UNANNOTATED",
+    label: "Неразмеченные",
+    active: "border-zinc-500/60 bg-zinc-800 text-zinc-100",
+  },
+  {
+    id: "VERIFIED",
+    label: "Верифицированные",
+    active: "border-emerald-500/60 bg-emerald-950/50 text-emerald-100",
+  },
+  {
+    id: "REQUIRES_REVIEW",
+    label: "Ревью",
+    active: "border-amber-500/60 bg-amber-950/50 text-amber-100",
+  },
+];
+
 async function mapPool(items, limit, fn) {
   const results = new Array(items.length);
   let cursor = 0;
@@ -58,6 +78,31 @@ function countBackgroundFrames(images) {
   return (images || []).filter(
     (item) => item.status === "VERIFIED" && item.is_background
   ).length;
+}
+
+function selectedSet() {
+  return new Set(store.get("gallerySelectedIds") || []);
+}
+
+function setSelectedIds(ids) {
+  store.set("gallerySelectedIds", [...new Set(ids)]);
+}
+
+function pruneSelection(images) {
+  const alive = new Set((images || []).map((item) => item.id));
+  const next = (store.get("gallerySelectedIds") || []).filter((id) => alive.has(id));
+  if (next.length !== (store.get("gallerySelectedIds") || []).length) {
+    store.set("gallerySelectedIds", next);
+  }
+}
+
+function clearGallerySelectionState() {
+  store.patch({
+    gallerySelectedIds: [],
+    galleryClassFilter: [],
+    galleryStatusFilter: [],
+    imageClassIds: {},
+  });
 }
 
 function renderClassBars(classes, classCounts, backgroundFrames = 0) {
@@ -133,12 +178,117 @@ function renderClassBars(classes, classCounts, backgroundFrames = 0) {
   }
 }
 
+function imageMatchesClassFilter(image, filter, imageClassIds) {
+  if (!filter.length) return true;
+  const classIds = imageClassIds[image.id] || [];
+  for (const token of filter) {
+    if (token === BACKGROUND_FILTER) {
+      if (image.is_background) return true;
+      continue;
+    }
+    if (classIds.includes(token)) return true;
+  }
+  return false;
+}
+
+function imageMatchesStatusFilter(image, filter) {
+  if (!filter.length) return true;
+  return filter.includes(image.status);
+}
+
 function filteredImages() {
   const query = (store.get("galleryQuery") || "").trim().toLowerCase();
+  const classFilter = store.get("galleryClassFilter") || [];
+  const statusFilter = store.get("galleryStatusFilter") || [];
+  const imageClassIds = store.get("imageClassIds") || {};
   return (store.get("images") || []).filter((image) => {
     if (query && !(image.file_name || "").toLowerCase().includes(query)) return false;
+    if (!imageMatchesStatusFilter(image, statusFilter)) return false;
+    if (!imageMatchesClassFilter(image, classFilter, imageClassIds)) return false;
     return true;
   });
+}
+
+function renderStatusFilters() {
+  const root = document.getElementById("gallery-status-filters");
+  if (!root) return;
+  const active = new Set(store.get("galleryStatusFilter") || []);
+  root.innerHTML = STATUS_FILTERS.map((item) => {
+    const on = active.has(item.id);
+    return `
+      <button type="button" data-gallery-status="${item.id}"
+        class="px-2 py-1 text-[11px] rounded-md border transition ${
+          on ? item.active : "border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-600"
+        }"
+        title="Фильтр: ${item.label}">
+        ${item.label}
+      </button>`;
+  }).join("");
+}
+
+function renderClassFilters() {
+  const root = document.getElementById("gallery-class-filters");
+  if (!root) return;
+
+  const classes = [...(store.get("classes") || [])].sort((a, b) => a.index_id - b.index_id);
+  const images = store.get("images") || [];
+  const backgroundFrames = countBackgroundFrames(images);
+  const active = new Set(store.get("galleryClassFilter") || []);
+
+  if (!classes.length && backgroundFrames <= 0) {
+    root.innerHTML = "";
+    return;
+  }
+
+  const chips = classes.map((cls) => {
+    const on = active.has(cls.id);
+    return `
+      <button type="button" data-gallery-class="${escapeHtml(cls.id)}"
+        class="px-2 py-1 text-[11px] rounded-md border flex items-center gap-1.5 transition ${
+          on
+            ? "border-indigo-500/60 bg-indigo-950/50 text-indigo-100"
+            : "border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-600"
+        }"
+        title="Фильтр: кадры с классом ${escapeHtml(cls.name)}">
+        <span class="w-2 h-2 rounded-sm shrink-0" style="background:${escapeHtml(cls.color_hex)}"></span>
+        <span class="truncate max-w-[7rem]">${escapeHtml(cls.name)}</span>
+      </button>`;
+  });
+
+  if (backgroundFrames > 0 || active.has(BACKGROUND_FILTER)) {
+    const on = active.has(BACKGROUND_FILTER);
+    chips.push(`
+      <button type="button" data-gallery-class="${BACKGROUND_FILTER}"
+        class="px-2 py-1 text-[11px] rounded-md border flex items-center gap-1.5 transition ${
+          on
+            ? "border-sky-500/60 bg-sky-950/40 text-sky-100"
+            : "border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-600"
+        }"
+        title="Фильтр: background-кадры">
+        <span class="w-2 h-2 rounded-sm shrink-0 bg-sky-400"></span>
+        <span>background</span>
+      </button>`);
+  }
+
+  root.innerHTML = chips.join("");
+}
+
+function syncSelectionBar() {
+  const bar = document.getElementById("gallery-selection-bar");
+  const countEl = document.getElementById("gallery-selected-count");
+  if (!bar || !countEl) return;
+  const selected = store.get("gallerySelectedIds") || [];
+  const visible = new Set(filteredImages().map((item) => item.id));
+  const visibleSelected = selected.filter((id) => visible.has(id)).length;
+  countEl.textContent = String(selected.length);
+  const show = selected.length > 0 || filteredImages().length > 0;
+  bar.classList.toggle("hidden", !show);
+  const selectAllBtn = document.getElementById("btn-gallery-select-all");
+  if (selectAllBtn) {
+    const allVisibleSelected =
+      filteredImages().length > 0 && visibleSelected === filteredImages().length;
+    selectAllBtn.textContent = allVisibleSelected ? "Снять все" : "Выбрать все";
+  }
 }
 
 function renderGallery({ onOpenImage }) {
@@ -148,6 +298,7 @@ function renderGallery({ onOpenImage }) {
 
   const images = filteredImages();
   const counts = store.get("boxCounts") || {};
+  const selected = selectedSet();
   empty?.classList.toggle("hidden", images.length > 0);
   grid.classList.toggle("hidden", images.length === 0);
 
@@ -156,38 +307,67 @@ function renderGallery({ onOpenImage }) {
       const meta = statusMeta(image.status);
       const boxes = counts[image.id];
       const boxLabel = typeof boxes === "number" ? `${boxes} box` : "—";
+      const isSelected = selected.has(image.id);
       return `
-        <button type="button" data-open-gallery="${image.id}"
-          class="gallery-card group text-left rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden hover:border-zinc-600 transition">
-          <div class="relative aspect-video bg-zinc-950 overflow-hidden">
-            <img src="${api.imageFileUrl(image.id)}" alt="" loading="lazy" decoding="async"
-              class="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition" />
-            <div class="absolute top-2 left-2 flex gap-1">
-              <span class="px-1.5 py-0.5 text-[10px] rounded border ${meta.badge}">${meta.label}</span>
+        <div data-gallery-card="${image.id}"
+          class="gallery-card relative text-left rounded-xl border overflow-hidden transition ${
+            isSelected
+              ? "border-indigo-500 bg-indigo-950/20"
+              : "border-zinc-800 bg-zinc-900/50 hover:border-zinc-600"
+          }">
+          <label class="absolute top-2 right-2 z-10 flex items-center justify-center w-6 h-6 rounded-md bg-zinc-950/80 border border-zinc-700 cursor-pointer"
+            title="Выбрать">
+            <input type="checkbox" data-gallery-select="${image.id}" class="w-3.5 h-3.5 accent-indigo-500"
+              ${isSelected ? "checked" : ""} />
+          </label>
+          <button type="button" data-open-gallery="${image.id}" class="w-full text-left group">
+            <div class="relative aspect-video bg-zinc-950 overflow-hidden">
+              <img src="${api.imageFileUrl(image.id)}" alt="" loading="lazy" decoding="async"
+                class="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition" />
+              <div class="absolute top-2 left-2 flex gap-1">
+                <span class="px-1.5 py-0.5 text-[10px] rounded border ${meta.badge}">${meta.label}</span>
+              </div>
             </div>
-          </div>
-          <div class="p-2.5 space-y-1">
-            <div class="text-[11px] font-mono text-zinc-300 truncate" title="${escapeHtml(image.file_name)}">${escapeHtml(image.file_name)}</div>
-            <div class="flex justify-between text-[10px] text-zinc-500">
-              <span>${image.width}×${image.height}</span>
-              <span>${boxLabel}</span>
+            <div class="p-2.5 space-y-1">
+              <div class="text-[11px] font-mono text-zinc-300 truncate" title="${escapeHtml(image.file_name)}">${escapeHtml(image.file_name)}</div>
+              <div class="flex justify-between text-[10px] text-zinc-500">
+                <span>${image.width}×${image.height}</span>
+                <span>${boxLabel}</span>
+              </div>
             </div>
-          </div>
-        </button>`;
+          </button>
+        </div>`;
     })
     .join("");
 
   grid.querySelectorAll("[data-open-gallery]").forEach((btn) => {
     btn.addEventListener("click", () => onOpenImage?.(btn.dataset.openGallery));
   });
+  grid.querySelectorAll("[data-gallery-select]").forEach((input) => {
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("change", (event) => {
+      event.stopPropagation();
+      const id = input.dataset.gallerySelect;
+      const next = selectedSet();
+      if (input.checked) next.add(id);
+      else next.delete(id);
+      setSelectedIds([...next]);
+    });
+  });
+
+  syncSelectionBar();
 }
 
 async function refreshClassCounts(images) {
   const targets = (images || []).filter((item) => item.status !== "UNANNOTATED");
   const counts = {};
   const nextBoxCounts = {};
+  const nextImageClassIds = {};
   if (!targets.length) {
-    store.set("classCounts", counts);
+    store.patch({
+      classCounts: counts,
+      imageClassIds: nextImageClassIds,
+    });
     return counts;
   }
 
@@ -196,6 +376,8 @@ async function refreshClassCounts(images) {
       const detail = await api.getImage(image.id);
       const boxes = detail.annotations || [];
       nextBoxCounts[image.id] = boxes.length;
+      const classIds = [...new Set(boxes.map((box) => box.class_id).filter(Boolean))];
+      nextImageClassIds[image.id] = classIds;
       for (const box of boxes) {
         counts[box.class_id] = (counts[box.class_id] || 0) + 1;
       }
@@ -206,11 +388,61 @@ async function refreshClassCounts(images) {
   store.patch({
     boxCounts: { ...store.get("boxCounts"), ...nextBoxCounts },
     classCounts: counts,
+    imageClassIds: nextImageClassIds,
   });
   return counts;
 }
 
-export function initDataHub({ onOpenImage, onStartAnnotate }) {
+async function deleteSelected({ onError, onDeleted }) {
+  const ids = [...(store.get("gallerySelectedIds") || [])];
+  if (!ids.length) return;
+  const ok = window.confirm(
+    `Удалить выбранные кадры (${ids.length}) безвозвратно? Аннотации тоже будут удалены.`
+  );
+  if (!ok) return;
+
+  let deleted = 0;
+  const failed = [];
+  const deletedIds = [];
+  await mapPool(ids, 4, async (id) => {
+    try {
+      await api.deleteImage(id);
+      deleted += 1;
+      deletedIds.push(id);
+    } catch (err) {
+      failed.push(err.message || String(err));
+    }
+  });
+
+  const removed = new Set(deletedIds);
+  const remaining = (store.get("images") || []).filter((item) => !removed.has(item.id));
+  const boxCounts = { ...(store.get("boxCounts") || {}) };
+  const imageClassIds = { ...(store.get("imageClassIds") || {}) };
+  for (const id of removed) {
+    delete boxCounts[id];
+    delete imageClassIds[id];
+  }
+  const current = store.get("currentImage");
+  const stillSelected = ids.filter((id) => !removed.has(id));
+  store.patch({
+    images: remaining,
+    gallerySelectedIds: stillSelected,
+    boxCounts,
+    imageClassIds,
+    ...(current && removed.has(current.id)
+      ? { currentImage: null, annotations: [], selectedBoxId: null, hoveredBoxId: null }
+      : {}),
+  });
+
+  if (failed.length) {
+    onError?.(`Удалено ${deleted}, ошибок: ${failed.length}`);
+  } else {
+    onDeleted?.(deleted);
+  }
+  await refreshClassCounts(remaining);
+}
+
+export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }) {
   renderSplitFilters();
 
   document.getElementById("gallery-search")?.addEventListener("input", (event) => {
@@ -223,37 +455,105 @@ export function initDataHub({ onOpenImage, onStartAnnotate }) {
     store.set("gallerySplit", btn.dataset.gallerySplit);
   });
 
+  document.getElementById("gallery-class-filters")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-gallery-class]");
+    if (!btn) return;
+    const token = btn.dataset.galleryClass;
+    const current = new Set(store.get("galleryClassFilter") || []);
+    if (current.has(token)) current.delete(token);
+    else current.add(token);
+    store.set("galleryClassFilter", [...current]);
+  });
+
+  document.getElementById("gallery-status-filters")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-gallery-status]");
+    if (!btn) return;
+    const token = btn.dataset.galleryStatus;
+    const current = new Set(store.get("galleryStatusFilter") || []);
+    if (current.has(token)) current.delete(token);
+    else current.add(token);
+    store.set("galleryStatusFilter", [...current]);
+  });
+
   document.getElementById("btn-gallery-annotate-first")?.addEventListener("click", () => {
     const first = filteredImages()[0] || (store.get("images") || [])[0];
     onStartAnnotate?.(first?.id || null);
   });
 
+  document.getElementById("btn-gallery-select-all")?.addEventListener("click", () => {
+    const visible = filteredImages().map((item) => item.id);
+    const selected = selectedSet();
+    const allSelected = visible.length > 0 && visible.every((id) => selected.has(id));
+    if (allSelected) {
+      for (const id of visible) selected.delete(id);
+    } else {
+      for (const id of visible) selected.add(id);
+    }
+    setSelectedIds([...selected]);
+  });
+
+  document.getElementById("btn-gallery-clear-selection")?.addEventListener("click", () => {
+    setSelectedIds([]);
+  });
+
+  document.getElementById("btn-gallery-delete-selected")?.addEventListener("click", () => {
+    deleteSelected({ onError, onDeleted }).catch((err) => onError?.(err.message));
+  });
+
   const rerender = () => {
     renderSplitFilters();
     const images = store.get("images") || [];
+    pruneSelection(images);
     renderStats(images);
     renderClassBars(
       store.get("classes") || [],
       store.get("classCounts") || {},
       countBackgroundFrames(images)
     );
+    renderClassFilters();
+    renderStatusFilters();
     renderGallery({ onOpenImage });
   };
 
   store.addEventListener("change:images", rerender);
   store.addEventListener("change:classes", rerender);
   store.addEventListener("change:classCounts", rerender);
+  store.addEventListener("change:imageClassIds", () => {
+    if (store.get("projectTab") !== "data") return;
+    renderClassFilters();
+    renderGallery({ onOpenImage });
+  });
   store.addEventListener("change:boxCounts", () => {
     if (store.get("projectTab") !== "data") return;
     renderGallery({ onOpenImage });
   });
-  store.addEventListener("change:galleryQuery", () => renderGallery({ onOpenImage }));
+  store.addEventListener("change:galleryQuery", () => {
+    renderGallery({ onOpenImage });
+    syncSelectionBar();
+  });
+  store.addEventListener("change:galleryClassFilter", () => {
+    renderClassFilters();
+    renderGallery({ onOpenImage });
+  });
+  store.addEventListener("change:galleryStatusFilter", () => {
+    renderStatusFilters();
+    renderGallery({ onOpenImage });
+  });
+  store.addEventListener("change:gallerySelectedIds", () => {
+    renderGallery({ onOpenImage });
+  });
   store.addEventListener("change:gallerySplit", rerender);
+  store.addEventListener("change:currentProject", () => {
+    clearGallerySelectionState();
+  });
 
   return {
     async refresh() {
       const images = store.get("images") || [];
+      pruneSelection(images);
       renderStats(images);
+      renderStatusFilters();
+      renderClassFilters();
       renderGallery({ onOpenImage });
       await refreshClassCounts(images);
       renderClassBars(
@@ -261,6 +561,9 @@ export function initDataHub({ onOpenImage, onStartAnnotate }) {
         store.get("classCounts") || {},
         countBackgroundFrames(images)
       );
+      renderStatusFilters();
+      renderClassFilters();
+      renderGallery({ onOpenImage });
       refreshIcons(document.getElementById("tab-view-data"));
     },
   };

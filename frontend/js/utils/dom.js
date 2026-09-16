@@ -13,7 +13,10 @@ export function showModal(el, visible) {
 }
 
 export function refreshIcons(root) {
-  window.lucide?.createIcons({
+  const lucide = window.lucide;
+  if (!lucide?.createIcons) return;
+  lucide.createIcons({
+    icons: lucide.icons,
     root: root || document.body,
   });
 }

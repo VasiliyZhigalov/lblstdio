@@ -4,10 +4,6 @@ import logging
 from pathlib import Path
 from uuid import UUID
 
-from app.application.ports.repositories.annotation_repository import IAnnotationRepository
-from app.application.ports.repositories.auto_label_job_repository import (
-    IAutoLabelJobRepository,
-)
 from app.application.ports.repositories.dataset_version_repository import (
     IDatasetVersionRepository,
 )
@@ -104,16 +100,12 @@ class DeleteDatasetVersionUseCase:
         versions: IDatasetVersionRepository,
         models: IModelVersionRepository,
         jobs: ITrainingJobRepository,
-        auto_jobs: IAutoLabelJobRepository,
-        annotations: IAnnotationRepository,
         storage: IFileStorage,
         uow: IUnitOfWork,
     ) -> None:
         self._versions = versions
         self._models = models
         self._jobs = jobs
-        self._auto_jobs = auto_jobs
-        self._annotations = annotations
         self._storage = storage
         self._uow = uow
 
@@ -128,25 +120,17 @@ class DeleteDatasetVersionUseCase:
                 "cannot delete dataset while training is queued or running"
             )
 
+        # Keep trained/uploaded models; only detach the deleted dataset link.
         linked_models = await self._models.list_by_dataset_version(version_id)
-        model_ids = [item.id for item in linked_models]
-        dirs_to_delete: list[str] = []
         for model in linked_models:
-            if model.weights_path:
-                dirs_to_delete.append(_parent_rel(model.weights_path))
-            if model.training_job_id is not None:
-                dirs_to_delete.append(
-                    _train_work_rel(model.project_id, model.training_job_id)
-                )
+            model.dataset_version_id = None
+            await self._models.update(model)
+
+        dirs_to_delete: list[str] = []
         for job in training_jobs:
             dirs_to_delete.append(_train_work_rel(job.project_id, job.id))
         if version.yaml_path:
             dirs_to_delete.append(_parent_rel(version.yaml_path))
-
-        await self._auto_jobs.delete_by_model_versions(model_ids)
-        for model in linked_models:
-            await self._annotations.clear_model_version_refs(model.id)
-            await self._models.delete(model.id)
 
         await self._jobs.delete_by_dataset_version(version_id)
         await self._versions.delete(version_id)

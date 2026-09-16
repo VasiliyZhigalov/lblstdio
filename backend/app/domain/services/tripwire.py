@@ -51,6 +51,9 @@ class TripwireDebouncer:
         self._debounce_seconds = float(debounce_seconds)
         self._last_allowed: dict[int, float] = {}
 
+    def set_debounce_seconds(self, debounce_seconds: float) -> None:
+        self._debounce_seconds = float(debounce_seconds)
+
     def allow(self, track_id: int, now: float) -> bool:
         last = self._last_allowed.get(track_id)
         if last is not None and (now - last) < self._debounce_seconds:

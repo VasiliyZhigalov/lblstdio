@@ -27,6 +27,10 @@ class ClassCreate(BaseModel):
     color_hex: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
 
 
+class ClassRename(BaseModel):
+    name: str = Field(min_length=1)
+
+
 class ClassRead(BaseModel):
     id: UUID
     project_id: UUID
@@ -85,6 +89,11 @@ class AnnotationRead(BaseModel):
     verified_at: datetime | None = None
     source_annotation_id: UUID | None = None
     model_version_id: UUID | None = None
+
+
+class ClearReviewAnnotationsResult(BaseModel):
+    cleared_images: int
+    deleted_annotations: int
 
 
 class ImageDetailRead(ImageRead):
@@ -244,6 +253,7 @@ class AutoLabelRequest(BaseModel):
     image_ids: list[UUID] | None = None
     all_unannotated: bool = False
     confidence_threshold: float = Field(default=0.05, ge=0.01, le=0.95)
+    iou_threshold: float = Field(default=0.7, ge=0.01, le=0.95)
 
 
 class AutoLabelJobRead(BaseModel):
@@ -251,6 +261,7 @@ class AutoLabelJobRead(BaseModel):
     project_id: UUID
     model_version_id: UUID
     confidence_threshold: float
+    iou_threshold: float = 0.7
     status: str
     image_ids: list[UUID]
     total_images_processed: int
@@ -261,6 +272,11 @@ class AutoLabelJobRead(BaseModel):
 
 
 class StreamTriggerConfigPayload(BaseModel):
+    track_stable_enabled: bool = True
+    track_stable_min_frames: int = Field(default=12, ge=2)
+    track_stable_max_size_variation: float = Field(default=0.35, ge=0)
+    track_stable_min_avg_conf: float = Field(default=0.75, gt=0, le=1)
+    track_stable_interval_seconds: float = Field(default=5.0, gt=0)
     timer_enabled: bool = False
     timer_interval_seconds: float = Field(default=5.0, gt=0)
     tripwire_enabled: bool = False
@@ -268,7 +284,6 @@ class StreamTriggerConfigPayload(BaseModel):
     tripwire_classes: list[UUID] = Field(default_factory=list)
     tripwire_direction: str = "ANY"
     tripwire_debounce_seconds: float = Field(default=3.0, ge=0)
-    uncertainty_range: tuple[float, float] = (0.70, 0.90)
     cooldown_seconds: float = Field(default=3.0, ge=0)
 
 

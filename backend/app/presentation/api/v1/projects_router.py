@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Response, status
 
 from app.application.use_cases.classes.create_class import CreateClassUseCase, ListClassesUseCase
 from app.application.use_cases.classes.delete_class import DeleteClassUseCase
+from app.application.use_cases.classes.rename_class import RenameClassUseCase
 from app.application.use_cases.dataset.export_yolo import ExportYOLOUseCase
 from app.application.use_cases.projects.create_project import (
     CreateProjectUseCase,
@@ -21,11 +22,13 @@ from app.presentation.dependencies import (
     get_get_project_use_case,
     get_list_classes_use_case,
     get_list_projects_use_case,
+    get_rename_class_use_case,
     get_update_project_use_case,
 )
 from app.presentation.schemas import (
     ClassCreate,
     ClassRead,
+    ClassRename,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
@@ -102,6 +105,20 @@ async def list_classes(
 ) -> list[ClassRead]:
     classes = await use_case.execute(project_id)
     return [ClassRead.model_validate(item, from_attributes=True) for item in classes]
+
+
+@router.patch(
+    "/projects/{project_id}/classes/{class_id}",
+    response_model=ClassRead,
+)
+async def rename_class(
+    project_id: UUID,
+    class_id: UUID,
+    payload: ClassRename,
+    use_case: RenameClassUseCase = Depends(get_rename_class_use_case),
+) -> ClassRead:
+    annotation_class = await use_case.execute(class_id, project_id, payload.name)
+    return ClassRead.model_validate(annotation_class, from_attributes=True)
 
 
 @router.delete(

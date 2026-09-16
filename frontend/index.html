@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>lblstdio — студия разметки</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/vendor/tailwindcss.js"></script>
     <script>
       tailwind.config = {
         theme: {
@@ -15,7 +15,7 @@
       };
     </script>
     <link rel="stylesheet" href="/css/styles.css" />
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="/vendor/lucide.min.js"></script>
   </head>
   <body class="bg-zinc-950 text-zinc-100">
     <div id="app" class="h-screen w-screen overflow-hidden">
@@ -209,7 +209,7 @@
             </div>
 
             <div class="flex flex-wrap items-center justify-between gap-4 pt-2">
-              <div class="flex items-center gap-2 flex-wrap">
+              <div class="flex items-center gap-2 flex-wrap min-w-0 flex-1">
                 <input
                   id="gallery-search"
                   type="search"
@@ -217,6 +217,8 @@
                   class="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs w-64"
                 />
                 <div id="gallery-split-filters" class="flex gap-1"></div>
+                <div id="gallery-status-filters" class="flex flex-wrap gap-1"></div>
+                <div id="gallery-class-filters" class="flex flex-wrap gap-1"></div>
               </div>
               <button
                 id="btn-gallery-annotate-first"
@@ -224,6 +226,37 @@
               >
                 <i data-lucide="pen-tool" class="w-3.5 h-3.5"></i>
                 <span>Перейти к разметке</span>
+              </button>
+            </div>
+
+            <div
+              id="gallery-selection-bar"
+              class="hidden flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg border border-zinc-800 bg-zinc-900/60"
+            >
+              <button
+                id="btn-gallery-select-all"
+                type="button"
+                class="px-2.5 py-1 text-[11px] rounded-md border border-zinc-700 hover:bg-zinc-800 text-zinc-200"
+              >
+                Выбрать все
+              </button>
+              <button
+                id="btn-gallery-clear-selection"
+                type="button"
+                class="px-2.5 py-1 text-[11px] rounded-md border border-zinc-700 hover:bg-zinc-800 text-zinc-400"
+              >
+                Снять выбор
+              </button>
+              <span class="text-[11px] text-zinc-400"
+                >Выбрано: <span id="gallery-selected-count" class="font-mono text-zinc-200">0</span></span
+              >
+              <button
+                id="btn-gallery-delete-selected"
+                type="button"
+                class="ml-auto px-2.5 py-1 text-[11px] rounded-md bg-red-800 hover:bg-red-700 text-white flex items-center gap-1.5"
+              >
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                <span>Удалить выбранные</span>
               </button>
             </div>
 
@@ -362,6 +395,14 @@
                     Очистить кадр
                   </button>
                   <button
+                    id="btn-clear-review-annotations"
+                    type="button"
+                    class="px-2 py-1 text-xs rounded text-amber-300 hover:bg-amber-950/40 border border-amber-800/50"
+                    title="Удалить все аннотации со всех кадров, требующих проверки"
+                  >
+                    Очистить все на проверке
+                  </button>
+                  <button
                     id="btn-mark-background"
                     type="button"
                     title="Пустой кадр без объектов — negative sample для датасета"
@@ -390,7 +431,7 @@
                     id="btn-approve-box"
                     type="button"
                     class="w-7 h-7 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold shadow border border-emerald-400/40"
-                    title="Подтвердить рамку"
+                    title="Подтвердить аннотацию (Space)"
                   >
                     ✓
                   </button>
@@ -398,9 +439,17 @@
                     id="btn-reject-box"
                     type="button"
                     class="w-7 h-7 rounded bg-red-700 hover:bg-red-600 text-white text-sm font-bold shadow border border-red-400/40"
-                    title="Отклонить"
+                    title="Удалить аннотацию (Del)"
                   >
                     ✕
+                  </button>
+                  <button
+                    id="btn-delete-image-box"
+                    type="button"
+                    class="w-7 h-7 rounded bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-bold shadow border border-zinc-500/40"
+                    title="Удалить изображение (Shift+Del)"
+                  >
+                    ⌫
                   </button>
                 </div>
                 <div
@@ -431,15 +480,23 @@
                       class="px-2 py-1 text-[11px] rounded bg-emerald-600 hover:bg-emerald-500 text-white"
                       title="Подтвердить все (Space)"
                     >
-                      Подтвердить все (Space)
+                      Подтвердить (Space)
                     </button>
                     <button
                       id="btn-reject-all"
                       type="button"
                       class="px-2 py-1 text-[11px] rounded bg-red-800 hover:bg-red-700 text-white"
-                      title="Отклонить все (R)"
+                      title="Удалить аннотации (R)"
                     >
-                      Отклонить (R)
+                      Удалить аннотации (R)
+                    </button>
+                    <button
+                      id="btn-delete-image"
+                      type="button"
+                      class="px-2 py-1 text-[11px] rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-zinc-600"
+                      title="Удалить изображение (Shift+Del)"
+                    >
+                      Удалить изображение (Shift+Del)
                     </button>
                   </div>
                 </div>
@@ -611,25 +668,27 @@
                   </div>
                 </div>
                 <div>
-                  <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Модель и uncertainty</h3>
+                  <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Модель</h3>
                   <select id="stream-model-select" class="w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1.5 text-xs mb-2"></select>
-                  <div class="grid grid-cols-2 gap-2">
-                    <label class="text-[11px] text-zinc-400">min
-                      <input id="stream-unc-min" type="number" min="0" max="1" step="0.01" value="0.70" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs font-mono" />
-                    </label>
-                    <label class="text-[11px] text-zinc-400">max
-                      <input id="stream-unc-max" type="number" min="0" max="1" step="0.01" value="0.90" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs font-mono" />
-                    </label>
-                  </div>
                 </div>
                 <div>
                   <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Автозахват</h3>
                   <label class="flex items-center gap-2 text-xs text-zinc-200 mb-2">
-                    <input id="stream-timer-enabled" type="checkbox" class="rounded border-zinc-600" />
-                    Захват по таймеру
+                    <input id="stream-track-stable-enabled" type="checkbox" class="rounded border-zinc-600" checked />
+                    Стабильный трек (ByteTrack)
                   </label>
-                  <label class="block text-[11px] text-zinc-400 mb-3">Интервал (сек)
-                    <input id="stream-timer-interval" type="number" min="0.5" step="0.5" value="5" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs" />
+                  <p class="text-[10px] text-zinc-500 mb-2">
+                    Кадр сохраняется, когда объект непрерывно трекается N кадров со средней conf ≥ 0.75
+                    и стабильным размером бокса. Берётся кадр с максимальной уверенностью; повтор того же трека — не чаще интервала.
+                  </p>
+                  <label class="block text-[11px] text-zinc-400 mb-2">N кадров подряд
+                    <input id="stream-track-stable-n" type="number" min="2" step="1" value="12" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs" />
+                  </label>
+                  <label class="block text-[11px] text-zinc-400 mb-2">Порог вариации размера (max/min − 1)
+                    <input id="stream-track-stable-size" type="number" min="0" step="0.05" value="0.35" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs" />
+                  </label>
+                  <label class="block text-[11px] text-zinc-400 mb-3">Интервал на трек (сек)
+                    <input id="stream-track-stable-interval" type="number" min="0.5" step="0.5" value="5" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs" />
                   </label>
                   <label class="flex items-center gap-2 text-xs text-zinc-200 mb-2">
                     <input id="stream-tripwire-enabled" type="checkbox" class="rounded border-zinc-600" />
@@ -1010,6 +1069,17 @@
             <p class="text-[11px] text-zinc-500">
               Ниже порог — больше кандидатов на проверку. Для слабых моделей часто нужно 0.01–0.10.
               Все найденные объекты получат статус «на проверке».
+            </p>
+          </label>
+          <label class="block space-y-2">
+            <div class="flex justify-between text-xs text-zinc-300">
+              <span>NMS IoU (подавление дублей)</span>
+              <span id="autolabel-iou-label" class="font-mono">0.70</span>
+            </div>
+            <input id="autolabel-iou" type="range" min="0.01" max="0.95" step="0.01" value="0.70" class="w-full" />
+            <p class="text-[11px] text-zinc-500">
+              Порог Non-Maximum Suppression YOLO при инференсе: ниже — сильнее убираются пересекающиеся дубли
+              одного объекта; выше — остаются боксы с большим перекрытием. Это не пост-фильтр уже найденных рамок.
             </p>
           </label>
           <label class="flex items-center gap-2 text-xs text-zinc-200">

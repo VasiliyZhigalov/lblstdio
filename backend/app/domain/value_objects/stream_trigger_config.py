@@ -9,6 +9,16 @@ from app.domain.exceptions import DomainValidationException
 
 @dataclass(frozen=True)
 class StreamTriggerConfig:
+    """Capture triggers for a live stream.
+
+    Modes (combinable): track-stability, pure wall-clock timer, tripwire.
+    """
+
+    track_stable_enabled: bool = True
+    track_stable_min_frames: int = 12
+    track_stable_max_size_variation: float = 0.35
+    track_stable_min_avg_conf: float = 0.75
+    track_stable_interval_seconds: float = 5.0
     timer_enabled: bool = False
     timer_interval_seconds: float = 5.0
     tripwire_enabled: bool = False
@@ -16,22 +26,29 @@ class StreamTriggerConfig:
     tripwire_classes: tuple[UUID, ...] = field(default_factory=tuple)
     tripwire_direction: TripwireDirection = TripwireDirection.ANY
     tripwire_debounce_seconds: float = 3.0
-    uncertainty_range: tuple[float, float] = (0.70, 0.90)
     cooldown_seconds: float = 3.0
 
     def __post_init__(self) -> None:
+        if self.track_stable_min_frames < 2:
+            raise DomainValidationException("track_stable_min_frames must be >= 2")
+        if self.track_stable_max_size_variation < 0:
+            raise DomainValidationException(
+                "track_stable_max_size_variation must be >= 0"
+            )
+        if not 0.0 < self.track_stable_min_avg_conf <= 1.0:
+            raise DomainValidationException(
+                "track_stable_min_avg_conf must be in (0, 1]"
+            )
+        if self.track_stable_interval_seconds <= 0:
+            raise DomainValidationException(
+                "track_stable_interval_seconds must be > 0"
+            )
         if self.timer_interval_seconds <= 0:
             raise DomainValidationException("timer_interval_seconds must be > 0")
         if self.tripwire_debounce_seconds < 0:
             raise DomainValidationException("tripwire_debounce_seconds must be >= 0")
         if self.cooldown_seconds < 0:
             raise DomainValidationException("cooldown_seconds must be >= 0")
-
-        unc_min, unc_max = self.uncertainty_range
-        if not (0.0 <= unc_min < unc_max <= 1.0):
-            raise DomainValidationException(
-                "uncertainty_range must satisfy 0 <= min < max <= 1"
-            )
 
         if self.tripwire_line is not None:
             if len(self.tripwire_line) != 4:
