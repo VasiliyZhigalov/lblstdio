@@ -25,6 +25,13 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     fps: () => document.getElementById("stream-fps-label"),
     captured: () => document.getElementById("stream-captured-count"),
     modelSelect: () => document.getElementById("stream-model-select"),
+    sourceInfo: () => document.getElementById("stream-source-info"),
+    infoName: () => document.getElementById("stream-info-name"),
+    infoType: () => document.getElementById("stream-info-type"),
+    infoUri: () => document.getElementById("stream-info-uri"),
+    infoStatus: () => document.getElementById("stream-info-status"),
+    settingsPanel: () => document.getElementById("stream-settings-panel"),
+    noSelectionHint: () => document.getElementById("stream-no-selection-hint"),
   };
 
   function selected() {
@@ -184,6 +191,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
         const s = selected();
         line = s?.config?.tripwire_line || null;
         fillFormFromSelected();
+        updateSourceInfoPanel();
         renderList();
         drawLineOverlay();
         syncLiveImage(Boolean(s?.is_active));
@@ -210,6 +218,45 @@ export function initStreamHub({ toast, navigate, projectPath }) {
         }
       });
     });
+  }
+
+  function updateSourceInfoPanel() {
+    const s = selected();
+    const infoPanel = els.sourceInfo();
+    const settingsPanel = els.settingsPanel();
+    const noHint = els.noSelectionHint();
+    
+    if (!infoPanel || !settingsPanel || !noHint) return;
+    
+    if (!s) {
+      infoPanel.classList.add("hidden");
+      settingsPanel.classList.add("hidden");
+      noHint.classList.remove("hidden");
+      return;
+    }
+    
+    // Показываем панель информации и настроек
+    infoPanel.classList.remove("hidden");
+    settingsPanel.classList.remove("hidden");
+    noHint.classList.add("hidden");
+    
+    // Заполняем информацию об источнике
+    const nameEl = els.infoName();
+    const typeEl = els.infoType();
+    const uriEl = els.infoUri();
+    const statusEl = els.infoStatus();
+    
+    if (nameEl) nameEl.textContent = s.name || "—";
+    if (typeEl) typeEl.textContent = s.source_type || "—";
+    if (uriEl) uriEl.textContent = s.source_uri || "—";
+    
+    if (statusEl) {
+      const isActive = Boolean(s.is_active);
+      statusEl.innerHTML = `
+        <span class="w-1.5 h-1.5 rounded-full ${isActive ? "bg-emerald-500" : "bg-zinc-500"}"></span>
+        <span class="${isActive ? "text-emerald-400" : "text-zinc-400"}">${isActive ? "Активен" : "Не активен"}</span>
+      `;
+    }
   }
 
   function fillFormFromSelected() {
@@ -337,6 +384,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     const s = selected();
     line = s?.config?.tripwire_line || null;
     renderList();
+    updateSourceInfoPanel();
     fillFormFromSelected();
     drawLineOverlay();
     const running = Boolean(s?.is_active);
@@ -367,6 +415,9 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       const running = Boolean(st.is_running) && st.state !== "error";
       syncLiveImage(running);
       ensurePoll(running || st.state === "reconnecting" || st.state === "starting");
+      
+      // Обновляем статус в панели информации
+      updateSourceInfoPanel();
     } catch {
       /* ignore transient */
     }
@@ -382,6 +433,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       const created = await api.createRtspStream(projectId, { name, rtsp_url });
       selectedId = created.id;
       await refresh();
+      updateSourceInfoPanel();
     } catch (err) {
       toast(err.message);
     }
@@ -398,6 +450,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       });
       selectedId = created.id;
       await refresh();
+      updateSourceInfoPanel();
     } catch (err) {
       toast(err.message);
     }
@@ -412,6 +465,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       const created = await api.uploadStreamVideo(projectId, file, file.name);
       selectedId = created.id;
       await refresh();
+      updateSourceInfoPanel();
     } catch (err) {
       toast(err.message);
     } finally {
@@ -447,6 +501,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       await saveTriggers({ quiet: true });
       await api.startStream(selectedId);
       await refresh();
+      updateSourceInfoPanel();
       toast("Стрим запущен");
     } catch (err) {
       toast(err.message);
@@ -460,6 +515,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       stopPoll();
       syncLiveImage(false);
       await refresh();
+      updateSourceInfoPanel();
       toast("Стрим остановлен");
     } catch (err) {
       toast(err.message);
