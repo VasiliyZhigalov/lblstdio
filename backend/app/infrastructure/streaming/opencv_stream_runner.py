@@ -19,7 +19,6 @@ from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
 from app.domain.services.stream_capture_rules import (
     TrackStableSample,
-    should_capture_timer,
     should_capture_track_stable,
     should_capture_tripwire,
 )
@@ -305,11 +304,9 @@ class OpenCVStreamRunner:
         prev_centers: dict[int, tuple[float, float]] = {}
         track_series: dict[int, list[tuple[TrackStableSample, bytes, list[Detection]]]] = {}
         track_last_saved: dict[int, float] = {}
-        last_timer_at: float | None = None
         last_any_at: float | None = None
         pending_stable_track: int | None = None
         pending_stable_at: float | None = None
-        pending_timer_at: float | None = None
         ingest_in_flight = False
         frames = 0
         t0 = time.monotonic()
@@ -330,14 +327,8 @@ class OpenCVStreamRunner:
                         ):
                             track_last_saved[pending_stable_track] = pending_stable_at
                             track_series.pop(pending_stable_track, None)
-                        if (
-                            pending_timer_at is not None
-                            and abs(pending_timer_at - captured_at) < 1e-6
-                        ):
-                            last_timer_at = pending_timer_at
                     pending_stable_track = None
                     pending_stable_at = None
-                    pending_timer_at = None
 
                 ok, frame = cap.read()
                 if not ok:
@@ -463,25 +454,6 @@ class OpenCVStreamRunner:
                             ingest_in_flight = True
                             captured = True
                             break
-
-                if (
-                    not captured
-                    and not ingest_in_flight
-                    and config.timer_enabled
-                    and should_capture_timer(
-                        now=now,
-                        last_timer_at=last_timer_at,
-                        last_any_at=last_any_at,
-                        interval=config.timer_interval_seconds,
-                        cooldown=config.cooldown_seconds,
-                    )
-                ):
-                    if self._enqueue_ingest(
-                        stream.id, frame, detections, "timer", now
-                    ):
-                        pending_timer_at = now
-                        ingest_in_flight = True
-                        captured = True
 
                 overlay = frame.copy()
                 self._draw_overlay(overlay, track_meta, box_xyxy, config, w, h)

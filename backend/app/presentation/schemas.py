@@ -277,8 +277,6 @@ class StreamTriggerConfigPayload(BaseModel):
     track_stable_max_size_variation: float = Field(default=0.35, ge=0)
     track_stable_min_avg_conf: float = Field(default=0.75, gt=0, le=1)
     track_stable_interval_seconds: float = Field(default=5.0, gt=0)
-    timer_enabled: bool = False
-    timer_interval_seconds: float = Field(default=5.0, gt=0)
     tripwire_enabled: bool = False
     tripwire_line: tuple[float, float, float, float] | None = None
     tripwire_classes: list[UUID] = Field(default_factory=list)

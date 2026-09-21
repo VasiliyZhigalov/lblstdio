@@ -11,7 +11,8 @@ from app.domain.exceptions import DomainValidationException
 class StreamTriggerConfig:
     """Capture triggers for a live stream.
 
-    Modes (combinable): track-stability, pure wall-clock timer, tripwire.
+    Primary harvest mode is track-stability (ByteTrack continuity), not a
+    wall-clock timer. Tripwire remains an optional event-driven path.
     """
 
     track_stable_enabled: bool = True
@@ -19,8 +20,6 @@ class StreamTriggerConfig:
     track_stable_max_size_variation: float = 0.35
     track_stable_min_avg_conf: float = 0.75
     track_stable_interval_seconds: float = 5.0
-    timer_enabled: bool = False
-    timer_interval_seconds: float = 5.0
     tripwire_enabled: bool = False
     tripwire_line: tuple[float, float, float, float] | None = None
     tripwire_classes: tuple[UUID, ...] = field(default_factory=tuple)
@@ -43,8 +42,6 @@ class StreamTriggerConfig:
             raise DomainValidationException(
                 "track_stable_interval_seconds must be > 0"
             )
-        if self.timer_interval_seconds <= 0:
-            raise DomainValidationException("timer_interval_seconds must be > 0")
         if self.tripwire_debounce_seconds < 0:
             raise DomainValidationException("tripwire_debounce_seconds must be >= 0")
         if self.cooldown_seconds < 0:

@@ -80,22 +80,6 @@ def should_capture_track_stable(
     return len(samples) - min_frames + best_confidence_index(window)
 
 
-def should_capture_timer(
-    *,
-    now: float,
-    last_timer_at: float | None,
-    last_any_at: float | None,
-    interval: float,
-    cooldown: float,
-) -> bool:
-    """Pure wall-clock timer: ignore detections, only interval + cooldown."""
-    if last_timer_at is not None and (now - last_timer_at) < interval:
-        return False
-    if last_any_at is not None and (now - last_any_at) < cooldown:
-        return False
-    return True
-
-
 def should_capture_tripwire(
     *,
     track_id: int,

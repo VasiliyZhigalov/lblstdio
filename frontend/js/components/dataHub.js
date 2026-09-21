@@ -102,7 +102,41 @@ function clearGallerySelectionState() {
     galleryClassFilter: [],
     galleryStatusFilter: [],
     imageClassIds: {},
+    galleryAnnotations: {},
   });
+}
+
+function galleryBboxOverlay(image, boxes, classes) {
+  if (!boxes?.length || !image?.width || !image?.height) return "";
+  const classById = new Map((classes || []).map((cls) => [cls.id, cls]));
+  const rects = boxes
+    .map((box) => {
+      const color = escapeHtml(classById.get(box.class_id)?.color_hex || "#6366F1");
+      const x = (box.x_center - box.width / 2) * image.width;
+      const y = (box.y_center - box.height / 2) * image.height;
+      const w = box.width * image.width;
+      const h = box.height * image.height;
+      const pending = box.verification_status === "PENDING_REVIEW";
+      return `<rect x="${x}" y="${y}" width="${w}" height="${h}"
+        fill="${color}40" stroke="${color}" stroke-width="2"
+        ${pending ? 'stroke-dasharray="6 4"' : ""}
+        vector-effect="non-scaling-stroke" />`;
+    })
+    .join("");
+  return `<svg class="absolute inset-0 w-full h-full pointer-events-none"
+      viewBox="0 0 ${image.width} ${image.height}"
+      preserveAspectRatio="xMidYMid slice"
+      aria-hidden="true">${rects}</svg>`;
+}
+
+function syncClassBalanceCollapsed() {
+  const collapsed = store.get("classBalanceCollapsed") !== false;
+  const body = document.getElementById("class-balance-body");
+  const btn = document.getElementById("btn-toggle-class-balance");
+  const chevron = document.getElementById("class-balance-chevron");
+  body?.classList.toggle("hidden", collapsed);
+  btn?.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  chevron?.classList.toggle("rotate-180", !collapsed);
 }
 
 function renderClassBars(classes, classCounts, backgroundFrames = 0) {
@@ -298,6 +332,8 @@ function renderGallery({ onOpenImage }) {
 
   const images = filteredImages();
   const counts = store.get("boxCounts") || {};
+  const galleryAnnotations = store.get("galleryAnnotations") || {};
+  const classes = store.get("classes") || [];
   const selected = selectedSet();
   empty?.classList.toggle("hidden", images.length > 0);
   grid.classList.toggle("hidden", images.length === 0);
@@ -306,6 +342,7 @@ function renderGallery({ onOpenImage }) {
     .map((image) => {
       const meta = statusMeta(image.status);
       const boxes = counts[image.id];
+      const overlayBoxes = galleryAnnotations[image.id] || [];
       const boxLabel = typeof boxes === "number" ? `${boxes} box` : "—";
       const isSelected = selected.has(image.id);
       return `
@@ -324,7 +361,8 @@ function renderGallery({ onOpenImage }) {
             <div class="relative aspect-video bg-zinc-950 overflow-hidden">
               <img src="${api.imageFileUrl(image.id)}" alt="" loading="lazy" decoding="async"
                 class="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition" />
-              <div class="absolute top-2 left-2 flex gap-1">
+              ${galleryBboxOverlay(image, overlayBoxes, classes)}
+              <div class="absolute top-2 left-2 z-[1] flex gap-1">
                 <span class="px-1.5 py-0.5 text-[10px] rounded border ${meta.badge}">${meta.label}</span>
               </div>
             </div>
@@ -363,10 +401,12 @@ async function refreshClassCounts(images) {
   const counts = {};
   const nextBoxCounts = {};
   const nextImageClassIds = {};
+  const nextGalleryAnnotations = {};
   if (!targets.length) {
     store.patch({
       classCounts: counts,
       imageClassIds: nextImageClassIds,
+      galleryAnnotations: nextGalleryAnnotations,
     });
     return counts;
   }
@@ -376,6 +416,7 @@ async function refreshClassCounts(images) {
       const detail = await api.getImage(image.id);
       const boxes = detail.annotations || [];
       nextBoxCounts[image.id] = boxes.length;
+      nextGalleryAnnotations[image.id] = boxes;
       const classIds = [...new Set(boxes.map((box) => box.class_id).filter(Boolean))];
       nextImageClassIds[image.id] = classIds;
       for (const box of boxes) {
@@ -389,6 +430,13 @@ async function refreshClassCounts(images) {
     boxCounts: { ...store.get("boxCounts"), ...nextBoxCounts },
     classCounts: counts,
     imageClassIds: nextImageClassIds,
+    galleryAnnotations: (() => {
+      const merged = { ...(store.get("galleryAnnotations") || {}) };
+      for (const image of images || []) {
+        if (image.status === "UNANNOTATED") delete merged[image.id];
+      }
+      return { ...merged, ...nextGalleryAnnotations };
+    })(),
   });
   return counts;
 }
@@ -418,9 +466,11 @@ async function deleteSelected({ onError, onDeleted }) {
   const remaining = (store.get("images") || []).filter((item) => !removed.has(item.id));
   const boxCounts = { ...(store.get("boxCounts") || {}) };
   const imageClassIds = { ...(store.get("imageClassIds") || {}) };
+  const galleryAnnotations = { ...(store.get("galleryAnnotations") || {}) };
   for (const id of removed) {
     delete boxCounts[id];
     delete imageClassIds[id];
+    delete galleryAnnotations[id];
   }
   const current = store.get("currentImage");
   const stillSelected = ids.filter((id) => !removed.has(id));
@@ -429,6 +479,7 @@ async function deleteSelected({ onError, onDeleted }) {
     gallerySelectedIds: stillSelected,
     boxCounts,
     imageClassIds,
+    galleryAnnotations,
     ...(current && removed.has(current.id)
       ? { currentImage: null, annotations: [], selectedBoxId: null, hoveredBoxId: null }
       : {}),
@@ -444,6 +495,12 @@ async function deleteSelected({ onError, onDeleted }) {
 
 export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }) {
   renderSplitFilters();
+  syncClassBalanceCollapsed();
+
+  document.getElementById("btn-toggle-class-balance")?.addEventListener("click", () => {
+    store.set("classBalanceCollapsed", !store.get("classBalanceCollapsed"));
+  });
+  store.addEventListener("change:classBalanceCollapsed", syncClassBalanceCollapsed);
 
   document.getElementById("gallery-search")?.addEventListener("input", (event) => {
     store.set("galleryQuery", event.target.value);
@@ -524,6 +581,10 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
     renderGallery({ onOpenImage });
   });
   store.addEventListener("change:boxCounts", () => {
+    if (store.get("projectTab") !== "data") return;
+    renderGallery({ onOpenImage });
+  });
+  store.addEventListener("change:galleryAnnotations", () => {
     if (store.get("projectTab") !== "data") return;
     renderGallery({ onOpenImage });
   });

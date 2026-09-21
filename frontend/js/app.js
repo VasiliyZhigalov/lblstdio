@@ -171,8 +171,17 @@ function updateStudioChrome() {
   syncHideButtons();
 }
 
-function setBoxCount(imageId, count) {
-  store.set("boxCounts", { ...store.get("boxCounts"), [imageId]: count });
+function setBoxCount(imageId, count, boxes = undefined) {
+  const patch = {
+    boxCounts: { ...store.get("boxCounts"), [imageId]: count },
+  };
+  if (boxes !== undefined) {
+    const galleryAnnotations = { ...(store.get("galleryAnnotations") || {}) };
+    if (boxes.length) galleryAnnotations[imageId] = boxes;
+    else delete galleryAnnotations[imageId];
+    patch.galleryAnnotations = galleryAnnotations;
+  }
+  store.patch(patch);
 }
 
 function serializeBoxes(boxes) {
@@ -236,7 +245,7 @@ async function saveCurrent({ silent = false, force = false, celebrate = false } 
     store.set("saveStatus", "saving");
     try {
       const saved = await api.saveAnnotations(imageId, boxes);
-      setBoxCount(imageId, saved.length);
+      setBoxCount(imageId, saved.length, saved);
 
       const images = (store.get("images") || []).map((item) => {
         if (item.id !== imageId) return item;
@@ -310,7 +319,7 @@ async function openImage(imageId, expectedProjectId = null) {
     if (projectId && store.get("currentProject")?.id !== projectId) return;
 
     const annotations = detail.annotations || [];
-    setBoxCount(imageId, annotations.length);
+    setBoxCount(imageId, annotations.length, annotations);
     const images = (store.get("images") || []).map((item) =>
       item.id === imageId ? { ...item, status: detail.status } : item
     );
@@ -628,7 +637,7 @@ async function pastePropagateBox() {
           }
         : null,
     });
-    setBoxCount(target.id, annotations.length);
+    setBoxCount(target.id, annotations.length, annotations);
     canvas?.centerOnBox(last);
     const t = transform;
     const debugLine = t
@@ -680,7 +689,7 @@ async function deleteBoxById(boxId) {
         saveStatus: "saved",
       });
       patchImageStatus(image.id, statusFromAnnotations(remaining));
-      setBoxCount(image.id, remaining.length);
+      setBoxCount(image.id, remaining.length, remaining);
       toast("Аннотация удалена");
     } catch (err) {
       toast(err.message);
@@ -720,6 +729,16 @@ async function deleteCurrentImage() {
       hoveredBoxId: null,
       hasUnsavedChanges: false,
       saveStatus: "saved",
+      boxCounts: (() => {
+        const next = { ...(store.get("boxCounts") || {}) };
+        delete next[image.id];
+        return next;
+      })(),
+      galleryAnnotations: (() => {
+        const next = { ...(store.get("galleryAnnotations") || {}) };
+        delete next[image.id];
+        return next;
+      })(),
     });
     toast("Изображение удалено");
     dataHub?.refresh?.().catch(() => {});
@@ -759,6 +778,7 @@ async function verifyAllPending({ goNext = true } = {}) {
       saveStatus: "saved",
     });
     patchImageStatus(image.id, statusFromAnnotations(annotations));
+    setBoxCount(image.id, annotations.length, annotations);
     toast(`Подтверждено рамок: ${pending.length}`);
     if (goNext) await go(1);
   } catch (err) {
@@ -788,7 +808,7 @@ async function rejectAllPending({ goNext = true } = {}) {
       saveStatus: "saved",
     });
     patchImageStatus(image.id, statusFromAnnotations(remaining));
-    setBoxCount(image.id, remaining.length);
+    setBoxCount(image.id, remaining.length, remaining);
     toast(`Удалено аннотаций: ${pending.length}`);
     if (goNext) await go(1);
   } catch (err) {
@@ -831,7 +851,7 @@ async function clearAllReviewAnnotations() {
           hasUnsavedChanges: false,
           saveStatus: "saved",
         });
-        setBoxCount(current.id, (detail.annotations || []).length);
+        setBoxCount(current.id, (detail.annotations || []).length, detail.annotations || []);
       }
     }
     dataHub?.refresh?.().catch(() => {});
@@ -862,7 +882,7 @@ async function markCurrentAsBackground() {
     patchImageStatus(updated.id, updated.status, {
       is_background: updated.is_background,
     });
-    setBoxCount(image.id, 0);
+    setBoxCount(image.id, 0, []);
     toast("Кадр отмечен как бэкграунд (negative sample)");
   } catch (err) {
     toast(err.message);
@@ -894,6 +914,7 @@ async function verifySelectedBox() {
       saveStatus: "saved",
     });
     patchImageStatus(image.id, statusFromAnnotations(annotations));
+    setBoxCount(image.id, annotations.length, annotations);
     toast("Рамка подтверждена");
   } catch (err) {
     toast(err.message);

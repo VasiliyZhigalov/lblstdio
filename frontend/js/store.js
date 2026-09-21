@@ -75,6 +75,7 @@ export const store = new Store({
   boxCounts: {},
   classCounts: {}, // { [classId]: number } for Data Hub bars
   imageClassIds: {}, // { [imageId]: classId[] } for gallery class filter
+  galleryAnnotations: {}, // { [imageId]: Annotation[] } for Data Hub bbox overlays
   gallerySelectedIds: [], // selected image ids in Data Hub
   galleryClassFilter: [], // class ids and/or '__background__' (OR)
   galleryStatusFilter: [], // 'UNANNOTATED' | 'VERIFIED' | 'REQUIRES_REVIEW' (OR)
@@ -87,6 +88,7 @@ export const store = new Store({
   filmstripQuery: "",
   galleryQuery: "",
   gallerySplit: "all", // 'all' | 'train' | 'valid' | 'test'
+  classBalanceCollapsed: true,
   hasUnsavedChanges: false,
   saveStatus: "idle", // 'idle' | 'saving' | 'saved' | 'error'
   spaceHeld: false,
