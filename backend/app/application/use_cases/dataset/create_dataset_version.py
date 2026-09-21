@@ -141,7 +141,11 @@ class CreateDatasetVersionUseCase:
                     verified_boxes = [
                         box
                         for box in by_image.get(image.id, [])
-                        if box.verification_status == VerificationStatus.VERIFIED
+                        if box.verification_status
+                        in (
+                            VerificationStatus.VERIFIED,
+                            VerificationStatus.AUTO_VERIFIED,
+                        )
                         and box.class_id in class_by_id
                     ]
                     snapshot = [

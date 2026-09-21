@@ -79,7 +79,14 @@ class Image:
             )
         else:
             self.is_background = False
-            self.status = ImageStatus.VERIFIED
+            self.status = (
+                ImageStatus.AUTO_VERIFIED
+                if all(
+                    item.verification_status == VerificationStatus.AUTO_VERIFIED
+                    for item in active
+                )
+                else ImageStatus.VERIFIED
+            )
 
     def mark_as_background(self) -> None:
         """Confirm empty frame as a negative / background sample for the dataset."""
@@ -98,7 +105,11 @@ class Image:
         self.is_background = False
 
     def can_be_included_in_export(self) -> bool:
-        return self.status in (ImageStatus.UNANNOTATED, ImageStatus.VERIFIED)
+        return self.status in (
+            ImageStatus.UNANNOTATED,
+            ImageStatus.VERIFIED,
+            ImageStatus.AUTO_VERIFIED,
+        )
 
     def can_be_included_in_dataset(self) -> bool:
-        return self.status == ImageStatus.VERIFIED
+        return self.status in (ImageStatus.VERIFIED, ImageStatus.AUTO_VERIFIED)

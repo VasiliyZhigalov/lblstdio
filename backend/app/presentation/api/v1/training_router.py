@@ -93,6 +93,7 @@ def _auto_to_read(job) -> AutoLabelJobRead:
         model_version_id=job.model_version_id,
         confidence_threshold=job.confidence_threshold,
         iou_threshold=job.iou_threshold,
+        consistency_iou_threshold=job.consistency_iou_threshold,
         status=job.status.value,
         image_ids=list(job.image_ids),
         total_images_processed=job.total_images_processed,
@@ -230,6 +231,7 @@ async def auto_label(
         all_unannotated=payload.all_unannotated,
         confidence_threshold=payload.confidence_threshold,
         iou_threshold=payload.iou_threshold,
+        consistency_iou_threshold=payload.consistency_iou_threshold,
     )
     return _auto_to_read(job)
 

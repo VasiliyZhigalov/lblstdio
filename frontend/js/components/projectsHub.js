@@ -11,7 +11,9 @@ async function enrichProject(project) {
     return {
       ...project,
       imageCount: images.length,
-      verifiedCount: images.filter((item) => item.status === "VERIFIED").length,
+      verifiedCount: images.filter(
+        (item) => item.status === "VERIFIED" || item.status === "AUTO_VERIFIED"
+      ).length,
       classCount: classes.length,
     };
   } catch {

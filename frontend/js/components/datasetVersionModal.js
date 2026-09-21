@@ -9,7 +9,9 @@ function pendingReviewCount(images) {
 }
 
 function verifiedCount(images) {
-  return (images || []).filter((image) => image.status === "VERIFIED").length;
+  return (images || []).filter(
+    (image) => image.status === "VERIFIED" || image.status === "AUTO_VERIFIED"
+  ).length;
 }
 
 function hamiltonCounts(total, ratios) {
@@ -37,7 +39,13 @@ function hamiltonCounts(total, ratios) {
   return { train: floors[0], valid: floors[1], test: floors[2] };
 }
 
-export function initDatasetVersionModal({ onCreated, onError, getImages, getProject }) {
+export function initDatasetVersionModal({
+  onCreated,
+  onTrain,
+  onError,
+  getImages,
+  getProject,
+}) {
   const modal = document.getElementById("dataset-modal");
   const banner = document.getElementById("dataset-gate-banner");
   const buildBtn = document.getElementById("btn-submit-dataset");
@@ -47,6 +55,7 @@ export function initDatasetVersionModal({ onCreated, onError, getImages, getProj
 
   let previewImages = [];
   let versionCount = 0;
+  let createdVersionId = null;
   const splits = { train: 70, valid: 20, test: 10 };
 
   function renderSplitLabels() {
@@ -98,6 +107,7 @@ export function initDatasetVersionModal({ onCreated, onError, getImages, getProj
   }
 
   function showSuccess(version) {
+    createdVersionId = version.id;
     formBlock?.classList.add("hidden");
     successCard?.classList.remove("hidden");
     document.getElementById("dataset-success-title").textContent =
@@ -137,7 +147,8 @@ export function initDatasetVersionModal({ onCreated, onError, getImages, getProj
     } else if (totalVerified < MIN_VERIFIED_IMAGES) {
       banner.classList.remove("hidden");
       banner.textContent =
-        `Нужно минимум ${MIN_VERIFIED_IMAGES} подтвержденных кадров (сейчас ${totalVerified}).`;
+        `Нужно минимум ${MIN_VERIFIED_IMAGES} подтвержденных кадров (сейчас ${totalVerified}). ` +
+        "Для более стабильной первой итерации рекомендуется 30+ кадров.";
       buildBtn.disabled = true;
     } else {
       banner.classList.add("hidden");
@@ -176,6 +187,10 @@ export function initDatasetVersionModal({ onCreated, onError, getImages, getProj
   document.getElementById("btn-close-dataset")?.addEventListener("click", close);
   document.getElementById("btn-cancel-dataset")?.addEventListener("click", close);
   document.getElementById("btn-dismiss-dataset-success")?.addEventListener("click", close);
+  document.getElementById("btn-train-created-dataset")?.addEventListener("click", () => {
+    close();
+    onTrain?.(createdVersionId);
+  });
   document.getElementById("ds-multiplier")?.addEventListener("input", updatePreview);
 
   buildBtn?.addEventListener("click", async () => {

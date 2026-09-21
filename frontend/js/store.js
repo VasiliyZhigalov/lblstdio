@@ -95,6 +95,7 @@ export const store = new Store({
   clipboardBox: null,
   matchingInProgress: false,
   matchDebug: null,
+  showMatchDebug: false,
   boxOpacity: 0.2,
   hideAnnotations: false,
   leftSidebarCollapsed: false,

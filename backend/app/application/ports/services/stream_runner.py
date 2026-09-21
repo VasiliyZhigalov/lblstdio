@@ -33,7 +33,7 @@ class IStreamRunner(Protocol):
     def start(
         self,
         stream: StreamSource,
-        weights_abs_path: str,
+        weights_abs_path: str | None,
         *,
         allowed_class_indices: frozenset[int] | None = None,
     ) -> None: ...

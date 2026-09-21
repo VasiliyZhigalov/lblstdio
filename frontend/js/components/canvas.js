@@ -534,7 +534,7 @@ export class AnnotationCanvas {
 
   drawMatchDebug(ctx) {
     const debug = store.get("matchDebug");
-    if (!debug?.transform) return;
+    if (!debug?.transform || !store.get("showMatchDebug")) return;
     const t = debug.transform;
     const arrows = debug.arrows || [];
 

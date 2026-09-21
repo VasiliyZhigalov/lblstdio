@@ -10,6 +10,7 @@ class SourceType(str, Enum):
 class VerificationStatus(str, Enum):
     PENDING_REVIEW = "PENDING_REVIEW"
     VERIFIED = "VERIFIED"
+    AUTO_VERIFIED = "AUTO_VERIFIED"
     REJECTED = "REJECTED"
 
 
@@ -17,6 +18,7 @@ class ImageStatus(str, Enum):
     UNANNOTATED = "UNANNOTATED"
     REQUIRES_REVIEW = "REQUIRES_REVIEW"
     VERIFIED = "VERIFIED"
+    AUTO_VERIFIED = "AUTO_VERIFIED"
     REJECTED = "REJECTED"
 
 

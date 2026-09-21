@@ -19,6 +19,7 @@ from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
 from app.domain.services.stream_capture_rules import (
     TrackStableSample,
+    class_is_allowed,
     should_capture_track_stable,
     should_capture_tripwire,
 )
@@ -55,7 +56,7 @@ class OpenCVStreamRunner:
     def start(
         self,
         stream: StreamSource,
-        weights_abs_path: str,
+        weights_abs_path: str | None,
         *,
         allowed_class_indices: frozenset[int] | None = None,
     ) -> None:
@@ -275,13 +276,17 @@ class OpenCVStreamRunner:
         stop_event: threading.Event,
         ready_event: threading.Event,
     ) -> None:
-        try:
-            from ultralytics import YOLO
+        model = None
+        if not stream.config.timer_enabled:
+            try:
+                from ultralytics import YOLO
 
-            model = YOLO(weights_abs_path)
-        except Exception as exc:
-            self._fail_ready(stream.id, ready_event, f"failed to load model: {exc}")
-            return
+                if not weights_abs_path:
+                    raise ValueError("model weights are required for AI capture mode")
+                model = YOLO(weights_abs_path)
+            except Exception as exc:
+                self._fail_ready(stream.id, ready_event, f"failed to load model: {exc}")
+                return
 
         cap = self._open_capture(stream)
         if not cap.isOpened():
@@ -307,6 +312,7 @@ class OpenCVStreamRunner:
         last_any_at: float | None = None
         pending_stable_track: int | None = None
         pending_stable_at: float | None = None
+        last_timer_capture_at: float | None = None
         ingest_in_flight = False
         frames = 0
         t0 = time.monotonic()
@@ -360,15 +366,33 @@ class OpenCVStreamRunner:
 
                 video_fail_streak = 0
                 reconnect_delay = _RECONNECT_DELAY_INITIAL_S
-                h, w = frame.shape[:2]
-                results = model.track(
-                    frame, persist=True, tracker="bytetrack.yaml", verbose=False
-                )
-                detections, track_meta, box_xyxy = self._parse_results(results, w, h)
                 now = time.monotonic()
                 config, allowed = self._get_live(stream.id)
                 debouncer.set_debounce_seconds(config.tripwire_debounce_seconds)
+                h, w = frame.shape[:2]
+                if config.timer_enabled or model is None:
+                    detections, track_meta, box_xyxy = [], {}, {}
+                else:
+                    results = model.track(
+                        frame, persist=True, tracker="bytetrack.yaml", verbose=False
+                    )
+                    detections, track_meta, box_xyxy = self._parse_results(
+                        results, w, h
+                    )
                 captured = False
+
+                if (
+                    config.timer_enabled
+                    and not ingest_in_flight
+                    and (
+                        last_timer_capture_at is None
+                        or now - last_timer_capture_at >= config.timer_interval_seconds
+                    )
+                ):
+                    if self._enqueue_ingest(stream.id, frame, [], "timer", now):
+                        last_timer_capture_at = now
+                        ingest_in_flight = True
+                        captured = True
 
                 if config.tripwire_enabled and config.tripwire_line is not None:
                     for track_id, (center, class_index, conf, _area) in track_meta.items():
@@ -411,6 +435,9 @@ class OpenCVStreamRunner:
                             prev_centers.pop(gone, None)
 
                     for track_id, (center, class_index, conf, area) in track_meta.items():
+                        if not class_is_allowed(class_index, allowed):
+                            track_series.pop(track_id, None)
+                            continue
                         prev_centers[track_id] = center
                         if jpeg_bytes is None:
                             ok_jpg, buf = cv2.imencode(".jpg", frame)

@@ -110,9 +110,20 @@ class Annotation:
         self.verification_status = VerificationStatus.VERIFIED
         self.verified_at = at or datetime.now(UTC)
 
+    def auto_verify(self, at: datetime | None = None) -> None:
+        if self.source != SourceType.MODEL_PREDICTION:
+            raise DomainValidationException(
+                "only model predictions can be automatically verified"
+            )
+        self.verification_status = VerificationStatus.AUTO_VERIFIED
+        self.verified_at = at or datetime.now(UTC)
+
     def reject(self) -> None:
         self.verification_status = VerificationStatus.REJECTED
 
     @property
     def is_exportable(self) -> bool:
-        return self.verification_status == VerificationStatus.VERIFIED
+        return self.verification_status in (
+            VerificationStatus.VERIFIED,
+            VerificationStatus.AUTO_VERIFIED,
+        )

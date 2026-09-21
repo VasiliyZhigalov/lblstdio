@@ -52,7 +52,7 @@ export function initSidebar({ onError, onDeleteBox }) {
     const classes = store.get("classes") || [];
     const selectedId = store.get("selectedBoxId");
     const hoveredId = store.get("hoveredBoxId");
-    const signature = `${annotations.map((box) => `${box.id}:${box.class_id}`).join("|")}|${selectedId}|${hoveredId}`;
+    const signature = `${annotations.map((box) => `${box.id}:${box.class_id}:${box.verification_status}:${box.confidence}`).join("|")}|${selectedId}|${hoveredId}`;
     if (signature === annotationsSignature) return;
     annotationsSignature = signature;
     if (!annotations.length) {
@@ -65,6 +65,9 @@ export function initSidebar({ onError, onDeleteBox }) {
         const name = cls?.name || "Unknown";
         const color = cls?.color_hex || "#6366F1";
         const selected = box.id === selectedId || box.id === hoveredId;
+        const pending = box.verification_status === "PENDING_REVIEW";
+        const confidence =
+          box.confidence == null ? "" : `${Math.round(Number(box.confidence) * 100)}%`;
         return `
           <div data-box-id="${box.id}"
             class="box-row group flex items-center gap-2 px-2 py-1.5 rounded-md text-xs cursor-pointer ${
@@ -72,6 +75,12 @@ export function initSidebar({ onError, onDeleteBox }) {
             }">
             <span class="w-2 h-2 rounded-full shrink-0" style="background:${color}"></span>
             <span class="truncate flex-1">${index + 1}. ${escapeHtml(name)}</span>
+            ${
+              pending
+                ? `<span class="text-[9px] text-amber-300 border border-amber-800/60 rounded px-1" title="Требует проверки">Проверить</span>`
+                : ""
+            }
+            <span class="text-[9px] font-mono text-zinc-500">${confidence}</span>
             <button type="button" data-delete-box="${box.id}"
               class="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400" title="Удалить">
               <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>

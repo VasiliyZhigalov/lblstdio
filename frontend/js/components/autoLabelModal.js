@@ -70,6 +70,12 @@ export function initAutoLabelModal({
       event.target.value
     ).toFixed(2);
   });
+  document
+    .getElementById("autolabel-consistency-iou")
+    ?.addEventListener("input", (event) => {
+      document.getElementById("autolabel-consistency-iou-label").textContent =
+        Number(event.target.value).toFixed(2);
+    });
   document.getElementById("btn-close-autolabel")?.addEventListener("click", close);
   document.getElementById("btn-cancel-autolabel")?.addEventListener("click", close);
   document.getElementById("btn-submit-autolabel")?.addEventListener("click", async () => {
@@ -77,9 +83,15 @@ export function initAutoLabelModal({
     const modelId = document.getElementById("autolabel-model")?.value;
     const conf = Number(document.getElementById("autolabel-conf")?.value || 0.05);
     const iou = Number(document.getElementById("autolabel-iou")?.value || 0.7);
+    const consistencyIou = Number(
+      document.getElementById("autolabel-consistency-iou")?.value || 0.8
+    );
     const allUnannotated = Boolean(
       document.getElementById("autolabel-all-unannotated")?.checked
     );
+    const targetImageCount = allUnannotated
+      ? (getImages?.() || []).filter((image) => image.status === "UNANNOTATED").length
+      : 1;
     if (!project || !modelId) {
       onError?.("Выберите модель");
       return;
@@ -93,6 +105,7 @@ export function initAutoLabelModal({
       const body = {
         confidence_threshold: conf,
         iou_threshold: iou,
+        consistency_iou_threshold: consistencyIou,
         all_unannotated: allUnannotated,
       };
       if (!allUnannotated) {
@@ -106,10 +119,11 @@ export function initAutoLabelModal({
         body.all_unannotated = false;
       }
       const queued = await api.autoLabel(project.id, modelId, body);
-      progressText.textContent = "Обработка кадров…";
+      progressText.textContent = `Обработка кадров: 0/${targetImageCount}`;
       const job = await waitForAutoLabelJob(queued.id, {
         onProgress: (current) => {
-          progressText.textContent = `Обработка… (${current.status})`;
+          const processed = current.total_images_processed || 0;
+          progressText.textContent = `Обработка кадров: ${processed}/${targetImageCount}`;
         },
       });
       if (job.status === "FAILED") {

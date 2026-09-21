@@ -15,6 +15,7 @@ import { initStreamHub } from "./components/streamHub.js";
 import { initHotkeys } from "./hotkeys.js";
 import { ensureHash, navigate, parseHash, projectPath, replaceHash } from "./router.js";
 import { escapeHtml, refreshIcons, showModal } from "./utils/dom.js";
+import { firstReviewImage } from "./utils/activeLearning.js";
 
 let canvas;
 let celebrateSave = false;
@@ -35,6 +36,12 @@ function statusFromAnnotations(boxes) {
   if (!boxes?.length) return "UNANNOTATED";
   if (boxes.some((box) => box.verification_status === "PENDING_REVIEW")) {
     return "REQUIRES_REVIEW";
+  }
+  if (
+    boxes.every((box) => box.verification_status === "AUTO_VERIFIED") &&
+    boxes.some((box) => box.verification_status === "AUTO_VERIFIED")
+  ) {
+    return "AUTO_VERIFIED";
   }
   return "VERIFIED";
 }
@@ -134,7 +141,7 @@ function updateSaveButton() {
   btn.disabled = status === "saving" || !store.get("currentImage");
   btn.classList.remove("bg-emerald-600", "hover:bg-emerald-500", "bg-indigo-600", "hover:bg-indigo-500");
   if (status === "saving") {
-    label.textContent = "Saving...";
+    label.textContent = "Сохраняем…";
     btn.classList.add("bg-indigo-600", "hover:bg-indigo-500");
     return;
   }
@@ -167,8 +174,38 @@ function updateStudioChrome() {
   const totalIdx = document.getElementById("total-idx");
   if (currentIdx) currentIdx.textContent = idx >= 0 ? String(idx + 1) : "0";
   if (totalIdx) totalIdx.textContent = String(images.length);
+  updateActiveLearningGuide();
   updateSaveButton();
   syncHideButtons();
+}
+
+function updateActiveLearningGuide() {
+  const step = document.getElementById("active-learning-next-step");
+  const hint = document.getElementById("active-learning-next-hint");
+  if (!step || !hint) return;
+  const images = store.get("images") || [];
+  const pending = images.filter((item) => item.status === "REQUIRES_REVIEW").length;
+  const verified = images.filter((item) => item.status === "VERIFIED").length;
+  if (pending > 0) {
+    step.textContent = `Проверьте ${pending} ${pending === 1 ? "кадр" : "кадров"} с предсказаниями`;
+    hint.textContent = "Подтвердите, исправьте или отклоните разметку перед сборкой датасета.";
+    return;
+  }
+  if (verified < 10) {
+    step.textContent = `Разметьте ещё ${10 - verified} ${10 - verified === 1 ? "кадр" : "кадров"} для первой версии`;
+    hint.textContent = `Сейчас подтверждено: ${verified}. Для стабильного цикла рекомендуется больше 10 кадров.`;
+    return;
+  }
+  step.textContent = "Соберите следующую версию датасета";
+  hint.textContent = `Подтверждено кадров: ${verified}. После сборки можно запустить обучение.`;
+}
+
+function setActiveLearningJobStatus(label = "", visible = false) {
+  const button = document.getElementById("btn-active-learning-job");
+  const text = document.getElementById("active-learning-job-label");
+  if (!button || !text) return;
+  text.textContent = label;
+  button.classList.toggle("hidden", !visible);
 }
 
 function setBoxCount(imageId, count, boxes = undefined) {
@@ -332,6 +369,7 @@ async function openImage(imageId, expectedProjectId = null) {
       hasUnsavedChanges: false,
       saveStatus: "saved",
       matchDebug: null,
+      showMatchDebug: false,
     });
     hideQuickClassPopover();
     await canvas.loadImage(api.imageFileUrl(imageId));
@@ -636,6 +674,7 @@ async function pastePropagateBox() {
             arrows: debugArrows,
           }
         : null,
+      showMatchDebug: Boolean(transform),
     });
     setBoxCount(target.id, annotations.length, annotations);
     canvas?.centerOnBox(last);
@@ -1137,6 +1176,7 @@ function boot() {
   datasetModal = initDatasetVersionModal({
     getProject: () => store.get("currentProject"),
     getImages: () => store.get("images") || [],
+    onTrain: (versionId) => trainingDrawer?.open(versionId),
     onError: toast,
     onCreated: (version) => {
       toast(
@@ -1149,6 +1189,7 @@ function boot() {
   autoLabelModal = initAutoLabelModal({
     getProject: () => store.get("currentProject"),
     getImages: () => store.get("images") || [],
+    getCurrentImage: () => store.get("currentImage"),
     onError: toast,
     onDone: async (job) => {
       toast(
@@ -1160,9 +1201,10 @@ function boot() {
       store.set("images", images);
       dataHub?.refresh?.().catch(() => {});
       modelsHub?.refresh?.().catch(() => {});
-      const current = store.get("currentImage");
-      if (current && store.get("projectTab") === "annotate") {
-        await openImage(current.id, project.id);
+      const reviewImage = firstReviewImage(images);
+      if (reviewImage) {
+        store.set("filmstripFilter", "review");
+        navigate(projectPath(project.id, "annotate", reviewImage.id));
       }
     },
   });
@@ -1170,10 +1212,13 @@ function boot() {
   trainingDrawer = initTrainingDrawer({
     getProject: () => store.get("currentProject"),
     onError: toast,
+    onStarted: () => setActiveLearningJobStatus("Обучение выполняется…", true),
     onCompleted: () => {
+      setActiveLearningJobStatus("Обучение завершено", true);
       toast("Модель обучена");
       modelsHub?.refresh?.().catch(() => {});
     },
+    onFailed: () => setActiveLearningJobStatus("Ошибка обучения", true),
     onUseForAutoLabel: (modelId) => autoLabelModal?.open(modelId),
   });
 
@@ -1199,14 +1244,8 @@ function boot() {
       const created = await api.uploadModel(project.id, file);
       toast(`Модель загружена: ${created.display_name || created.name}`);
       await modelsHub?.refresh?.();
-      trainingDrawer?.refreshSelectors?.().catch(() => {});
-      autoLabelModal?.refreshModels?.().catch(() => {});
     },
     onError: toast,
-    onChanged: () => {
-      trainingDrawer?.refreshSelectors?.().catch(() => {});
-      autoLabelModal?.refreshModels?.().catch(() => {});
-    },
   });
 
   streamHub = initStreamHub({
@@ -1220,6 +1259,29 @@ function boot() {
   });
   document.getElementById("btn-auto-label")?.addEventListener("click", () => {
     autoLabelModal?.open();
+  });
+  document.getElementById("btn-active-learning-next")?.addEventListener("click", () => {
+    const project = store.get("currentProject");
+    if (!project) return;
+    const images = store.get("images") || [];
+    const reviewImage = firstReviewImage(images);
+    if (reviewImage) {
+      store.set("filmstripFilter", "review");
+      navigate(projectPath(project.id, "annotate", reviewImage.id));
+      return;
+    }
+    if (images.filter((item) => item.status === "VERIFIED").length < 10) {
+      const next = images.find((item) => item.status === "UNANNOTATED");
+      navigate(projectPath(project.id, "annotate", next?.id || null));
+      return;
+    }
+    document.getElementById("btn-models-create-dataset-inner")?.click();
+  });
+  document.getElementById("btn-active-learning-job")?.addEventListener("click", () => {
+    trainingDrawer?.open();
+  });
+  document.getElementById("btn-toggle-match-debug")?.addEventListener("click", () => {
+    store.set("showMatchDebug", !store.get("showMatchDebug"));
   });
 
   document.getElementById("tab-btn-data")?.addEventListener("click", () => {

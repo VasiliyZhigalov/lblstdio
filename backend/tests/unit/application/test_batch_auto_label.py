@@ -1,6 +1,7 @@
 from uuid import UUID, uuid4
 
 import pytest
+from PIL import Image as PILImage
 
 from app.application.ports.services.model_predictor import Detection
 from app.application.use_cases.ml.batch_auto_label import BatchAutoLabelUseCase
@@ -14,6 +15,10 @@ from app.domain.enums import (
     SourceType,
     SplitType,
     VerificationStatus,
+)
+from app.domain.services.augmentation_consistency import (
+    transform_center_scale,
+    transform_horizontal_flip,
 )
 from app.domain.value_objects.bounding_box import BoundingBox
 
@@ -74,17 +79,46 @@ class _FakeStorage:
     def get_absolute_path(self, relative_path: str) -> str:
         return f"/abs/{relative_path}"
 
+    async def read(self, relative_path: str) -> bytes:
+        from io import BytesIO
+
+        buffer = BytesIO()
+        PILImage.new("RGB", (100, 80), "white").save(buffer, format="JPEG")
+        return buffer.getvalue()
+
 
 class _FakePredictor:
-    def __init__(self, mapping: dict[str, list[Detection]]) -> None:
+    def __init__(
+        self,
+        mapping: dict[str, list[Detection]],
+        *,
+        consistent: bool = False,
+    ) -> None:
         self.mapping = mapping
+        self.consistent = consistent
         self.calls = []
 
     def predict(self, weights_path, image_paths, confidence_threshold, iou_threshold=0.7):
         self.calls.append(
             (weights_path, list(image_paths), confidence_threshold, iou_threshold)
         )
-        return {path: list(self.mapping.get(path, [])) for path in image_paths}
+        result = {}
+        for path in image_paths:
+            if self.consistent and path.endswith("_flip.jpg"):
+                source = next(iter(self.mapping), "")
+                result[path] = [
+                    transform_horizontal_flip(item)
+                    for item in self.mapping.get(source, [])
+                ]
+            elif self.consistent and path.endswith("_stretch.jpg"):
+                source = next(iter(self.mapping), "")
+                result[path] = [
+                    transform_center_scale(item)
+                    for item in self.mapping.get(source, [])
+                ]
+            else:
+                result[path] = list(self.mapping.get(path, []))
+        return result
 
 
 class _FakeUow:
@@ -95,7 +129,7 @@ class _FakeUow:
         self.commits += 1
 
 
-def _setup():
+def _setup(*, consistent: bool = False):
     project_id = uuid4()
     class_id = uuid4()
     annotation_class = AnnotationClass(
@@ -134,7 +168,8 @@ def _setup():
                     height=0.15,
                 )
             ]
-        }
+        },
+        consistent=consistent,
     )
     images = _FakeImages([image])
     annotations = _FakeAnnotations()
@@ -185,6 +220,24 @@ async def test_auto_label_boxes_are_pending_review_never_verified() -> None:
     assert boxes[0].confidence == pytest.approx(0.84)
     assert boxes[0].model_version_id == model.id
     assert images.by_id[image.id].status == ImageStatus.REQUIRES_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_consistent_auto_label_is_auto_verified() -> None:
+    use_case, image, model, annotations, images, _, _ = _setup(consistent=True)
+    job = await use_case.execute(
+        image.project_id,
+        model.id,
+        image_ids=[image.id],
+        confidence_threshold=0.5,
+    )
+
+    assert job.status == AutoLabelJobStatus.COMPLETED
+    assert images.by_id[image.id].status == ImageStatus.AUTO_VERIFIED
+    assert (
+        annotations.store[image.id][0].verification_status
+        == VerificationStatus.AUTO_VERIFIED
+    )
 
 
 @pytest.mark.asyncio

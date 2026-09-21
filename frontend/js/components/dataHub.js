@@ -1,6 +1,7 @@
 import { store } from "../store.js";
 import { api } from "../api.js";
 import { escapeHtml, refreshIcons } from "../utils/dom.js";
+import { firstReviewImage } from "../utils/activeLearning.js";
 
 const BACKGROUND_FILTER = "__background__";
 
@@ -16,8 +17,13 @@ const STATUS_FILTERS = [
     active: "border-emerald-500/60 bg-emerald-950/50 text-emerald-100",
   },
   {
+    id: "AUTO_VERIFIED",
+    label: "Автоверифицированные",
+    active: "border-cyan-500/60 bg-cyan-950/50 text-cyan-100",
+  },
+  {
     id: "REQUIRES_REVIEW",
-    label: "Ревью",
+    label: "На проверке",
     active: "border-amber-500/60 bg-amber-950/50 text-amber-100",
   },
 ];
@@ -38,20 +44,26 @@ async function mapPool(items, limit, fn) {
 }
 
 function statusMeta(status) {
+  if (status === "AUTO_VERIFIED") {
+    return {
+      label: "Автоматически подтверждено",
+      badge: "bg-cyan-950 text-cyan-400 border-cyan-800/50",
+    };
+  }
   if (status === "VERIFIED") {
     return {
-      label: "Verified",
+      label: "Подтверждено",
       badge: "bg-emerald-950 text-emerald-400 border-emerald-800/50",
     };
   }
   if (status === "REQUIRES_REVIEW") {
     return {
-      label: "Review",
+      label: "На проверке",
       badge: "bg-amber-950 text-amber-400 border-amber-800/50",
     };
   }
   return {
-    label: "Empty",
+    label: "Без разметки",
     badge: "bg-zinc-900 text-zinc-500 border-zinc-800",
   };
 }
@@ -65,7 +77,9 @@ function renderSplitFilters() {
 
 function renderStats(images) {
   const total = images.length;
-  const verified = images.filter((item) => item.status === "VERIFIED").length;
+  const verified = images.filter(
+    (item) => item.status === "VERIFIED" || item.status === "AUTO_VERIFIED"
+  ).length;
   const pending = images.filter((item) => item.status === "REQUIRES_REVIEW").length;
   const empty = images.filter((item) => item.status === "UNANNOTATED").length;
   document.getElementById("stat-total-images").textContent = String(total);
@@ -533,7 +547,13 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
   });
 
   document.getElementById("btn-gallery-annotate-first")?.addEventListener("click", () => {
-    const first = filteredImages()[0] || (store.get("images") || [])[0];
+    const first =
+      firstReviewImage(store.get("images")) ||
+      filteredImages()[0] ||
+      (store.get("images") || [])[0];
+    if (first?.status === "REQUIRES_REVIEW") {
+      store.set("filmstripFilter", "review");
+    }
     onStartAnnotate?.(first?.id || null);
   });
 

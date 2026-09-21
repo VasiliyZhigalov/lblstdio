@@ -17,6 +17,7 @@ class AutoLabelJob:
     status: AutoLabelJobStatus
     image_ids: list[UUID]
     iou_threshold: float = 0.7
+    consistency_iou_threshold: float = 0.8
     total_images_processed: int = 0
     total_predictions_generated: int = 0
     error_message: str | None = None
@@ -32,6 +33,10 @@ class AutoLabelJob:
             raise DomainValidationException(
                 "iou_threshold must be in [0.01, 0.95]"
             )
+        if not 0.01 <= self.consistency_iou_threshold <= 0.99:
+            raise DomainValidationException(
+                "consistency_iou_threshold must be in [0.01, 0.99]"
+            )
 
     @classmethod
     def create(
@@ -41,6 +46,7 @@ class AutoLabelJob:
         image_ids: list[UUID],
         confidence_threshold: float = 0.05,
         iou_threshold: float = 0.7,
+        consistency_iou_threshold: float = 0.8,
         job_id: UUID | None = None,
     ) -> AutoLabelJob:
         return cls(
@@ -49,6 +55,7 @@ class AutoLabelJob:
             model_version_id=model_version_id,
             confidence_threshold=confidence_threshold,
             iou_threshold=iou_threshold,
+            consistency_iou_threshold=consistency_iou_threshold,
             status=AutoLabelJobStatus.PENDING,
             image_ids=list(image_ids),
         )

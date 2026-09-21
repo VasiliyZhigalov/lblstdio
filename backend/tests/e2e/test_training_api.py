@@ -139,7 +139,9 @@ def _seed_ready_dataset(client: TestClient) -> tuple[str, str, str]:
 
 
 class TestTrainingAndAutoLabelApi:
-    def test_train_job_completes_and_auto_label_is_pending(self, client: TestClient) -> None:
+    def test_train_job_completes_and_stable_auto_label_is_verified(
+        self, client: TestClient
+    ) -> None:
         project_id, version_id, raw_id = _seed_ready_dataset(client)
         start = client.post(
             f"/api/v1/projects/{project_id}/train",
@@ -202,15 +204,9 @@ class TestTrainingAndAutoLabelApi:
         detail = client.get(f"/api/v1/images/{raw_id}")
         assert detail.status_code == 200
         body = detail.json()
-        assert body["status"] == "REQUIRES_REVIEW"
-        assert body["annotations"][0]["verification_status"] == "PENDING_REVIEW"
+        assert body["status"] == "AUTO_VERIFIED"
+        assert body["annotations"][0]["verification_status"] == "AUTO_VERIFIED"
         assert body["annotations"][0]["source"] == "MODEL_PREDICTION"
-
-        verified = client.post(f"/api/v1/images/{raw_id}/verify-all")
-        assert verified.status_code == 200
-        assert all(item["verification_status"] == "VERIFIED" for item in verified.json())
-        after = client.get(f"/api/v1/images/{raw_id}")
-        assert after.json()["status"] == "VERIFIED"
 
     def test_delete_model_removes_weights_from_disk(self, client: TestClient) -> None:
         project_id, version_id, _raw_id = _seed_ready_dataset(client)

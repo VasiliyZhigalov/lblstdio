@@ -230,6 +230,9 @@ class AutoLabelJobRow(Base):
     model_version_id: Mapped[str] = mapped_column(String(36), nullable=False)
     confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False)
     iou_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
+    consistency_iou_threshold: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.8
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     image_ids_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     total_images_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

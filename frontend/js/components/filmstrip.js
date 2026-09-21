@@ -22,15 +22,18 @@ const virtual = {
 
 function statusMeta(image) {
   if (image.status === "REQUIRES_REVIEW") {
-    return { label: "Review", className: "text-amber-400" };
+    return { label: "На проверке", className: "text-amber-400" };
   }
   if (image.status === "VERIFIED") {
     if (image.is_background) {
-      return { label: "Background", className: "text-sky-400" };
+      return { label: "Фон", className: "text-sky-400" };
     }
-    return { label: "Verified", className: "text-emerald-400" };
+    return { label: "Подтверждено", className: "text-emerald-400" };
   }
-  return { label: "Empty", className: "text-zinc-500" };
+  if (image.status === "AUTO_VERIFIED") {
+    return { label: "Автоматически подтверждено", className: "text-cyan-400" };
+  }
+  return { label: "Без разметки", className: "text-zinc-500" };
 }
 
 function filteredImages() {

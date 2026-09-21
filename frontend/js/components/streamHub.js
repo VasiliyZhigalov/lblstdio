@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { store } from "../store.js";
 import { escapeHtml, refreshIcons } from "../utils/dom.js";
+import { firstReviewImage } from "../utils/activeLearning.js";
 
 export function initStreamHub({ toast, navigate, projectPath }) {
   let streams = [];
@@ -25,6 +26,8 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     fps: () => document.getElementById("stream-fps-label"),
     captured: () => document.getElementById("stream-captured-count"),
     modelSelect: () => document.getElementById("stream-model-select"),
+    captureMode: () => document.getElementById("stream-capture-mode"),
+    timerSettings: () => document.getElementById("stream-timer-settings"),
   };
 
   function selected() {
@@ -226,18 +229,40 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     const trackN = document.getElementById("stream-track-stable-n");
     const trackSize = document.getElementById("stream-track-stable-size");
     const trackIv = document.getElementById("stream-track-stable-interval");
+    const timerIv = document.getElementById("stream-timer-interval");
     const tripEn = document.getElementById("stream-tripwire-enabled");
     const tripDir = document.getElementById("stream-tripwire-direction");
     if (trackEn) trackEn.checked = cfg.track_stable_enabled ?? true;
     if (trackN) trackN.value = cfg.track_stable_min_frames ?? 12;
     if (trackSize) trackSize.value = cfg.track_stable_max_size_variation ?? 0.35;
     if (trackIv) trackIv.value = cfg.track_stable_interval_seconds ?? 5;
+    if (timerIv) timerIv.value = cfg.timer_interval_seconds ?? 5;
     if (tripEn) tripEn.checked = Boolean(cfg.tripwire_enabled);
     if (tripDir) tripDir.value = cfg.tripwire_direction || "ANY";
+    if (els.captureMode()) {
+      els.captureMode().value = cfg.timer_enabled ? "TIMER" : "AI";
+    }
+    syncCaptureMode();
     renderClassChecks();
     const captured = els.captured();
     if (captured) captured.textContent = String(s?.captured_frames_count ?? 0);
     lastCaptured = s?.captured_frames_count ?? 0;
+  }
+
+  function syncCaptureMode() {
+    const timer = els.captureMode()?.value === "TIMER";
+    els.timerSettings()?.classList.toggle("hidden", !timer);
+    const help = document.getElementById("stream-capture-help");
+    if (help) {
+      help.textContent = timer
+        ? "Таймер сохраняет кадры через заданный интервал. Фильтр классов и линия здесь не применяются."
+        : "Ниже можно настроить фильтр классов, стабильный объект и захват по пересечению линии.";
+    }
+    const model = els.modelSelect();
+    if (model) {
+      model.disabled = timer;
+      model.classList.toggle("opacity-50", timer);
+    }
   }
 
   function readConfigPayload() {
@@ -245,6 +270,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       ...document.querySelectorAll("#stream-tripwire-classes input[type=checkbox]:checked"),
     ];
     const s = selected();
+    const timerEnabled = els.captureMode()?.value === "TIMER";
     return {
       track_stable_enabled: Boolean(
         document.getElementById("stream-track-stable-enabled")?.checked
@@ -257,6 +283,10 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       ),
       track_stable_interval_seconds: Number(
         document.getElementById("stream-track-stable-interval")?.value || 5
+      ),
+      timer_enabled: timerEnabled,
+      timer_interval_seconds: Number(
+        document.getElementById("stream-timer-interval")?.value || 5
       ),
       tripwire_enabled: Boolean(document.getElementById("stream-tripwire-enabled")?.checked),
       tripwire_line: line,
@@ -290,7 +320,8 @@ export function initStreamHub({ toast, navigate, projectPath }) {
 
   async function saveTriggers({ quiet = false } = {}) {
     if (!selectedId) throw new Error("Сначала выберите источник");
-    const modelId = els.modelSelect()?.value || null;
+    const modelId =
+      els.captureMode()?.value === "TIMER" ? null : els.modelSelect()?.value || null;
     const updated = await api.putStreamTriggers(selectedId, {
       config: readConfigPayload(),
       model_version_id: modelId || null,
@@ -426,11 +457,19 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     "stream-track-stable-n",
     "stream-track-stable-size",
     "stream-track-stable-interval",
+    "stream-timer-interval",
+    "stream-capture-mode",
     "stream-tripwire-enabled",
     "stream-tripwire-direction",
     "stream-model-select",
   ].forEach((id) => {
     const el = document.getElementById(id);
+    if (id === "stream-capture-mode") {
+      el?.addEventListener("change", () => {
+        syncCaptureMode();
+        scheduleSaveTriggers();
+      });
+    }
     el?.addEventListener("change", scheduleSaveTriggers);
     el?.addEventListener("input", scheduleSaveTriggers);
   });
@@ -470,7 +509,8 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     const project = store.get("currentProject");
     if (!project) return;
     store.set("filmstripFilter", "review");
-    navigate(projectPath(project.id, "annotate"));
+    const reviewImage = firstReviewImage(store.get("images"));
+    navigate(projectPath(project.id, "annotate", reviewImage?.id || null));
   });
 
   const canvas = els.canvas();

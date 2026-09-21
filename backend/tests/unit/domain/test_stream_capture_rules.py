@@ -4,6 +4,7 @@ from app.domain.enums import TripwireDirection
 from app.domain.services.stream_capture_rules import (
     TrackStableSample,
     best_confidence_index,
+  class_is_allowed,
     is_track_series_stable,
     should_capture_track_stable,
     should_capture_tripwire,
@@ -14,6 +15,13 @@ from app.domain.services.tripwire import TripwireDebouncer
 
 def _samples(confs: list[float], area: float = 0.04) -> list[TrackStableSample]:
     return [TrackStableSample(confidence=c, area=area) for c in confs]
+
+
+def test_class_is_allowed_accepts_all_when_filter_is_empty():
+    assert class_is_allowed(3, None) is True
+    assert class_is_allowed(3, frozenset()) is True
+    assert class_is_allowed(3, frozenset({1, 3})) is True
+    assert class_is_allowed(2, frozenset({1, 3})) is False
 
 
 def test_size_variation_relative_span():

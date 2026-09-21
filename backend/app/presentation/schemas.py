@@ -254,6 +254,7 @@ class AutoLabelRequest(BaseModel):
     all_unannotated: bool = False
     confidence_threshold: float = Field(default=0.05, ge=0.01, le=0.95)
     iou_threshold: float = Field(default=0.7, ge=0.01, le=0.95)
+    consistency_iou_threshold: float = Field(default=0.8, ge=0.01, le=0.99)
 
 
 class AutoLabelJobRead(BaseModel):
@@ -262,6 +263,7 @@ class AutoLabelJobRead(BaseModel):
     model_version_id: UUID
     confidence_threshold: float
     iou_threshold: float = 0.7
+    consistency_iou_threshold: float = 0.8
     status: str
     image_ids: list[UUID]
     total_images_processed: int
@@ -277,6 +279,8 @@ class StreamTriggerConfigPayload(BaseModel):
     track_stable_max_size_variation: float = Field(default=0.35, ge=0)
     track_stable_min_avg_conf: float = Field(default=0.75, gt=0, le=1)
     track_stable_interval_seconds: float = Field(default=5.0, gt=0)
+    timer_enabled: bool = False
+    timer_interval_seconds: float = Field(default=5.0, gt=0)
     tripwire_enabled: bool = False
     tripwire_line: tuple[float, float, float, float] | None = None
     tripwire_classes: list[UUID] = Field(default_factory=list)

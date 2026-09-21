@@ -53,19 +53,21 @@ class StartStreamUseCase:
         stream = await self._streams.get_by_id(stream_id)
         if stream is None:
             raise ResourceNotFoundException(f"stream source {stream_id} not found")
-        if stream.model_version_id is None:
+        if stream.model_version_id is None and not stream.config.timer_enabled:
             raise DomainValidationException("stream has no model_version_id configured")
-        model = await self._models.get_by_id(stream.model_version_id)
-        if model is None or model.project_id != stream.project_id:
-            raise ResourceNotFoundException(
-                f"model version {stream.model_version_id} not found"
-            )
-        try:
-            weights_abs = self._storage.get_absolute_path(model.weights_path)
-        except Exception as exc:
-            raise DomainValidationException(
-                f"weights not found: {model.weights_path}"
-            ) from exc
+        weights_abs = None
+        if stream.model_version_id is not None:
+            model = await self._models.get_by_id(stream.model_version_id)
+            if model is None or model.project_id != stream.project_id:
+                raise ResourceNotFoundException(
+                    f"model version {stream.model_version_id} not found"
+                )
+            try:
+                weights_abs = self._storage.get_absolute_path(model.weights_path)
+            except Exception as exc:
+                raise DomainValidationException(
+                    f"weights not found: {model.weights_path}"
+                ) from exc
 
         source_uri_for_runner = stream.source_uri
         if stream.source_type == StreamSourceType.VIDEO_FILE:

@@ -32,6 +32,7 @@ _MODEL_VERSION_COLUMNS = (
 
 _AUTO_LABEL_JOB_COLUMNS = (
     ("iou_threshold", "FLOAT NOT NULL DEFAULT 0.7"),
+    ("consistency_iou_threshold", "FLOAT NOT NULL DEFAULT 0.8"),
 )
 
 

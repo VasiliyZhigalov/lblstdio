@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from collections.abc import Sequence
+from io import BytesIO
+from pathlib import Path
 from uuid import UUID
 
 import anyio
+from PIL import Image as PILImage
 
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
 from app.application.ports.repositories.auto_label_job_repository import (
@@ -21,6 +25,11 @@ from app.application.ports.unit_of_work import IUnitOfWork
 from app.domain.entities.annotation import Annotation
 from app.domain.entities.auto_label_job import AutoLabelJob
 from app.domain.enums import AutoLabelJobStatus, ImageStatus, VerificationStatus
+from app.domain.services.augmentation_consistency import (
+    all_runs_are_consistent,
+    transform_center_scale,
+    transform_horizontal_flip,
+)
 from app.domain.exceptions import (
     DomainValidationException,
     ModelWeightsMissingException,
@@ -29,6 +38,34 @@ from app.domain.exceptions import (
 from app.domain.value_objects.bounding_box import BoundingBox
 
 _ORPHAN_MESSAGE = "interrupted by server restart"
+_CONSISTENCY_SCALE = 1.08
+
+
+def _inverse_center_scale(det: Detection) -> Detection:
+    return transform_center_scale(det, 1 / _CONSISTENCY_SCALE)
+
+
+def _write_consistency_images(
+    image_path: str,
+    destination: Path,
+    raw: bytes,
+) -> tuple[str, str]:
+    with PILImage.open(BytesIO(raw)) as source:
+        image = source.convert("RGB")
+        flipped = image.transpose(PILImage.Transpose.FLIP_LEFT_RIGHT)
+        flip_path = destination / f"{Path(image_path).stem}_flip.jpg"
+        flipped.save(flip_path, format="JPEG")
+
+        width, height = image.size
+        scaled = image.resize(
+            (round(width * _CONSISTENCY_SCALE), round(height * _CONSISTENCY_SCALE))
+        )
+        left = (scaled.width - width) // 2
+        top = (scaled.height - height) // 2
+        stretched = scaled.crop((left, top, left + width, top + height))
+        stretch_path = destination / f"{Path(image_path).stem}_stretch.jpg"
+        stretched.save(stretch_path, format="JPEG")
+    return str(flip_path), str(stretch_path)
 
 
 def bbox_from_detection(det: Detection) -> BoundingBox | None:
@@ -90,6 +127,7 @@ class BatchAutoLabelUseCase:
         all_unannotated: bool = False,
         confidence_threshold: float = 0.05,
         iou_threshold: float = 0.7,
+        consistency_iou_threshold: float = 0.8,
     ) -> AutoLabelJob:
         model = await self._models.get_by_id(model_version_id)
         if model is None or model.project_id != project_id:
@@ -132,6 +170,7 @@ class BatchAutoLabelUseCase:
             image_ids=[item.id for item in selected],
             confidence_threshold=confidence_threshold,
             iou_threshold=iou_threshold,
+            consistency_iou_threshold=consistency_iou_threshold,
         )
         await self._jobs.add(job)
         await self._uow.commit()
@@ -199,6 +238,35 @@ class BatchAutoLabelUseCase:
                 job.iou_threshold,
             )
 
+            with tempfile.TemporaryDirectory(prefix="lblstdio-consistency-") as tmp:
+                augmented_paths: dict[UUID, tuple[str, str]] = {}
+                for image in selected:
+                    original_path = self._storage.get_absolute_path(image.file_path)
+                    raw = await self._storage.read(image.file_path)
+                    augmented_paths[image.id] = await anyio.to_thread.run_sync(
+                        _write_consistency_images,
+                        original_path,
+                        Path(tmp),
+                        raw,
+                    )
+
+                flip_paths = [paths[0] for paths in augmented_paths.values()]
+                stretch_paths = [paths[1] for paths in augmented_paths.values()]
+                flip_predictions = await anyio.to_thread.run_sync(
+                    self._predictor.predict,
+                    weights_abs,
+                    flip_paths,
+                    job.confidence_threshold,
+                    job.iou_threshold,
+                )
+                stretch_predictions = await anyio.to_thread.run_sync(
+                    self._predictor.predict,
+                    weights_abs,
+                    stretch_paths,
+                    job.confidence_threshold,
+                    job.iou_threshold,
+                )
+
             total_predictions = 0
             for abs_path, detections in predictions.items():
                 image = path_to_image.get(abs_path)
@@ -214,6 +282,25 @@ class BatchAutoLabelUseCase:
                 created = self._detections_to_annotations(
                     image.id, detections, class_by_index, model.id
                 )
+                flip_path, stretch_path = augmented_paths[image.id]
+                is_consistent = all_runs_are_consistent(
+                    detections,
+                    (
+                        (
+                            flip_predictions.get(flip_path, []),
+                            transform_horizontal_flip,
+                        ),
+                        (
+                            stretch_predictions.get(stretch_path, []),
+                            _inverse_center_scale,
+                        ),
+                    ),
+                    confidence_threshold=job.confidence_threshold,
+                    iou_threshold=job.consistency_iou_threshold,
+                )
+                if is_consistent:
+                    for annotation in created:
+                        annotation.auto_verify()
                 merged = kept + created
                 await self._annotations.replace_for_image(image.id, merged)
                 image.recalculate_status(merged)

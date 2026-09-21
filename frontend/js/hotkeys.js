@@ -9,6 +9,7 @@ const MODAL_IDS = [
   "delete-asset-modal",
   "dataset-modal",
   "autolabel-modal",
+  "training-drawer",
 ];
 
 function isTypingTarget(target) {

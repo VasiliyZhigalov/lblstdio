@@ -17,6 +17,14 @@ class TrackStableSample:
     area: float
 
 
+def class_is_allowed(
+    class_index: int,
+    allowed_class_indices: frozenset[int] | None,
+) -> bool:
+    """Return whether a detection can trigger frame capture."""
+    return not allowed_class_indices or class_index in allowed_class_indices
+
+
 def size_variation(areas: Sequence[float]) -> float:
     """Relative area span: max/min - 1. Zero areas → infinitely unstable."""
     if not areas:

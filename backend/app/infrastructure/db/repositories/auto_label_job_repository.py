@@ -20,6 +20,7 @@ def _to_row(job: AutoLabelJob) -> AutoLabelJobRow:
         model_version_id=str(job.model_version_id),
         confidence_threshold=job.confidence_threshold,
         iou_threshold=job.iou_threshold,
+        consistency_iou_threshold=job.consistency_iou_threshold,
         status=job.status.value,
         image_ids_json=[str(item) for item in job.image_ids],
         total_images_processed=job.total_images_processed,
@@ -37,6 +38,11 @@ def _from_row(row: AutoLabelJobRow) -> AutoLabelJob:
         model_version_id=UUID(row.model_version_id),
         confidence_threshold=row.confidence_threshold,
         iou_threshold=float(getattr(row, "iou_threshold", 0.7) if getattr(row, "iou_threshold", None) is not None else 0.7),
+        consistency_iou_threshold=float(
+            getattr(row, "consistency_iou_threshold", 0.8)
+            if getattr(row, "consistency_iou_threshold", None) is not None
+            else 0.8
+        ),
         status=AutoLabelJobStatus(row.status),
         image_ids=[UUID(item) for item in (row.image_ids_json or [])],
         total_images_processed=row.total_images_processed,
