@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,6 +17,7 @@ from app.infrastructure.db.mappers import (
     row_to_dataset_version,
 )
 from app.infrastructure.db.tables import DatasetVersionRow
+from app.infrastructure.db.version_sequence import reserve_version_number
 
 
 class SqliteDatasetVersionRepository(IDatasetVersionRepository):
@@ -77,12 +78,9 @@ class SqliteDatasetVersionRepository(IDatasetVersionRepository):
         return [row_to_dataset_version(row) for row in result]
 
     async def next_version_number(self, project_id: UUID) -> int:
-        current = await self._session.scalar(
-            select(func.max(DatasetVersionRow.version_number)).where(
-                DatasetVersionRow.project_id == str(project_id)
-            )
+        return await reserve_version_number(
+            self._session, project_id, "dataset", DatasetVersionRow
         )
-        return int(current or 0) + 1
 
     async def delete(self, version_id: UUID) -> None:
         row = await self._session.get(

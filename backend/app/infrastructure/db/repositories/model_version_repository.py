@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.repositories.model_version_repository import (
@@ -9,6 +9,7 @@ from app.application.ports.repositories.model_version_repository import (
 from app.domain.entities.model_version import ModelVersion
 from app.infrastructure.db.mappers import ensure_utc
 from app.infrastructure.db.tables import ModelVersionRow
+from app.infrastructure.db.version_sequence import reserve_version_number
 
 
 def _to_row(version: ModelVersion) -> ModelVersionRow:
@@ -78,12 +79,9 @@ class SqliteModelVersionRepository(IModelVersionRepository):
         return [_from_row(row) for row in result]
 
     async def next_version_number(self, project_id: UUID) -> int:
-        current = await self._session.scalar(
-            select(func.max(ModelVersionRow.version_number)).where(
-                ModelVersionRow.project_id == str(project_id)
-            )
+        return await reserve_version_number(
+            self._session, project_id, "model", ModelVersionRow
         )
-        return int(current or 0) + 1
 
     async def deactivate_stream_models(self, project_id: UUID) -> None:
         await self._session.execute(

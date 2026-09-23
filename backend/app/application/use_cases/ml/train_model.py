@@ -24,6 +24,12 @@ from app.application.ports.services.training_device import ITrainingDeviceResolv
 from app.application.ports.storage.file_storage import IFileStorage
 from app.application.ports.unit_of_work import IUnitOfWork
 from app.application.services.device_policy import normalize_device_request
+from app.application.services.version_staging import (
+    attempt_staging_dir,
+    cleanup_attempt,
+    publish_attempt,
+    published_version_dir,
+)
 from app.domain.entities.model_version import ModelVersion
 from app.domain.entities.training_job import TrainingJob
 from app.domain.enums import DatasetVersionStatus, ProjectTaskType, TrainingJobStatus
@@ -232,6 +238,13 @@ class TrainingJobRunner:
     async def run_inline(self, job_id: UUID) -> None:
         await self._run(job_id)
 
+    async def close(self) -> None:
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def fail_orphaned_jobs(self) -> int:
         """Mark QUEUED/RUNNING jobs as FAILED after process restart."""
         from app.infrastructure.db.repositories.training_job_repository import (
@@ -260,8 +273,34 @@ class TrainingJobRunner:
         return self._device_resolver(requested)  # type: ignore[operator]
 
     async def _run(self, job_id: UUID) -> None:
-        async with self._sem:
-            await self._run_locked(job_id)
+        try:
+            async with self._sem:
+                await self._run_locked(job_id)
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._mark_failed(job_id, "cancelled during shutdown")
+            )
+            raise
+
+    async def _mark_failed(self, job_id: UUID, message: str) -> None:
+        from app.infrastructure.db.repositories.training_job_repository import (
+            SqliteTrainingJobRepository,
+        )
+        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
+
+        async with self._session_factory() as session:
+            jobs = SqliteTrainingJobRepository(session)
+            fresh = await jobs.get_by_id(job_id)
+            if fresh is None:
+                return
+            if fresh.status in {
+                TrainingJobStatus.COMPLETED,
+                TrainingJobStatus.FAILED,
+            }:
+                return
+            fresh.mark_failed(message)
+            await jobs.update(fresh)
+            await SqlAlchemyUnitOfWork(session).commit()
 
     async def _run_locked(self, job_id: UUID) -> None:
         from app.infrastructure.db.repositories.dataset_version_repository import (
@@ -282,20 +321,7 @@ class TrainingJobRunner:
         work_rel: str | None = None
 
         async def _fail(message: str) -> None:
-            async with self._session_factory() as session:
-                jobs = SqliteTrainingJobRepository(session)
-                uow = SqlAlchemyUnitOfWork(session)
-                fresh = await jobs.get_by_id(job_id)
-                if fresh is None:
-                    return
-                if fresh.status in {
-                    TrainingJobStatus.COMPLETED,
-                    TrainingJobStatus.FAILED,
-                }:
-                    return
-                fresh.mark_failed(message)
-                await jobs.update(fresh)
-                await uow.commit()
+            await self._mark_failed(job_id, message)
 
         try:
             async with self._session_factory() as session:
@@ -414,41 +440,61 @@ class TrainingJobRunner:
                 await uow.commit()
 
                 model = None
+                published_for_commit: str | None = None
                 for attempt in range(_VERSION_ALLOC_ATTEMPTS):
-                    version_number = await models.next_version_number(project_id)
-                    dest_rel_dir = f"projects/{project_id}/models/v{version_number}"
-                    dest_abs_dir = Path(self._storage.get_absolute_path(dest_rel_dir))
-                    dest_abs_dir.mkdir(parents=True, exist_ok=True)
-                    dest_abs = dest_abs_dir / "best.pt"
-                    await asyncio.to_thread(shutil.copy2, best_src, dest_abs)
-                    weights_rel = f"{dest_rel_dir}/best.pt"
-
-                    await models.deactivate_stream_models(project_id)
-                    project = await projects.get_by_id(project_id)
-                    project_name = project.name if project is not None else "model"
-                    candidate = ModelVersion.create(
-                        project_id=project_id,
-                        dataset_version_id=dataset_version_id,
-                        training_job_id=job.id,
-                        version_number=version_number,
-                        weights_path=weights_rel,
-                        map50=result.map50,
-                        map50_95=result.map50_95,
-                        precision=result.precision,
-                        recall=result.recall,
-                        top1=result.top1,
-                        test_metrics=result.test_metrics,
-                        name=trained_model_name(project_name, version_number),
-                    )
+                    staging = attempt_staging_dir(project_id, "models")
+                    published: str | None = None
                     try:
+                        staging_abs = Path(self._storage.get_absolute_path(staging))
+                        staging_abs.mkdir(parents=True, exist_ok=True)
+                        await asyncio.to_thread(
+                            shutil.copy2, best_src, staging_abs / "best.pt"
+                        )
+                        version_number = await models.next_version_number(project_id)
+                        published_root = published_version_dir(
+                            project_id, "models", version_number
+                        )
+                        await publish_attempt(self._storage, staging, published_root)
+                        published = published_root
+                        weights_rel = f"{published_root}/best.pt"
+
+                        await models.deactivate_stream_models(project_id)
+                        project = await projects.get_by_id(project_id)
+                        project_name = project.name if project is not None else "model"
+                        candidate = ModelVersion.create(
+                            project_id=project_id,
+                            dataset_version_id=dataset_version_id,
+                            training_job_id=job.id,
+                            version_number=version_number,
+                            weights_path=weights_rel,
+                            map50=result.map50,
+                            map50_95=result.map50_95,
+                            precision=result.precision,
+                            recall=result.recall,
+                            top1=result.top1,
+                            test_metrics=result.test_metrics,
+                            name=trained_model_name(project_name, version_number),
+                        )
                         await models.add(candidate)
                         model = candidate
+                        published_for_commit = published
                         break
                     except IntegrityError:
                         await session.rollback()
+                        await cleanup_attempt(self._storage, staging, published)
                         if attempt + 1 >= _VERSION_ALLOC_ATTEMPTS:
                             raise
                         continue
+                    except FileExistsError:
+                        await session.rollback()
+                        await cleanup_attempt(self._storage, staging, published)
+                        if attempt + 1 >= _VERSION_ALLOC_ATTEMPTS:
+                            raise
+                        continue
+                    except Exception:
+                        await session.rollback()
+                        await cleanup_attempt(self._storage, staging, published)
+                        raise
 
                 if model is None:
                     await _fail("failed to allocate model version number")
@@ -460,8 +506,18 @@ class TrainingJobRunner:
                     model.id,
                     stopped_early=bool(result.stopped_early),
                 )
-                await jobs.update(job)
-                await uow.commit()
+                try:
+                    await jobs.update(job)
+                    await uow.commit()
+                except Exception:
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
+                    await cleanup_attempt(
+                        self._storage, staging, published_for_commit
+                    )
+                    raise
         except Exception as exc:
             try:
                 await _fail(str(exc))

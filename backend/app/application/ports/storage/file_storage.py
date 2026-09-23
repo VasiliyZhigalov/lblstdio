@@ -1,4 +1,7 @@
+import asyncio
+import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 
 class IFileStorage(ABC):
@@ -22,6 +25,17 @@ class IFileStorage(ABC):
     @abstractmethod
     async def delete_directory(self, relative_dir: str) -> None:
         raise NotImplementedError
+
+    async def move_directory(self, source_rel: str, dest_rel: str) -> None:
+        """Rename a directory onto dest. Fails if dest already exists."""
+        source = Path(self.get_absolute_path(source_rel))
+        dest = Path(self.get_absolute_path(dest_rel))
+        if not source.is_dir():
+            raise FileNotFoundError(source_rel)
+        if dest.exists():
+            raise FileExistsError(dest_rel)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(os.rename, source, dest)
 
     @abstractmethod
     async def list_files(self, relative_dir: str) -> dict[str, bytes]:

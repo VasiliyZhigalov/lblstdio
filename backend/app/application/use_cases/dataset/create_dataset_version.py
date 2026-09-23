@@ -18,6 +18,12 @@ from app.application.ports.repositories.project_repository import IProjectReposi
 from app.application.ports.services.augmentation import IAugmentationService, LabeledBox
 from app.application.ports.storage.file_storage import IFileStorage
 from app.application.ports.unit_of_work import IUnitOfWork
+from app.application.services.version_staging import (
+    attempt_staging_dir,
+    cleanup_attempt,
+    publish_attempt,
+    published_version_dir,
+)
 from app.domain.entities.dataset_version import (
     DEFAULT_MIN_VERIFIED_IMAGES,
     AugmentationConfig,
@@ -141,14 +147,9 @@ class CreateDatasetVersionUseCase:
 
         last_error: Exception | None = None
         for _attempt in range(_MAX_VERSION_ALLOC_ATTEMPTS):
-            version_number = await self._versions.next_version_number(project_id)
-            version = DatasetVersion.create(
-                project_id=project_id,
-                version_number=version_number,
-                name=name,
-                augmentation=config,
-            )
-            relative_root = f"projects/{project_id}/datasets/v{version_number}"
+            staging = attempt_staging_dir(project_id, "datasets")
+            published: str | None = None
+            version_id = uuid4()
             try:
                 items: list[DatasetItem] = []
                 train_frames = 0
@@ -183,7 +184,7 @@ class CreateDatasetVersionUseCase:
                     items.append(
                         DatasetItem(
                             id=uuid4(),
-                            dataset_version_id=version.id,
+                            dataset_version_id=version_id,
                             image_id=image.id,
                             split=split_type,
                             snapshot_annotations=snapshot,
@@ -214,7 +215,7 @@ class CreateDatasetVersionUseCase:
                     for sample in samples:
                         stem = f"{image.id}{sample.suffix}"
                         await self._storage.save(
-                            f"{relative_root}/{split}/images",
+                            f"{staging}/{split}/images",
                             f"{stem}.jpg",
                             sample.image_bytes,
                         )
@@ -224,7 +225,7 @@ class CreateDatasetVersionUseCase:
                             for box in sample.boxes
                         )
                         await self._storage.save(
-                            f"{relative_root}/{split}/labels",
+                            f"{staging}/{split}/labels",
                             f"{stem}.txt",
                             label_body.encode("utf-8"),
                         )
@@ -240,22 +241,34 @@ class CreateDatasetVersionUseCase:
                         test_frames += 1
                         test_files += count
 
+                version_number = await self._versions.next_version_number(project_id)
+                version = DatasetVersion.create(
+                    project_id=project_id,
+                    version_number=version_number,
+                    name=name,
+                    augmentation=config,
+                    version_id=version_id,
+                )
+                published_root = published_version_dir(
+                    project_id, "datasets", version_number
+                )
                 yaml_payload = {
-                    "path": self._storage.get_absolute_path(relative_root),
+                    "path": self._storage.get_absolute_path(published_root),
                     "train": "train/images",
                     "val": "valid/images",
                     "test": "test/images",
                     "nc": len(names),
                     "names": names,
                 }
-                yaml_relative = f"{relative_root}/data.yaml"
                 await self._storage.save(
-                    relative_root,
+                    staging,
                     "data.yaml",
                     yaml.safe_dump(
                         yaml_payload, sort_keys=False, allow_unicode=True
                     ).encode("utf-8"),
                 )
+                await publish_attempt(self._storage, staging, published_root)
+                published = published_root
 
                 version.mark_ready(
                     train_count=train_frames,
@@ -264,7 +277,7 @@ class CreateDatasetVersionUseCase:
                     train_file_count=train_files,
                     valid_file_count=valid_files,
                     test_file_count=test_files,
-                    yaml_path=yaml_relative,
+                    yaml_path=f"{published_root}/data.yaml",
                     items=items,
                 )
                 try:
@@ -272,13 +285,17 @@ class CreateDatasetVersionUseCase:
                     await self._uow.commit()
                 except DatasetVersionConflictException as exc:
                     last_error = exc
-                    await self._storage.delete_directory(relative_root)
                     if hasattr(self._uow, "rollback"):
                         await self._uow.rollback()
+                    await cleanup_attempt(self._storage, staging, published)
                     continue
                 return version
+            except FileExistsError as exc:
+                last_error = exc
+                await cleanup_attempt(self._storage, staging, published)
+                continue
             except Exception:
-                await self._storage.delete_directory(relative_root)
+                await cleanup_attempt(self._storage, staging, published)
                 raise
 
         raise ResourceNotFoundException(
@@ -357,14 +374,9 @@ class CreateDatasetVersionUseCase:
 
         last_error: Exception | None = None
         for _attempt in range(_MAX_VERSION_ALLOC_ATTEMPTS):
-            version_number = await self._versions.next_version_number(project.id)
-            version = DatasetVersion.create(
-                project_id=project.id,
-                version_number=version_number,
-                name=name,
-                augmentation=config,
-            )
-            relative_root = f"projects/{project.id}/datasets/v{version_number}"
+            staging = attempt_staging_dir(project.id, "datasets")
+            published: str | None = None
+            version_id = uuid4()
             try:
                 require_unique_class_dirs([item.name for item in classes])
                 items: list[DatasetItem] = []
@@ -383,7 +395,7 @@ class CreateDatasetVersionUseCase:
                     items.append(
                         DatasetItem(
                             id=uuid4(),
-                            dataset_version_id=version.id,
+                            dataset_version_id=version_id,
                             image_id=image.id,
                             split=split_type,
                             snapshot_annotations=snapshot,
@@ -394,7 +406,7 @@ class CreateDatasetVersionUseCase:
                     suffix = Path(image.file_name).suffix.lower() or ".png"
                     folder = class_dir_name(class_by_id[label.class_id].name)
                     await self._storage.save(
-                        f"{relative_root}/{_disk_split(split_type)}/{folder}",
+                        f"{staging}/{_disk_split(split_type)}/{folder}",
                         f"{image.id}{suffix}",
                         raw,
                     )
@@ -405,6 +417,19 @@ class CreateDatasetVersionUseCase:
                     else:
                         test_frames += 1
 
+                version_number = await self._versions.next_version_number(project.id)
+                version = DatasetVersion.create(
+                    project_id=project.id,
+                    version_number=version_number,
+                    name=name,
+                    augmentation=config,
+                    version_id=version_id,
+                )
+                published_root = published_version_dir(
+                    project.id, "datasets", version_number
+                )
+                await publish_attempt(self._storage, staging, published_root)
+                published = published_root
                 version.mark_ready(
                     train_count=train_frames,
                     valid_count=valid_frames,
@@ -412,7 +437,7 @@ class CreateDatasetVersionUseCase:
                     train_file_count=train_frames,
                     valid_file_count=valid_frames,
                     test_file_count=test_frames,
-                    yaml_path=relative_root,
+                    yaml_path=published_root,
                     items=items,
                 )
                 try:
@@ -420,13 +445,17 @@ class CreateDatasetVersionUseCase:
                     await self._uow.commit()
                 except DatasetVersionConflictException as exc:
                     last_error = exc
-                    await self._storage.delete_directory(relative_root)
                     if hasattr(self._uow, "rollback"):
                         await self._uow.rollback()
+                    await cleanup_attempt(self._storage, staging, published)
                     continue
                 return version
+            except FileExistsError as exc:
+                last_error = exc
+                await cleanup_attempt(self._storage, staging, published)
+                continue
             except Exception:
-                await self._storage.delete_directory(relative_root)
+                await cleanup_attempt(self._storage, staging, published)
                 raise
 
         raise ResourceNotFoundException(

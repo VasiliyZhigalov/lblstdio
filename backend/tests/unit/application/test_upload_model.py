@@ -55,6 +55,25 @@ class _FakeStorage:
 
     async def delete_directory(self, relative_dir: str) -> None:
         self.deleted.append(relative_dir)
+        prefix = relative_dir.rstrip("/") + "/"
+        for path in list(self.files):
+            if path.startswith(prefix) or path == relative_dir:
+                del self.files[path]
+
+    async def move_directory(self, source_rel: str, dest_rel: str) -> None:
+        source = source_rel.rstrip("/")
+        dest = dest_rel.rstrip("/")
+        prefix = source + "/"
+        if any(path == dest or path.startswith(dest + "/") for path in self.files):
+            raise FileExistsError(dest_rel)
+        found = False
+        for path in list(self.files):
+            if path == source or path.startswith(prefix):
+                suffix = path[len(source) :]
+                self.files[dest + suffix] = self.files.pop(path)
+                found = True
+        if not found:
+            raise FileNotFoundError(source_rel)
 
 
 @pytest.mark.asyncio

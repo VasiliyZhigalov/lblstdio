@@ -23,6 +23,10 @@ class IDatasetVersionRepository(ABC):
 
     @abstractmethod
     async def next_version_number(self, project_id: UUID) -> int:
+        """Reserve and commit the next version number.
+
+        Concurrent callers must not observe the same number.
+        """
         raise NotImplementedError
 
     @abstractmethod

@@ -123,6 +123,21 @@ class _FakeStorage:
             if path.startswith(prefix) or path == relative_dir:
                 del self.files[path]
 
+    async def move_directory(self, source_rel: str, dest_rel: str) -> None:
+        source = source_rel.rstrip("/")
+        dest = dest_rel.rstrip("/")
+        prefix = source + "/"
+        if any(path == dest or path.startswith(dest + "/") for path in self.files):
+            raise FileExistsError(dest_rel)
+        found = False
+        for path in list(self.files):
+            if path == source or path.startswith(prefix):
+                suffix = path[len(source) :]
+                self.files[dest + suffix] = self.files.pop(path)
+                found = True
+        if not found:
+            raise FileNotFoundError(source_rel)
+
 
 class _FakeAugmentation:
     def __init__(self) -> None:

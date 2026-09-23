@@ -21,6 +21,12 @@ from app.application.ports.repositories.training_job_repository import (
 from app.application.ports.storage.archive_packer import IArchivePacker
 from app.application.ports.storage.file_storage import IFileStorage
 from app.application.ports.unit_of_work import IUnitOfWork
+from app.application.services.version_staging import (
+    attempt_staging_dir,
+    cleanup_attempt,
+    publish_attempt,
+    published_version_dir,
+)
 from app.domain.entities.model_version import ModelVersion
 from app.domain.enums import TrainingJobStatus
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
@@ -211,18 +217,24 @@ class UploadModelVersionUseCase:
         display_name = (name or "").strip() or Path(safe_filename).stem.strip() or None
 
         model: ModelVersion | None = None
-        weights_rel: str | None = None
         for attempt in range(_VERSION_ALLOC_ATTEMPTS):
-            version_number = await self._models.next_version_number(project_id)
-            dest_rel_dir = f"projects/{project_id}/models/v{version_number}"
-            weights_rel = await self._storage.save(dest_rel_dir, "best.pt", data)
-            candidate = ModelVersion.create_uploaded(
-                project_id=project_id,
-                version_number=version_number,
-                weights_path=weights_rel,
-                name=display_name,
-            )
+            staging = attempt_staging_dir(project_id, "models")
+            published: str | None = None
             try:
+                await self._storage.save(staging, "best.pt", data)
+                version_number = await self._models.next_version_number(project_id)
+                published_root = published_version_dir(
+                    project_id, "models", version_number
+                )
+                await publish_attempt(self._storage, staging, published_root)
+                published = published_root
+                weights_rel = f"{published_root}/best.pt"
+                candidate = ModelVersion.create_uploaded(
+                    project_id=project_id,
+                    version_number=version_number,
+                    weights_path=weights_rel,
+                    name=display_name,
+                )
                 await self._models.deactivate_stream_models(project_id)
                 await self._models.add(candidate)
                 await self._uow.commit()
@@ -230,11 +242,16 @@ class UploadModelVersionUseCase:
                 break
             except IntegrityError:
                 await self._uow.rollback()
-                await _safe_delete_directory(self._storage, dest_rel_dir)
+                await cleanup_attempt(self._storage, staging, published)
+                if attempt + 1 >= _VERSION_ALLOC_ATTEMPTS:
+                    raise
+                continue
+            except FileExistsError:
+                await cleanup_attempt(self._storage, staging, published)
                 if attempt + 1 >= _VERSION_ALLOC_ATTEMPTS:
                     raise
                 continue
 
-        if model is None or weights_rel is None:
+        if model is None:
             raise DomainValidationException("failed to allocate model version number")
         return model

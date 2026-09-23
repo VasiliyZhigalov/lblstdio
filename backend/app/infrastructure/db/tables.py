@@ -151,6 +151,20 @@ class ImageLabelRow(Base):
     model_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
+class VersionSequenceRow(Base):
+    """Committed allocator so concurrent MAX+1 reads cannot share a number."""
+
+    __tablename__ = "version_sequences"
+
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class DatasetVersionRow(Base):
     __tablename__ = "dataset_versions"
     __table_args__ = (
