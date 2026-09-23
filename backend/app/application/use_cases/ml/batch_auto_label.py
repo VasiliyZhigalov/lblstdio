@@ -343,9 +343,22 @@ class BatchAutoLabelUseCase:
             await self._uow.commit()
             return job
         except Exception as exc:
-            job.mark_failed(str(exc))
-            await self._jobs.update(job)
-            await self._uow.commit()
+            message = str(exc)
+            try:
+                await self._uow.rollback()
+            except Exception:
+                pass
+            try:
+                fresh = await self._jobs.get_by_id(job_id)
+                if fresh is not None and fresh.status not in {
+                    AutoLabelJobStatus.COMPLETED,
+                    AutoLabelJobStatus.FAILED,
+                }:
+                    fresh.mark_failed(message)
+                    await self._jobs.update(fresh)
+                    await self._uow.commit()
+            except Exception:
+                pass
             raise
 
     def _detections_to_annotations(
@@ -503,6 +516,13 @@ class AutoLabelJobRunner:
     async def run_inline(self, job_id: UUID) -> None:
         await self._run(job_id)
 
+    async def close(self) -> None:
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def fail_orphaned_jobs(self) -> int:
         from app.infrastructure.db.repositories.auto_label_job_repository import (
             SqliteAutoLabelJobRepository,
@@ -523,8 +543,32 @@ class AutoLabelJobRunner:
             return len(orphans)
 
     async def _run(self, job_id: UUID) -> None:
-        async with self._sem:
-            await self._run_locked(job_id)
+        try:
+            async with self._sem:
+                await self._run_locked(job_id)
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._mark_failed(job_id, "cancelled during shutdown")
+            )
+            raise
+
+    async def _mark_failed(self, job_id: UUID, message: str) -> None:
+        from app.infrastructure.db.repositories.auto_label_job_repository import (
+            SqliteAutoLabelJobRepository,
+        )
+        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
+
+        async with self._session_factory() as session:
+            jobs = SqliteAutoLabelJobRepository(session)
+            fresh = await jobs.get_by_id(job_id)
+            if fresh is None or fresh.status in {
+                AutoLabelJobStatus.COMPLETED,
+                AutoLabelJobStatus.FAILED,
+            }:
+                return
+            fresh.mark_failed(message)
+            await jobs.update(fresh)
+            await SqlAlchemyUnitOfWork(session).commit()
 
     async def _run_locked(self, job_id: UUID) -> None:
         from app.infrastructure.db.repositories.annotation_repository import (
@@ -550,6 +594,7 @@ class AutoLabelJobRunner:
         )
         from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 
+        failure: Exception | None = None
         async with self._session_factory() as session:
             use_case = BatchAutoLabelUseCase(
                 SqliteModelVersionRepository(session),
@@ -566,6 +611,11 @@ class AutoLabelJobRunner:
             )
             try:
                 await use_case.process_job(job_id)
-            except Exception:
-                # process_job already marks FAILED when possible
-                pass
+            except Exception as exc:
+                failure = exc
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
+        if failure is not None:
+            await self._mark_failed(job_id, str(failure))

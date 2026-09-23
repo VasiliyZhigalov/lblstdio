@@ -338,19 +338,31 @@ class AuditAnnotationsRunner:
                     )
                     await jobs.update(job)
                     await SqlAlchemyUnitOfWork(session).commit()
+            except asyncio.CancelledError:
+                await asyncio.shield(
+                    self._mark_failed(job_id, "cancelled during shutdown")
+                )
+                raise
             except Exception as exc:
-                async with self._session_factory() as session:
-                    from app.infrastructure.db.repositories.annotation_audit_job_repository import (
-                        SqliteAnnotationAuditJobRepository,
-                    )
-                    from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
+                await self._mark_failed(job_id, str(exc))
 
-                    jobs = SqliteAnnotationAuditJobRepository(session)
-                    job = await jobs.get_by_id(job_id)
-                    if job is not None:
-                        job.mark_failed(str(exc))
-                        await jobs.update(job)
-                        await SqlAlchemyUnitOfWork(session).commit()
+    async def _mark_failed(self, job_id: UUID, message: str) -> None:
+        from app.infrastructure.db.repositories.annotation_audit_job_repository import (
+            SqliteAnnotationAuditJobRepository,
+        )
+        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
+
+        async with self._session_factory() as session:
+            jobs = SqliteAnnotationAuditJobRepository(session)
+            job = await jobs.get_by_id(job_id)
+            if job is None or job.status in {
+                AnnotationAuditJobStatus.COMPLETED,
+                AnnotationAuditJobStatus.FAILED,
+            }:
+                return
+            job.mark_failed(message)
+            await jobs.update(job)
+            await SqlAlchemyUnitOfWork(session).commit()
 
     async def fail_orphaned_jobs(self) -> int:
         from app.infrastructure.db.repositories.annotation_audit_job_repository import (

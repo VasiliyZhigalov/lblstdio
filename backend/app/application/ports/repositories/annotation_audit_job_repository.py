@@ -30,3 +30,7 @@ class IAnnotationAuditJobRepository(ABC):
         self, statuses: Sequence[AnnotationAuditJobStatus]
     ) -> list[AnnotationAuditJob]:
         raise NotImplementedError
+
+    @abstractmethod
+    async def list_by_project(self, project_id: UUID) -> list[AnnotationAuditJob]:
+        raise NotImplementedError

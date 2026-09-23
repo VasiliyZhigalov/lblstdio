@@ -88,6 +88,12 @@ class SqliteAutoLabelJobRepository(IAutoLabelJobRepository):
         )
         return [_from_row(row) for row in result]
 
+    async def list_by_project(self, project_id: UUID) -> list[AutoLabelJob]:
+        result = await self._session.scalars(
+            select(AutoLabelJobRow).where(AutoLabelJobRow.project_id == str(project_id))
+        )
+        return [_from_row(row) for row in result]
+
     async def delete_by_model_version(self, model_version_id: UUID) -> None:
         await self._session.execute(
             delete(AutoLabelJobRow).where(

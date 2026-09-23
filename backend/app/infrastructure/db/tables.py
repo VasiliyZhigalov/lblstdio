@@ -223,7 +223,12 @@ class TrainingJobRow(Base):
     __tablename__ = "training_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     dataset_version_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     epochs: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -252,7 +257,12 @@ class ModelVersionRow(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     dataset_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     training_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -272,7 +282,12 @@ class AutoLabelJobRow(Base):
     __tablename__ = "auto_label_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     model_version_id: Mapped[str] = mapped_column(String(36), nullable=False)
     confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False)
     iou_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
@@ -294,7 +309,12 @@ class AnnotationAuditJobRow(Base):
     __tablename__ = "annotation_audit_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     model_version_id: Mapped[str] = mapped_column(String(36), nullable=False)
     image_ids_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False)

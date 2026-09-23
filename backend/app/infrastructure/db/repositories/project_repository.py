@@ -1,12 +1,19 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.repositories.project_repository import IProjectRepository
 from app.domain.entities.project import Project
 from app.infrastructure.db.mappers import project_to_row, row_to_project
-from app.infrastructure.db.tables import ProjectRow
+from app.infrastructure.db.tables import (
+    AnnotationAuditJobRow,
+    AutoLabelJobRow,
+    ModelVersionRow,
+    ProjectRow,
+    TrainingJobRow,
+    VersionSequenceRow,
+)
 
 
 class SqliteProjectRepository(IProjectRepository):
@@ -38,7 +45,18 @@ class SqliteProjectRepository(IProjectRepository):
         await self._session.flush()
 
     async def delete(self, project_id: UUID) -> None:
-        row = await self._session.get(ProjectRow, str(project_id))
+        project_key = str(project_id)
+        for table in (
+            TrainingJobRow,
+            AutoLabelJobRow,
+            AnnotationAuditJobRow,
+            ModelVersionRow,
+            VersionSequenceRow,
+        ):
+            await self._session.execute(
+                delete(table).where(table.project_id == project_key)
+            )
+        row = await self._session.get(ProjectRow, project_key)
         if row is not None:
             await self._session.delete(row)
             await self._session.flush()

@@ -110,6 +110,12 @@ class SqliteTrainingJobRepository(ITrainingJobRepository):
         )
         return [_from_row(row) for row in result]
 
+    async def list_by_project(self, project_id: UUID) -> list[TrainingJob]:
+        result = await self._session.scalars(
+            select(TrainingJobRow).where(TrainingJobRow.project_id == str(project_id))
+        )
+        return [_from_row(row) for row in result]
+
     async def delete_by_dataset_version(self, dataset_version_id: UUID) -> None:
         await self._session.execute(
             delete(TrainingJobRow).where(

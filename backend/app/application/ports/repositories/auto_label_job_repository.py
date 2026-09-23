@@ -26,6 +26,10 @@ class IAutoLabelJobRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_by_project(self, project_id: UUID) -> list[AutoLabelJob]:
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_by_model_version(self, model_version_id: UUID) -> None:
         raise NotImplementedError
 

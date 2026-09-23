@@ -88,6 +88,8 @@ def create_app(
         await app.state.audit_annotations_runner.fail_orphaned_jobs()
         app.state.stream_ingest_consumer.start()
         yield
+        await app.state.training_runner.close()
+        await app.state.auto_label_runner.close()
         await app.state.audit_annotations_runner.close()
         await app.state.stream_ingest_consumer.stop()
         app.state.stream_runner.stop_all()
