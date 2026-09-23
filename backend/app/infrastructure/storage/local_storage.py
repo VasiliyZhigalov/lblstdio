@@ -25,7 +25,7 @@ class LocalFileStorage(IFileStorage):
             raise ValueError(f"path escapes storage root: {relative_path}")
         return candidate
 
-    async def save(self, relative_dir: str, filename: str, data: bytes) -> str:
+    def _allocate_target(self, relative_dir: str, filename: str) -> Path:
         name = self._safe_name(filename)
         directory = self._resolve(relative_dir)
         directory.mkdir(parents=True, exist_ok=True)
@@ -35,7 +35,27 @@ class LocalFileStorage(IFileStorage):
         if target.exists():
             target = directory / f"{target.stem}_{uuid4().hex[:8]}{target.suffix}"
             target = target.resolve()
+        return target
+
+    async def save(self, relative_dir: str, filename: str, data: bytes) -> str:
+        target = self._allocate_target(relative_dir, filename)
         await asyncio.to_thread(target.write_bytes, data)
+        return target.relative_to(self._root).as_posix()
+
+    async def save_from_path(self, relative_dir: str, filename: str, source: Path) -> str:
+        target = self._allocate_target(relative_dir, filename)
+        source_path = Path(source)
+
+        def _copy() -> None:
+            with source_path.open("rb") as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+
+        try:
+            await asyncio.to_thread(_copy)
+        except Exception:
+            if target.is_file():
+                target.unlink(missing_ok=True)
+            raise
         return target.relative_to(self._root).as_posix()
 
     async def read(self, relative_path: str) -> bytes:

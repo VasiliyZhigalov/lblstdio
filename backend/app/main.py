@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -36,13 +37,20 @@ def create_app(
     storage_root: str | Path | None = None,
     data_root: str | Path | None = None,
     *,
+    trusted_local: bool | None = None,
+    allowed_roots: Sequence[str | Path] | None = None,
     training_trainer=None,
     predictor=None,
     stream_runner=None,
 ) -> FastAPI:
-    settings = load_settings(data_root=data_root)
+    settings = load_settings(
+        data_root=data_root,
+        trusted_local=trusted_local,
+        allowed_roots=None if allowed_roots is None else list(allowed_roots),
+    )
     db_url = database_url or settings.database_url
     files_root = Path(storage_root) if storage_root is not None else settings.storage_root
+    resolved_storage = files_root.resolve()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -52,7 +60,8 @@ def create_app(
         engine, factory = await create_session_factory(db_url)
         app.state.engine = engine
         app.state.session_factory = factory
-        app.state.storage = LocalFileStorage(files_root)
+        app.state.storage = LocalFileStorage(resolved_storage)
+        app.state.storage_root = resolved_storage
         app.state.settings = settings
         app.state.metadata_reader = PillowMetadataReader()
         trainer = training_trainer or ProcessUltralyticsTrainer()

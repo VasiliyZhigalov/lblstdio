@@ -1,8 +1,8 @@
+import asyncio
+from pathlib import Path
 from uuid import UUID
 
-import asyncio
-
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from app.application.use_cases.streaming.control_stream import (
@@ -11,7 +11,7 @@ from app.application.use_cases.streaming.control_stream import (
     StopStreamUseCase,
 )
 from app.application.use_cases.streaming.manage_stream_source import ManageStreamSourceUseCase
-from app.domain.enums import StreamSourceType, TripwireDirection
+from app.domain.enums import StreamSourceType
 from app.domain.exceptions import ResourceNotFoundException
 from app.domain.services.rtsp_url import redact_rtsp_uri
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
@@ -32,11 +32,35 @@ from app.presentation.schemas import (
     StreamTriggerConfigPayload,
     StreamTriggersUpdate,
 )
+from app.presentation.streaming_io import UploadTooLarge, spool_upload
+from app.settings import AppSettings
 
 router = APIRouter(tags=["streams"])
 
 _MAX_VIDEO_UPLOAD_BYTES = 500 * 1024 * 1024
-_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+def _require_trusted_local(request: Request) -> AppSettings:
+    settings: AppSettings = request.app.state.settings
+    if not settings.trusted_local:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+    return settings
+
+
+def _folder_roots(settings: AppSettings) -> tuple[Path, ...] | None:
+    if not settings.allowed_roots:
+        return None
+    return settings.allowed_roots
+
+
+def _video_roots(request: Request) -> tuple[Path, ...]:
+    settings: AppSettings = request.app.state.settings
+    storage = Path(request.app.state.storage_root).resolve()
+    roots = [storage]
+    for root in settings.allowed_roots:
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
 
 
 def _config_to_payload(config: StreamTriggerConfig) -> StreamTriggerConfigPayload:
@@ -93,7 +117,7 @@ def _payload_to_config(payload: StreamTriggerConfigPayload) -> StreamTriggerConf
         tripwire_enabled=payload.tripwire_enabled,
         tripwire_line=payload.tripwire_line,
         tripwire_classes=tuple(payload.tripwire_classes),
-        tripwire_direction=TripwireDirection(payload.tripwire_direction),
+        tripwire_direction=payload.tripwire_direction,
         tripwire_debounce_seconds=payload.tripwire_debounce_seconds,
         cooldown_seconds=payload.cooldown_seconds,
     )
@@ -144,10 +168,15 @@ async def create_device_stream(
 async def create_image_folder_stream(
     project_id: UUID,
     payload: StreamImageFolderCreate,
+    request: Request,
     use_case: ManageStreamSourceUseCase = Depends(get_manage_stream_source_use_case),
 ) -> StreamSourceRead:
+    settings = _require_trusted_local(request)
     stream = await use_case.create_image_folder(
-        project_id, payload.name, payload.folder_path
+        project_id,
+        payload.name,
+        payload.folder_path,
+        allowed_roots=_folder_roots(settings),
     )
     return _stream_to_read(stream)
 
@@ -159,8 +188,10 @@ async def create_image_folder_stream(
 )
 async def pick_image_folder_stream(
     project_id: UUID,
+    request: Request,
     use_case: ManageStreamSourceUseCase = Depends(get_manage_stream_source_use_case),
 ) -> StreamSourceRead | Response:
+    settings = _require_trusted_local(request)
     from app.infrastructure.system.folder_dialog import ask_image_folder
 
     try:
@@ -173,7 +204,12 @@ async def pick_image_folder_stream(
     if not folder_path:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     name = folder_path.rstrip("\\/").split("\\")[-1].split("/")[-1] or "Папка"
-    stream = await use_case.create_image_folder(project_id, name, folder_path)
+    stream = await use_case.create_image_folder(
+        project_id,
+        name,
+        folder_path,
+        allowed_roots=_folder_roots(settings),
+    )
     return _stream_to_read(stream)
 
 
@@ -184,31 +220,32 @@ async def pick_image_folder_stream(
 )
 async def upload_video_stream(
     project_id: UUID,
+    request: Request,
     file: UploadFile = File(...),
     name: str = Form(""),
     use_case: ManageStreamSourceUseCase = Depends(get_manage_stream_source_use_case),
 ) -> StreamSourceRead:
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > _MAX_VIDEO_UPLOAD_BYTES:
+    spooled: Path | None = None
+    try:
+        try:
+            spooled = await spool_upload(file, max_bytes=_MAX_VIDEO_UPLOAD_BYTES)
+        except UploadTooLarge:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail=f"video exceeds {_MAX_VIDEO_UPLOAD_BYTES // (1024 * 1024)} MB limit",
-            )
-        chunks.append(chunk)
-    data = b"".join(chunks)
-    stream = await use_case.upload_video(
-        project_id,
-        name or (file.filename or "video"),
-        file.filename or "video.mp4",
-        data,
-    )
-    return _stream_to_read(stream)
+            ) from None
+        stream = await use_case.upload_video(
+            project_id,
+            name or (file.filename or "video"),
+            file.filename or "video.mp4",
+            source_path=spooled,
+            allowed_roots=_video_roots(request),
+        )
+        return _stream_to_read(stream)
+    finally:
+        if spooled is not None:
+            spooled.unlink(missing_ok=True)
+        await file.close()
 
 
 @router.put("/streams/{stream_id}/triggers", response_model=StreamSourceRead)

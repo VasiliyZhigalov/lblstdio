@@ -1,3 +1,9 @@
 # Copy to config.yaml and set your path, e.g.:
 # data_root: "Z:/lblstdio-data"
 data_root: "."
+# Desktop install: folder picker and filesystem sources stay available.
+# Set false before exposing the API beyond this machine.
+trusted_local: true
+# Optional. When set, folder sources must be inside one of these directories.
+# allowed_roots:
+#   - "D:/datasets"

@@ -225,12 +225,20 @@ async def get_image(
 @router.get("/images/{image_id}/file")
 async def get_image_file(
     image_id: UUID,
+    request: Request,
     use_case: GetImageUseCase = Depends(get_get_image_use_case),
     storage: LocalFileStorage = Depends(get_storage),
 ) -> FileResponse:
     image, _, _ = await use_case.execute(image_id)
+    try:
+        absolute = Path(storage.get_absolute_path(image.file_path))
+    except ValueError as exc:
+        raise DomainValidationException("image path is outside allowed storage") from exc
+    storage_root = Path(request.app.state.storage_root).resolve()
+    if absolute != storage_root and not absolute.is_relative_to(storage_root):
+        raise DomainValidationException("image path is outside allowed storage")
     return FileResponse(
-        path=storage.get_absolute_path(image.file_path),
+        path=absolute,
         filename=image.file_name,
         content_disposition_type="inline",
     )

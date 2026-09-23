@@ -1,5 +1,8 @@
+from pathlib import Path
 from random import Random
 from uuid import UUID
+
+import zipfile
 
 import pytest
 
@@ -27,8 +30,6 @@ from tests.unit.application.test_create_dataset_version import (
     _make_image,
 )
 from tests.unit.application.test_export_yolo import _FakeStorage as _ExportStorage
-import zipfile
-import io
 
 
 class _FakeLabels:
@@ -195,6 +196,10 @@ async def test_classification_export_packs_class_folders() -> None:
         ZipArchivePacker(),
         labels=_FakeLabels({image.id: label}),
     ).execute(project.id)
-    names = zipfile.ZipFile(io.BytesIO(packed)).namelist()
+    try:
+        with zipfile.ZipFile(packed) as archive:
+            names = archive.namelist()
+    finally:
+        Path(packed).unlink(missing_ok=True)
     assert any(name.startswith(f"train/good/{image.id}") for name in names)
     assert "data.yaml" not in names

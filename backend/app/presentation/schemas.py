@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.domain.enums import ProjectTaskType
+from app.domain.enums import ProjectTaskType, TripwireDirection
 
 
 class ProjectCreate(BaseModel):
@@ -348,7 +348,7 @@ class StreamTriggerConfigPayload(BaseModel):
     tripwire_enabled: bool = False
     tripwire_line: tuple[float, float, float, float] | None = None
     tripwire_classes: list[UUID] = Field(default_factory=list)
-    tripwire_direction: str = "ANY"
+    tripwire_direction: TripwireDirection = TripwireDirection.ANY
     tripwire_debounce_seconds: float = Field(default=3.0, ge=0)
     cooldown_seconds: float = Field(default=3.0, ge=0)
 

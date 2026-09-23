@@ -18,8 +18,16 @@ from app.application.ports.repositories.project_repository import IProjectReposi
 from app.application.ports.repositories.training_job_repository import (
     ITrainingJobRepository,
 )
-from app.application.ports.storage.archive_packer import IArchivePacker
-from app.application.ports.storage.file_storage import IFileStorage
+from app.application.ports.storage.archive_packer import (
+    IArchivePacker,
+    allocate_archive_path,
+)
+from app.application.ports.storage.file_storage import (
+    IFileStorage,
+    read_member,
+    save_upload,
+    upload_size,
+)
 from app.application.ports.unit_of_work import IUnitOfWork
 from app.application.services.version_staging import (
     attempt_staging_dir,
@@ -33,7 +41,7 @@ from app.domain.exceptions import DomainValidationException, ResourceNotFoundExc
 
 _ACTIVE_TRAINING = {TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING}
 _VERSION_ALLOC_ATTEMPTS = 5
-_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+MAX_MODEL_UPLOAD_BYTES = 512 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
@@ -84,12 +92,12 @@ class ExportModelVersionUseCase:
         self._storage = storage
         self._packer = packer
 
-    async def execute(self, project_id: UUID, model_id: UUID) -> tuple[bytes, str]:
+    async def execute(self, project_id: UUID, model_id: UUID) -> tuple[Path, str]:
         model = await self._models.get_by_id(model_id)
         if model is None or model.project_id != project_id:
             raise ResourceNotFoundException(f"model {model_id} not found")
         try:
-            weights = await self._storage.read(model.weights_path)
+            weights = await read_member(self._storage, model.weights_path)
         except Exception as exc:
             raise DomainValidationException(
                 f"weights not found: {model.weights_path}"
@@ -116,17 +124,23 @@ class ExportModelVersionUseCase:
             "created_at": model.created_at.isoformat(),
         }
         weights_name = Path(model.weights_path).name or "best.pt"
-        archive = self._packer.pack(
-            {
-                weights_name: weights,
-                "metadata.json": json.dumps(metadata, indent=2).encode("utf-8"),
-            }
-        )
+        dest = allocate_archive_path()
+        try:
+            await self._packer.pack_to_path(
+                dest,
+                [
+                    (weights_name, weights),
+                    ("metadata.json", json.dumps(metadata, indent=2).encode("utf-8")),
+                ],
+            )
+        except Exception:
+            dest.unlink(missing_ok=True)
+            raise
         safe_name = "".join(
             ch if ch.isalnum() or ch in "-_." else "_" for ch in model.name
         )
         filename = f"model-{safe_name or model.version_number}.zip"
-        return archive, filename
+        return dest, filename
 
 
 class DeleteModelVersionUseCase:
@@ -197,7 +211,8 @@ class UploadModelVersionUseCase:
         project_id: UUID,
         *,
         filename: str,
-        data: bytes,
+        data: bytes | None = None,
+        source_path: Path | None = None,
         name: str | None = None,
     ) -> ModelVersion:
         project = await self._projects.get_by_id(project_id)
@@ -207,11 +222,12 @@ class UploadModelVersionUseCase:
         safe_filename = Path(filename or "").name
         if not safe_filename.lower().endswith(".pt"):
             raise DomainValidationException("only .pt YOLO weight files are supported")
-        if not data:
+        size = upload_size(data, source_path)
+        if size <= 0:
             raise DomainValidationException("uploaded weights file is empty")
-        if len(data) > _MAX_UPLOAD_BYTES:
+        if size > MAX_MODEL_UPLOAD_BYTES:
             raise DomainValidationException(
-                f"weights file exceeds {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit"
+                f"weights file exceeds {MAX_MODEL_UPLOAD_BYTES // (1024 * 1024)} MB limit"
             )
 
         display_name = (name or "").strip() or Path(safe_filename).stem.strip() or None
@@ -221,7 +237,13 @@ class UploadModelVersionUseCase:
             staging = attempt_staging_dir(project_id, "models")
             published: str | None = None
             try:
-                await self._storage.save(staging, "best.pt", data)
+                await save_upload(
+                    self._storage,
+                    staging,
+                    "best.pt",
+                    data=data,
+                    source_path=source_path,
+                )
                 version_number = await self._models.next_version_number(project_id)
                 published_root = published_version_dir(
                     project_id, "models", version_number

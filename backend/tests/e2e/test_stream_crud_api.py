@@ -12,6 +12,8 @@ def client(tmp_path: Path) -> TestClient:
     app = create_app(
         database_url=f"sqlite+aiosqlite:///{db_path}",
         storage_root=tmp_path / "storage",
+        trusted_local=True,
+        allowed_roots=[],
     )
     with TestClient(app) as test_client:
         yield test_client

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from uuid import UUID, uuid4
 
@@ -12,7 +13,11 @@ from app.application.ports.repositories.stream_source_repository import (
     IStreamSourceRepository,
 )
 from app.application.ports.services.stream_runner import IStreamRunner
-from app.application.ports.storage.file_storage import IFileStorage
+from app.application.ports.storage.file_storage import (
+    IFileStorage,
+    save_upload,
+    upload_size,
+)
 from app.application.ports.unit_of_work import IUnitOfWork
 from app.application.use_cases.streaming.control_stream import allowed_class_indices_for
 from app.domain.entities.stream_source import StreamSource
@@ -24,6 +29,12 @@ from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
 
 _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
 _MAX_VIDEO_BYTES = 500 * 1024 * 1024
+
+
+def _assert_within_roots(path: Path, roots: Sequence[Path]) -> None:
+    if any(path == root or path.is_relative_to(root) for root in roots):
+        return
+    raise DomainValidationException("Путь вне разрешённых каталогов")
 
 
 class _KeepModel:
@@ -89,18 +100,34 @@ class ManageStreamSourceUseCase:
         return stream
 
     async def create_image_folder(
-        self, project_id: UUID, name: str, folder_path: str
+        self,
+        project_id: UUID,
+        name: str,
+        folder_path: str,
+        *,
+        allowed_roots: Sequence[Path] | None = None,
     ) -> StreamSource:
         await self._require_project(project_id)
         raw = folder_path.strip().strip('"').strip("'")
         if not raw:
             raise DomainValidationException("Укажите путь к папке")
+        candidate = Path(raw).expanduser()
         try:
-            resolved = Path(raw).expanduser().resolve(strict=True)
+            resolved = candidate.resolve(strict=False)
         except OSError as exc:
             raise DomainValidationException(f"Папка не найдена: {raw}") from exc
+        if allowed_roots is not None:
+            _assert_within_roots(resolved, allowed_roots)
         if not resolved.is_dir():
-            raise DomainValidationException("Укажите путь к папке, а не к файлу")
+            if resolved.exists():
+                raise DomainValidationException("Укажите путь к папке, а не к файлу")
+            raise DomainValidationException(f"Папка не найдена: {raw}")
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise DomainValidationException(f"Папка не найдена: {raw}") from exc
+        if allowed_roots is not None:
+            _assert_within_roots(resolved, allowed_roots)
         if not list_image_files(resolved):
             raise DomainValidationException(
                 "В папке нет изображений jpg, png или webp"
@@ -120,7 +147,10 @@ class ManageStreamSourceUseCase:
         project_id: UUID,
         name: str,
         filename: str,
-        data: bytes,
+        data: bytes | None = None,
+        *,
+        source_path: Path | None = None,
+        allowed_roots: Sequence[Path] | None = None,
     ) -> StreamSource:
         await self._require_project(project_id)
         ext = PurePosixPath(filename).suffix.lower()
@@ -128,16 +158,32 @@ class ManageStreamSourceUseCase:
             raise DomainValidationException(
                 f"unsupported video format {ext!r}; allowed: {sorted(_VIDEO_EXTENSIONS)}"
             )
-        if not data:
+        size = upload_size(data, source_path)
+        if size <= 0:
             raise DomainValidationException("video file is empty")
-        if len(data) > _MAX_VIDEO_BYTES:
+        if size > _MAX_VIDEO_BYTES:
             raise DomainValidationException(
                 f"video file exceeds {_MAX_VIDEO_BYTES // (1024 * 1024)} MB limit"
             )
         video_id = uuid4()
         relative_dir = f"projects/{project_id}/videos"
         stored_name = f"{video_id}{ext}"
-        relative_path = await self._storage.save(relative_dir, stored_name, data)
+        relative_path = await save_upload(
+            self._storage,
+            relative_dir,
+            stored_name,
+            data=data,
+            source_path=source_path,
+        )
+        if allowed_roots is not None:
+            try:
+                absolute = Path(self._storage.get_absolute_path(relative_path))
+                _assert_within_roots(absolute, allowed_roots)
+            except (ValueError, DomainValidationException) as exc:
+                await self._storage.delete(relative_path)
+                if isinstance(exc, DomainValidationException):
+                    raise
+                raise DomainValidationException("Путь вне разрешённых каталогов") from exc
         stream = StreamSource.create(
             project_id=project_id,
             name=name or PurePosixPath(filename).stem,
