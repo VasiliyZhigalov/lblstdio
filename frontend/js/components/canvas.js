@@ -91,8 +91,25 @@ export class AnnotationCanvas {
     });
   }
 
+  discardBitmap() {
+    this.image = null;
+    this.draft = null;
+    this.isDrawing = false;
+    this.isDragging = false;
+    this.isPanning = false;
+    this.activeHandle = null;
+    this.dragBoxId = null;
+    this.scheduleRender();
+  }
+
+  invalidateImage() {
+    this._loadId = (this._loadId || 0) + 1;
+    this.discardBitmap();
+  }
+
   async loadImage(url) {
     const loadId = (this._loadId = (this._loadId || 0) + 1);
+    this.discardBitmap();
     const img = new Image();
     img.decoding = "async";
     const done = new Promise((resolve, reject) => {
@@ -100,7 +117,13 @@ export class AnnotationCanvas {
       img.onerror = () => reject(new Error("Не удалось загрузить изображение"));
     });
     img.src = url;
-    await done;
+    try {
+      await done;
+    } catch (err) {
+      if (loadId !== this._loadId) return false;
+      this.discardBitmap();
+      throw err;
+    }
     if (loadId !== this._loadId) return false;
     this.image = img;
     if (!store.get("zoomLocked")) this.fitToScreen();
@@ -109,10 +132,7 @@ export class AnnotationCanvas {
   }
 
   clearImage() {
-    this._loadId = (this._loadId || 0) + 1;
-    this.image = null;
-    this.draft = null;
-    this.scheduleRender();
+    this.invalidateImage();
   }
 
   fitToScreen() {

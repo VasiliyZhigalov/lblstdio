@@ -321,13 +321,15 @@ function restoreProjectHash(projectId, tab = "data", imageId = null) {
   replaceHash(projectPath(projectId, tab, imageId));
 }
 
-async function loadProject(projectId) {
+async function loadProject(projectId, seq = routeSeq) {
   const project = await api.getProject(projectId);
+  if (seq !== routeSeq) return false;
   const [classes, images, versions] = await Promise.all([
     api.listClasses(projectId),
     api.listImages(projectId),
     api.listDatasetVersions(projectId).catch(() => []),
   ]);
+  if (seq !== routeSeq) return false;
   const counts = { ...store.get("boxCounts") };
   for (const image of images) {
     if (image.status === "UNANNOTATED") counts[image.id] = 0;
@@ -344,6 +346,7 @@ async function loadProject(projectId) {
     boxCounts: counts,
   });
   datasetModal?.syncVersions(versions[0]?.version_number || 0);
+  return true;
 }
 
 async function saveCurrent({ silent = false, force = false, celebrate = false } = {}) {
@@ -362,15 +365,18 @@ async function saveCurrent({ silent = false, force = false, celebrate = false } 
     store.set("saveStatus", "saving");
     try {
       const saved = await api.saveAnnotations(imageId, boxes);
-      setBoxCount(imageId, saved.length, saved);
-
-      const images = (store.get("images") || []).map((item) => {
-        if (item.id !== imageId) return item;
-        return { ...item, status: statusFromAnnotations(saved) };
-      });
-      store.set("images", images);
-
       const stillOnImage = store.get("currentImage")?.id === imageId;
+      const listed = (store.get("images") || []).some((item) => item.id === imageId);
+      if (listed) {
+        setBoxCount(imageId, saved.length, saved);
+        store.set(
+          "images",
+          (store.get("images") || []).map((item) =>
+            item.id === imageId ? { ...item, status: statusFromAnnotations(saved) } : item
+          )
+        );
+      }
+
       const localUnchanged = serializeBoxes(store.get("annotations")) === snapshot;
 
       if (stillOnImage && localUnchanged) {
@@ -379,7 +385,9 @@ async function saveCurrent({ silent = false, force = false, celebrate = false } 
           selectedBoxId: selectedIndex >= 0 ? saved[selectedIndex]?.id || null : null,
           hasUnsavedChanges: false,
           saveStatus: "saved",
-          currentImage: images.find((item) => item.id === imageId) || store.get("currentImage"),
+          currentImage:
+            (store.get("images") || []).find((item) => item.id === imageId) ||
+            store.get("currentImage"),
         });
         if (celebrate) celebrateSave = true;
         updateSaveButton();
@@ -431,8 +439,13 @@ async function openImage(imageId, expectedProjectId = null) {
       return;
     }
 
+    canvas.invalidateImage();
     const detail = await api.getImage(imageId);
     if (token !== navToken) return;
+    if (projectId && store.get("currentProject")?.id !== projectId) return;
+
+    const loaded = await canvas.loadImage(api.imageFileUrl(imageId));
+    if (!loaded || token !== navToken) return;
     if (projectId && store.get("currentProject")?.id !== projectId) return;
 
     const annotations = detail.annotations || [];
@@ -454,12 +467,13 @@ async function openImage(imageId, expectedProjectId = null) {
       showMatchDebug: false,
     });
     hideQuickClassPopover();
-    await canvas.loadImage(api.imageFileUrl(imageId));
-    if (token !== navToken) return;
     updateStudioChrome();
     syncAnnotateHash(imageId);
   } catch (err) {
-    if (token === navToken) toast(err.message);
+    if (token === navToken) {
+      canvas.invalidateImage();
+      toast(err.message);
+    }
   }
 }
 
@@ -610,8 +624,8 @@ async function enterProject(route, seq) {
     replaceHash(projectPath(projectId, "data"));
   }
 
-  await loadProject(projectId);
-  if (seq !== routeSeq) return;
+  const ready = await loadProject(projectId, seq);
+  if (!ready || seq !== routeSeq) return;
 
   let nextTab = tab || "data";
   if (isClassification() && nextTab === "stream") {
@@ -898,15 +912,26 @@ function pendingFocusBox() {
   return null;
 }
 
+function rememberListedAnnotations(imageId, annotations) {
+  if (!(store.get("images") || []).some((item) => item.id === imageId)) return;
+  patchImageStatus(imageId, statusFromAnnotations(annotations));
+  setBoxCount(imageId, annotations.length, annotations);
+}
+
 async function deleteBoxById(boxId) {
   const image = store.get("currentImage");
   if (!image || !boxId) return;
+  const imageId = image.id;
   const box = (store.get("annotations") || []).find((item) => item.id === boxId);
   if (!box) return;
 
   if (box.verification_status === "PENDING_REVIEW") {
     try {
-      const remaining = await api.deleteAnnotation(image.id, box.id);
+      const remaining = await api.deleteAnnotation(imageId, box.id);
+      if (store.get("currentImage")?.id !== imageId) {
+        rememberListedAnnotations(imageId, remaining);
+        return;
+      }
       store.patch({
         annotations: remaining,
         selectedBoxId: store.get("selectedBoxId") === boxId ? null : store.get("selectedBoxId"),
@@ -914,8 +939,8 @@ async function deleteBoxById(boxId) {
         hasUnsavedChanges: false,
         saveStatus: "saved",
       });
-      patchImageStatus(image.id, statusFromAnnotations(remaining));
-      setBoxCount(image.id, remaining.length, remaining);
+      patchImageStatus(imageId, statusFromAnnotations(remaining));
+      setBoxCount(imageId, remaining.length, remaining);
       toast("Аннотация удалена");
     } catch (err) {
       toast(err.message);
@@ -923,6 +948,7 @@ async function deleteBoxById(boxId) {
     return;
   }
 
+  if (store.get("currentImage")?.id !== imageId) return;
   store.patch({
     annotations: store.get("annotations").filter((item) => item.id !== boxId),
     selectedBoxId: store.get("selectedBoxId") === boxId ? null : store.get("selectedBoxId"),
@@ -1161,11 +1187,23 @@ async function verifySelectedBox() {
   const image = store.get("currentImage");
   const box = pendingFocusBox();
   if (!image || !box) return;
+  const imageId = image.id;
+  const boxId = box.id;
   try {
-    if (store.get("selectedBoxId") !== box.id) {
-      store.set("selectedBoxId", box.id);
+    if (store.get("selectedBoxId") !== boxId) {
+      store.set("selectedBoxId", boxId);
     }
-    const verified = await api.verifyAnnotation(image.id, box.id);
+    const verified = await api.verifyAnnotation(imageId, boxId);
+    if (store.get("currentImage")?.id !== imageId) {
+      const gallery = store.get("galleryAnnotations")?.[imageId];
+      if (gallery) {
+        rememberListedAnnotations(
+          imageId,
+          gallery.map((item) => (item.id === verified.id ? verified : item))
+        );
+      }
+      return;
+    }
     const annotations = (store.get("annotations") || []).map((item) =>
       item.id === verified.id ? verified : item
     );
@@ -1175,8 +1213,8 @@ async function verifySelectedBox() {
       hasUnsavedChanges: false,
       saveStatus: "saved",
     });
-    patchImageStatus(image.id, statusFromAnnotations(annotations));
-    setBoxCount(image.id, annotations.length, annotations);
+    patchImageStatus(imageId, statusFromAnnotations(annotations));
+    setBoxCount(imageId, annotations.length, annotations);
     toast("Рамка подтверждена");
   } catch (err) {
     toast(err.message);
