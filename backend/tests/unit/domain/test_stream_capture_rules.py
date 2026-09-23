@@ -19,9 +19,9 @@ def _samples(confs: list[float], area: float = 0.04) -> list[TrackStableSample]:
     return [TrackStableSample(confidence=c, area=area) for c in confs]
 
 
-def test_class_is_allowed_accepts_all_when_filter_is_empty():
+def test_class_filter_none_means_all_and_empty_means_none():
     assert class_is_allowed(3, None) is True
-    assert class_is_allowed(3, frozenset()) is True
+    assert class_is_allowed(3, frozenset()) is False
     assert class_is_allowed(3, frozenset({1, 3})) is True
     assert class_is_allowed(2, frozenset({1, 3})) is False
 
@@ -47,6 +47,7 @@ def test_image_folder_capture_uses_class_filter_only():
     matched = detections_matching_classes(detections, frozenset({2}))
     assert [item.class_index for item in matched] == [2]
     assert detections_matching_classes(detections, frozenset({9})) == []
+    assert detections_matching_classes(detections, frozenset()) == []
 
 
 def test_size_variation_relative_span():

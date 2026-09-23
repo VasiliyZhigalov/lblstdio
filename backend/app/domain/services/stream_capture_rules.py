@@ -21,8 +21,13 @@ def class_is_allowed(
     class_index: int,
     allowed_class_indices: frozenset[int] | None,
 ) -> bool:
-    """Return whether a detection can trigger frame capture."""
-    return not allowed_class_indices or class_index in allowed_class_indices
+    """Return whether a detection can trigger frame capture.
+
+    None allows every class. An empty set allows none.
+    """
+    if allowed_class_indices is None:
+        return True
+    return class_index in allowed_class_indices
 
 
 def confidence_in_band(confidence: float, low: float, high: float) -> bool:
@@ -30,7 +35,10 @@ def confidence_in_band(confidence: float, low: float, high: float) -> bool:
 
 
 def detections_matching_classes(detections: Sequence, allowed: frozenset[int] | None) -> list:
-    """Detections that pass the class filter. Empty filter means every class."""
+    """Detections that pass the class filter.
+
+    None allows every class. An empty set allows none.
+    """
     return [item for item in detections if class_is_allowed(item.class_index, allowed)]
 
 

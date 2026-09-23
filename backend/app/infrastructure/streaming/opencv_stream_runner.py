@@ -64,7 +64,10 @@ class OpenCVStreamRunner:
         *,
         allowed_class_indices: frozenset[int] | None = None,
     ) -> None:
-        self.stop_project(stream.project_id)
+        with self._lock:
+            already_running = stream.id in self._threads
+        if already_running:
+            self.stop(stream.id)
         stop_event = threading.Event()
         ready_event = threading.Event()
         with self._lock:
@@ -431,7 +434,7 @@ class OpenCVStreamRunner:
                         prev_centers[track_id] = center
                         if ingest_in_flight or prev is None:
                             continue
-                        class_ok = allowed is None or class_index in allowed
+                        class_ok = class_is_allowed(class_index, allowed)
                         if should_capture_tripwire(
                             track_id=track_id,
                             p_prev=prev,
@@ -689,7 +692,8 @@ class FakeStreamRunner:
         *,
         allowed_class_indices: frozenset[int] | None = None,
     ) -> None:
-        self.stop_project(stream.project_id)
+        if stream.id in self._running:
+            self.stop(stream.id)
         if self.fail_start_message:
             self._status[stream.id] = StreamStatus(
                 is_running=False,

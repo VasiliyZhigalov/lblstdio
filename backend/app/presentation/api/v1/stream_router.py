@@ -217,10 +217,13 @@ async def update_stream_triggers(
     payload: StreamTriggersUpdate,
     use_case: ManageStreamSourceUseCase = Depends(get_manage_stream_source_use_case),
 ) -> StreamSourceRead:
+    updates: dict = {}
+    if "model_version_id" in payload.model_fields_set:
+        updates["model_version_id"] = payload.model_version_id
     stream = await use_case.configure_triggers(
         stream_id,
         _payload_to_config(payload.config),
-        model_version_id=payload.model_version_id,
+        **updates,
     )
     return _stream_to_read(stream)
 

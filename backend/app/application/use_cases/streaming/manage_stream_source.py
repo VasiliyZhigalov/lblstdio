@@ -26,6 +26,13 @@ _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
 _MAX_VIDEO_BYTES = 500 * 1024 * 1024
 
 
+class _KeepModel:
+    """Sentinel: configure_triggers leaves model_version_id unchanged."""
+
+
+_KEEP_MODEL = _KeepModel()
+
+
 class ManageStreamSourceUseCase:
     def __init__(
         self,
@@ -149,10 +156,16 @@ class ManageStreamSourceUseCase:
         self,
         stream_id: UUID,
         config: StreamTriggerConfig,
-        model_version_id: UUID | None = None,
+        model_version_id: UUID | None | _KeepModel = _KEEP_MODEL,
     ) -> StreamSource:
         stream = await self._require_stream(stream_id)
-        if model_version_id is not None:
+        allowed = await self._allowed_classes(stream.project_id, config)
+        if model_version_id is _KEEP_MODEL:
+            if config.timer_enabled:
+                stream.set_model(None)
+        elif model_version_id is None:
+            stream.set_model(None)
+        else:
             model = await self._models.get_by_id(model_version_id)
             if model is None or model.project_id != stream.project_id:
                 raise ResourceNotFoundException(
@@ -164,14 +177,21 @@ class ManageStreamSourceUseCase:
         await self._uow.commit()
 
         if self._runner is not None and stream.is_active:
-            allowed: frozenset[int] | None = None
-            if self._classes is not None:
-                project_classes = await self._classes.list_by_project(stream.project_id)
-                allowed = allowed_class_indices_for(config, project_classes)
             self._runner.update_triggers(
                 stream_id, config, allowed_class_indices=allowed
             )
         return stream
+
+    async def _allowed_classes(
+        self, project_id: UUID, config: StreamTriggerConfig
+    ) -> frozenset[int] | None:
+        if self._classes is None:
+            if config.tripwire_classes:
+                joined = ", ".join(str(item) for item in config.tripwire_classes)
+                raise DomainValidationException(f"unknown class ids: {joined}")
+            return None
+        project_classes = await self._classes.list_by_project(project_id)
+        return allowed_class_indices_for(config, project_classes)
 
     async def delete(self, stream_id: UUID) -> None:
         stream = await self._require_stream(stream_id)

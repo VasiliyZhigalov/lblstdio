@@ -4,6 +4,8 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.application.use_cases.streaming.manage_stream_source import ManageStreamSourceUseCase
+from app.domain.entities.annotation_class import AnnotationClass
+from app.domain.entities.model_version import ModelVersion
 from app.domain.entities.project import Project
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
@@ -40,8 +42,21 @@ class _FakeStreams:
 
 
 class _FakeModels:
+    def __init__(self, model: ModelVersion | None = None) -> None:
+        self.model = model
+
     async def get_by_id(self, version_id: UUID):
+        if self.model is not None and self.model.id == version_id:
+            return self.model
         return None
+
+
+class _FakeClasses:
+    def __init__(self, items: list[AnnotationClass] | None = None) -> None:
+        self.items = items or []
+
+    async def list_by_project(self, project_id: UUID):
+        return [item for item in self.items if item.project_id == project_id]
 
 
 class _FakeStorage:
@@ -152,3 +167,55 @@ async def test_cannot_delete_active_stream() -> None:
     streams.by_id[src.id].activate()
     with pytest.raises(DomainValidationException):
         await uc.delete(src.id)
+
+
+@pytest.mark.asyncio
+async def test_timer_only_update_clears_model_and_explicit_none_clears() -> None:
+    project = Project.create("P")
+    streams = _FakeStreams()
+    uc = ManageStreamSourceUseCase(
+        _FakeProjects(project), streams, _FakeModels(), _FakeStorage(), _FakeUow()
+    )
+    src = await uc.create_device(project.id, "Cam", 0)
+    model_id = uuid4()
+    streams.by_id[src.id].set_model(model_id)
+
+    cleared = await uc.configure_triggers(
+        src.id, StreamTriggerConfig(timer_enabled=True)
+    )
+    assert cleared.model_version_id is None
+
+    streams.by_id[src.id].set_model(model_id)
+    kept = await uc.configure_triggers(
+        src.id, StreamTriggerConfig(track_stable_enabled=True)
+    )
+    assert kept.model_version_id == model_id
+
+    explicit = await uc.configure_triggers(
+        src.id,
+        StreamTriggerConfig(track_stable_enabled=True),
+        model_version_id=None,
+    )
+    assert explicit.model_version_id is None
+
+
+@pytest.mark.asyncio
+async def test_configure_rejects_stale_class_uuid_without_saving() -> None:
+    project = Project.create("P")
+    car = AnnotationClass.create(project.id, "car", "#FFFFFF", 0)
+    streams = _FakeStreams()
+    uc = ManageStreamSourceUseCase(
+        _FakeProjects(project),
+        streams,
+        _FakeModels(),
+        _FakeStorage(),
+        _FakeUow(),
+        classes=_FakeClasses([car]),
+    )
+    src = await uc.create_device(project.id, "Cam", 0)
+    stale = uuid4()
+    with pytest.raises(DomainValidationException, match="unknown class"):
+        await uc.configure_triggers(
+            src.id, StreamTriggerConfig(tripwire_classes=(stale,))
+        )
+    assert streams.by_id[src.id].config.tripwire_classes == ()
