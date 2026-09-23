@@ -1,9 +1,15 @@
-import { store } from "../store.js";
+import { store, isClassification } from "../store.js";
 import { api } from "../api.js";
 import { escapeHtml, refreshIcons } from "../utils/dom.js";
 import { firstReviewImage } from "../utils/activeLearning.js";
-
-const BACKGROUND_FILTER = "__background__";
+import {
+  BACKGROUND_FILTER,
+  emptyGalleryFilters,
+  galleryFilterState,
+  hasActiveGalleryFilters,
+  matchesGalleryFilters,
+  parseBoxCountBound,
+} from "../utils/imageFilters.js";
 
 const STATUS_FILTERS = [
   {
@@ -26,6 +32,11 @@ const STATUS_FILTERS = [
     label: "На проверке",
     active: "border-amber-500/60 bg-amber-950/50 text-amber-100",
   },
+  {
+    id: "REQUIRES_RECHECK",
+    label: "Повторная проверка",
+    active: "border-red-500/60 bg-red-950/50 text-red-100",
+  },
 ];
 
 async function mapPool(items, limit, fn) {
@@ -44,6 +55,12 @@ async function mapPool(items, limit, fn) {
 }
 
 function statusMeta(status) {
+  if (status === "REQUIRES_RECHECK") {
+    return {
+      label: "Подозрительное",
+      badge: "bg-red-950 text-red-400 border-red-800/50",
+    };
+  }
   if (status === "AUTO_VERIFIED") {
     return {
       label: "Автоматически подтверждено",
@@ -113,10 +130,9 @@ function pruneSelection(images) {
 function clearGallerySelectionState() {
   store.patch({
     gallerySelectedIds: [],
-    galleryClassFilter: [],
-    galleryStatusFilter: [],
     imageClassIds: {},
     galleryAnnotations: {},
+    ...emptyGalleryFilters(),
   });
 }
 
@@ -226,42 +242,48 @@ function renderClassBars(classes, classCounts, backgroundFrames = 0) {
   }
 }
 
-function imageMatchesClassFilter(image, filter, imageClassIds) {
-  if (!filter.length) return true;
-  const classIds = imageClassIds[image.id] || [];
-  for (const token of filter) {
-    if (token === BACKGROUND_FILTER) {
-      if (image.is_background) return true;
-      continue;
-    }
-    if (classIds.includes(token)) return true;
-  }
-  return false;
-}
-
-function imageMatchesStatusFilter(image, filter) {
-  if (!filter.length) return true;
-  return filter.includes(image.status);
-}
-
 function filteredImages() {
-  const query = (store.get("galleryQuery") || "").trim().toLowerCase();
-  const classFilter = store.get("galleryClassFilter") || [];
-  const statusFilter = store.get("galleryStatusFilter") || [];
-  const imageClassIds = store.get("imageClassIds") || {};
-  return (store.get("images") || []).filter((image) => {
-    if (query && !(image.file_name || "").toLowerCase().includes(query)) return false;
-    if (!imageMatchesStatusFilter(image, statusFilter)) return false;
-    if (!imageMatchesClassFilter(image, classFilter, imageClassIds)) return false;
-    return true;
-  });
+  const state = galleryFilterState(store);
+  return (store.get("images") || []).filter((image) => matchesGalleryFilters(image, state));
+}
+
+function syncFilterInputs() {
+  const search = document.getElementById("gallery-search");
+  if (search && document.activeElement !== search) {
+    search.value = store.get("galleryQuery") || "";
+  }
+  const minEl = document.getElementById("gallery-box-count-min");
+  const maxEl = document.getElementById("gallery-box-count-max");
+  const min = store.get("galleryBoxCountMin");
+  const max = store.get("galleryBoxCountMax");
+  if (minEl && document.activeElement !== minEl) {
+    minEl.value = min == null ? "" : String(min);
+  }
+  if (maxEl && document.activeElement !== maxEl) {
+    maxEl.value = max == null ? "" : String(max);
+  }
+}
+
+function syncBoxCountFilterChrome() {
+  const root = document.getElementById("gallery-box-count-filter");
+  if (!root) return;
+  root.classList.toggle("hidden", isClassification());
+  const on = store.get("galleryBoxCountMin") != null || store.get("galleryBoxCountMax") != null;
+  root.className = `flex items-center gap-1 rounded-md border px-2 py-0.5 ${
+    on
+      ? "border-indigo-500/60 bg-indigo-950/50"
+      : "border-zinc-800 bg-zinc-950"
+  }${isClassification() ? " hidden" : ""}`;
 }
 
 function renderStatusFilters() {
   const root = document.getElementById("gallery-status-filters");
   if (!root) return;
   const active = new Set(store.get("galleryStatusFilter") || []);
-  root.innerHTML = STATUS_FILTERS.map((item) => {
+  const filters = isClassification()
+    ? STATUS_FILTERS.filter((item) => item.id !== "REQUIRES_RECHECK")
+    : STATUS_FILTERS;
+  root.innerHTML = filters.map((item) => {
     const on = active.has(item.id);
     return `
       <button type="button" data-gallery-status="${item.id}"
@@ -303,7 +325,7 @@ function renderClassFilters() {
       </button>`;
   });
 
-  if (backgroundFrames > 0 || active.has(BACKGROUND_FILTER)) {
+  if (!isClassification() && (backgroundFrames > 0 || active.has(BACKGROUND_FILTER))) {
     const on = active.has(BACKGROUND_FILTER);
     chips.push(`
       <button type="button" data-gallery-class="${BACKGROUND_FILTER}"
@@ -351,13 +373,31 @@ function renderGallery({ onOpenImage }) {
   const selected = selectedSet();
   empty?.classList.toggle("hidden", images.length > 0);
   grid.classList.toggle("hidden", images.length === 0);
+  if (empty) {
+    empty.textContent = hasActiveGalleryFilters(galleryFilterState(store))
+      ? "Нет кадров по текущему фильтру."
+      : "Нет кадров. Загрузите изображения.";
+  }
 
   grid.innerHTML = images
     .map((image) => {
       const meta = statusMeta(image.status);
       const boxes = counts[image.id];
       const overlayBoxes = galleryAnnotations[image.id] || [];
-      const boxLabel = typeof boxes === "number" ? `${boxes} box` : "—";
+      let extraLabel = typeof boxes === "number" ? `${boxes} box` : "—";
+      if (isClassification()) {
+        const label = image.label;
+        if (label) {
+          const cls = classes.find((item) => item.id === label.class_id);
+          const name = cls?.name || "класс";
+          extraLabel =
+            label.verification_status === "PENDING_REVIEW"
+              ? `${name} ${Math.round(Number(label.confidence || 0) * 100)}%`
+              : name;
+        } else {
+          extraLabel = "—";
+        }
+      }
       const isSelected = selected.has(image.id);
       return `
         <div data-gallery-card="${image.id}"
@@ -375,16 +415,21 @@ function renderGallery({ onOpenImage }) {
             <div class="relative aspect-video bg-zinc-950 overflow-hidden">
               <img src="${api.imageFileUrl(image.id)}" alt="" loading="lazy" decoding="async"
                 class="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition" />
-              ${galleryBboxOverlay(image, overlayBoxes, classes)}
+              ${isClassification() ? "" : galleryBboxOverlay(image, overlayBoxes, classes)}
               <div class="absolute top-2 left-2 z-[1] flex gap-1">
                 <span class="px-1.5 py-0.5 text-[10px] rounded border ${meta.badge}">${meta.label}</span>
+                ${
+                  image.split === "test"
+                    ? `<span class="px-1.5 py-0.5 text-[10px] rounded border bg-fuchsia-950 text-fuchsia-300 border-fuchsia-800/50">TEST</span>`
+                    : ""
+                }
               </div>
             </div>
             <div class="p-2.5 space-y-1">
               <div class="text-[11px] font-mono text-zinc-300 truncate" title="${escapeHtml(image.file_name)}">${escapeHtml(image.file_name)}</div>
               <div class="flex justify-between text-[10px] text-zinc-500">
                 <span>${image.width}×${image.height}</span>
-                <span>${boxLabel}</span>
+                <span>${extraLabel}</span>
               </div>
             </div>
           </button>
@@ -411,6 +456,22 @@ function renderGallery({ onOpenImage }) {
 }
 
 async function refreshClassCounts(images) {
+  if (isClassification()) {
+    const counts = {};
+    const nextImageClassIds = {};
+    for (const image of images || []) {
+      const label = image.label;
+      if (!label) continue;
+      nextImageClassIds[image.id] = [label.class_id];
+      counts[label.class_id] = (counts[label.class_id] || 0) + 1;
+    }
+    store.patch({
+      classCounts: counts,
+      imageClassIds: nextImageClassIds,
+      galleryAnnotations: {},
+    });
+    return counts;
+  }
   const targets = (images || []).filter((item) => item.status !== "UNANNOTATED");
   const counts = {};
   const nextBoxCounts = {};
@@ -510,6 +571,8 @@ async function deleteSelected({ onError, onDeleted }) {
 export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }) {
   renderSplitFilters();
   syncClassBalanceCollapsed();
+  syncFilterInputs();
+  syncBoxCountFilterChrome();
 
   document.getElementById("btn-toggle-class-balance")?.addEventListener("click", () => {
     store.set("classBalanceCollapsed", !store.get("classBalanceCollapsed"));
@@ -518,6 +581,16 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
 
   document.getElementById("gallery-search")?.addEventListener("input", (event) => {
     store.set("galleryQuery", event.target.value);
+  });
+
+  const onBoxCountInput = (key, event) => {
+    store.set(key, parseBoxCountBound(event.target.value));
+  };
+  document.getElementById("gallery-box-count-min")?.addEventListener("input", (event) => {
+    onBoxCountInput("galleryBoxCountMin", event);
+  });
+  document.getElementById("gallery-box-count-max")?.addEventListener("input", (event) => {
+    onBoxCountInput("galleryBoxCountMax", event);
   });
 
   document.getElementById("gallery-split-filters")?.addEventListener("click", (event) => {
@@ -547,11 +620,12 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
   });
 
   document.getElementById("btn-gallery-annotate-first")?.addEventListener("click", () => {
-    const first =
-      firstReviewImage(store.get("images")) ||
-      filteredImages()[0] ||
-      (store.get("images") || [])[0];
-    if (first?.status === "REQUIRES_REVIEW") {
+    const filtered = filteredImages();
+    const filtersOn = hasActiveGalleryFilters(galleryFilterState(store));
+    const first = filtersOn
+      ? filtered[0]
+      : firstReviewImage(store.get("images")) || filtered[0] || (store.get("images") || [])[0];
+    if (!filtersOn && first?.status === "REQUIRES_REVIEW") {
       store.set("filmstripFilter", "review");
     }
     onStartAnnotate?.(first?.id || null);
@@ -589,6 +663,8 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
     );
     renderClassFilters();
     renderStatusFilters();
+    syncFilterInputs();
+    syncBoxCountFilterChrome();
     renderGallery({ onOpenImage });
   };
 
@@ -604,11 +680,20 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
     if (store.get("projectTab") !== "data") return;
     renderGallery({ onOpenImage });
   });
+  const rerenderGalleryFromBoxFilter = () => {
+    syncFilterInputs();
+    syncBoxCountFilterChrome();
+    renderGallery({ onOpenImage });
+    syncSelectionBar();
+  };
+  store.addEventListener("change:galleryBoxCountMin", rerenderGalleryFromBoxFilter);
+  store.addEventListener("change:galleryBoxCountMax", rerenderGalleryFromBoxFilter);
   store.addEventListener("change:galleryAnnotations", () => {
     if (store.get("projectTab") !== "data") return;
     renderGallery({ onOpenImage });
   });
   store.addEventListener("change:galleryQuery", () => {
+    syncFilterInputs();
     renderGallery({ onOpenImage });
     syncSelectionBar();
   });
@@ -626,6 +711,8 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
   store.addEventListener("change:gallerySplit", rerender);
   store.addEventListener("change:currentProject", () => {
     clearGallerySelectionState();
+    syncFilterInputs();
+    syncBoxCountFilterChrome();
   });
 
   return {
@@ -635,6 +722,8 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
       renderStats(images);
       renderStatusFilters();
       renderClassFilters();
+      syncFilterInputs();
+      syncBoxCountFilterChrome();
       renderGallery({ onOpenImage });
       await refreshClassCounts(images);
       renderClassBars(
@@ -644,6 +733,7 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
       );
       renderStatusFilters();
       renderClassFilters();
+      syncBoxCountFilterChrome();
       renderGallery({ onOpenImage });
       refreshIcons(document.getElementById("tab-view-data"));
     },

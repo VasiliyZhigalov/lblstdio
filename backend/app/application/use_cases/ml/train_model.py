@@ -26,7 +26,7 @@ from app.application.ports.unit_of_work import IUnitOfWork
 from app.application.services.device_policy import normalize_device_request
 from app.domain.entities.model_version import ModelVersion
 from app.domain.entities.training_job import TrainingJob
-from app.domain.enums import DatasetVersionStatus, TrainingJobStatus
+from app.domain.enums import DatasetVersionStatus, ProjectTaskType, TrainingJobStatus
 from app.domain.exceptions import (
     DatasetNotReadyException,
     DomainValidationException,
@@ -44,8 +44,15 @@ _ALLOWED_PRETRAINED = frozenset(
     }
 )
 
-_ORPHAN_MESSAGE = "interrupted by server restart"
+_ALLOWED_PRETRAINED_CLS = frozenset(
+    {
+        "yolov8n-cls.pt",
+        "yolov8s-cls.pt",
+        "yolov8m-cls.pt",
+    }
+)
 _VERSION_ALLOC_ATTEMPTS = 5
+_ORPHAN_MESSAGE = "interrupted by server restart"
 
 
 class TrainModelUseCase:
@@ -80,7 +87,7 @@ class TrainModelUseCase:
         batch_size: int = 16,
         imgsz: int = 640,
         device: str = "auto",
-        base_weights: str | None = "yolov8n.pt",
+        base_weights: str | None = None,
         base_model_version_id: UUID | None = None,
         patience: int = 20,
     ) -> TrainingJob:
@@ -103,7 +110,7 @@ class TrainModelUseCase:
         self._storage.get_absolute_path(version.yaml_path)
 
         resolved_weights = await self._resolve_base_weights(
-            project_id, base_weights, base_model_version_id
+            project, base_weights, base_model_version_id
         )
         requested = normalize_device_request(device)
         if self._device_resolver is None:
@@ -133,10 +140,11 @@ class TrainModelUseCase:
 
     async def _resolve_base_weights(
         self,
-        project_id: UUID,
+        project,
         base_weights: str | None,
         base_model_version_id: UUID | None,
     ) -> str:
+        project_id = project.id
         if base_model_version_id is not None:
             if self._models is None:
                 raise DomainValidationException("model repository is not configured")
@@ -155,13 +163,25 @@ class TrainModelUseCase:
                 raise ModelWeightsMissingException(
                     f"weights file missing: {model.weights_path}"
                 )
+            classification = project.task_type == ProjectTaskType.CLASSIFICATION
+            if classification and model.top1 is None and model.map50 is not None:
+                raise DomainValidationException(
+                    "detection checkpoint cannot be used to train a classification project"
+                )
+            if not classification and model.map50 is None and model.top1 is not None:
+                raise DomainValidationException(
+                    "classification checkpoint cannot be used to train a detection project"
+                )
             return abs_path
 
-        name = (base_weights or "yolov8n.pt").strip()
-        if name not in _ALLOWED_PRETRAINED:
+        classification = project.task_type == ProjectTaskType.CLASSIFICATION
+        allowed = _ALLOWED_PRETRAINED_CLS if classification else _ALLOWED_PRETRAINED
+        default = "yolov8n-cls.pt" if classification else "yolov8n.pt"
+        name = (base_weights or default).strip()
+        if name not in allowed:
             raise DomainValidationException(
                 f"unsupported base_weights '{name}'; "
-                f"allowed: {', '.join(sorted(_ALLOWED_PRETRAINED))}"
+                f"allowed: {', '.join(sorted(allowed))}"
             )
         return name
 
@@ -281,6 +301,7 @@ class TrainingJobRunner:
             async with self._session_factory() as session:
                 jobs = SqliteTrainingJobRepository(session)
                 versions = SqliteDatasetVersionRepository(session)
+                projects_repo = SqliteProjectRepository(session)
                 uow = SqlAlchemyUnitOfWork(session)
 
                 job = await jobs.get_by_id(job_id)
@@ -299,6 +320,13 @@ class TrainingJobRunner:
                 await jobs.update(job)
                 await uow.commit()
 
+                project_for_task = await projects_repo.get_by_id(job.project_id)
+                task = (
+                    "classification"
+                    if project_for_task is not None
+                    and project_for_task.task_type == ProjectTaskType.CLASSIFICATION
+                    else "detection"
+                )
                 train_cfg = TrainingConfig(
                     data_yaml_path=self._storage.get_absolute_path(version.yaml_path),
                     output_dir=self._storage.get_absolute_path(work_rel),
@@ -308,6 +336,7 @@ class TrainingJobRunner:
                     device=self._resolve_device(job.device),
                     base_weights=job.base_weights,
                     patience=job.patience,
+                    task=task,
                 )
                 project_id = job.project_id
                 dataset_version_id = job.dataset_version_id
@@ -371,6 +400,7 @@ class TrainingJobRunner:
                 for metrics in leftover:
                     job.append_epoch_metrics(metrics)
 
+                job.test_metrics = result.test_metrics
                 if result.metrics_history:
                     known = {
                         (m.get("epoch"), m.get("map50")) for m in job.metrics_history
@@ -406,6 +436,8 @@ class TrainingJobRunner:
                         map50_95=result.map50_95,
                         precision=result.precision,
                         recall=result.recall,
+                        top1=result.top1,
+                        test_metrics=result.test_metrics,
                         name=trained_model_name(project_name, version_number),
                     )
                     try:

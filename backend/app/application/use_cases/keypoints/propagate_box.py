@@ -5,10 +5,13 @@ from app.application.dto import BoxInput, DebugArrow, PropagateBoxesResult
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
 from app.application.ports.repositories.class_repository import IClassRepository
 from app.application.ports.repositories.image_repository import IImageRepository
+from app.application.ports.repositories.project_repository import IProjectRepository
+from app.application.services.task_policy import require_task
 from app.application.ports.services.keypoint_matcher import IKeypointMatcher
 from app.application.ports.storage.file_storage import IFileStorage
 from app.application.ports.unit_of_work import IUnitOfWork
 from app.domain.entities.annotation import Annotation
+from app.domain.enums import ProjectTaskType
 from app.domain.exceptions import (
     DomainValidationException,
     KeypointMatchingFailedException,
@@ -25,6 +28,7 @@ class PropagateBoxViaKeypointsUseCase:
         storage: IFileStorage,
         matcher: IKeypointMatcher,
         uow: IUnitOfWork,
+        projects: IProjectRepository | None = None,
     ) -> None:
         self._images = images
         self._classes = classes
@@ -32,6 +36,7 @@ class PropagateBoxViaKeypointsUseCase:
         self._storage = storage
         self._matcher = matcher
         self._uow = uow
+        self._projects = projects
 
     async def execute(
         self,
@@ -67,6 +72,13 @@ class PropagateBoxViaKeypointsUseCase:
             raise DomainValidationException(
                 "source and target images must belong to the same project"
             )
+        if self._projects is not None:
+            project = await self._projects.get_by_id(target.project_id)
+            if project is None:
+                raise ResourceNotFoundException(
+                    f"project {target.project_id} not found"
+                )
+            require_task(project, ProjectTaskType.DETECTION)
 
         project_classes = await self._classes.list_by_project(target.project_id)
         known_ids = {item.id for item in project_classes}

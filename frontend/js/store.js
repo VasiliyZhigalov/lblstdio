@@ -79,12 +79,15 @@ export const store = new Store({
   gallerySelectedIds: [], // selected image ids in Data Hub
   galleryClassFilter: [], // class ids and/or '__background__' (OR)
   galleryStatusFilter: [], // 'UNANNOTATED' | 'VERIFIED' | 'REQUIRES_REVIEW' (OR)
+  galleryBoxCountMin: null, // inclusive min boxes, or null
+  galleryBoxCountMax: null, // inclusive max boxes, or null
   selectedBoxId: null,
   hoveredBoxId: null,
   activeClassId: null,
   classes: [],
   mode: "DRAW", // 'SELECT' | 'DRAW'
-  filmstripFilter: "all", // 'all' | 'review' | 'unannotated'
+  filmstripFilter: "all", // 'all' | 'review' | 'unannotated' | 'auto_verified'
+  zoomLocked: false,
   filmstripQuery: "",
   galleryQuery: "",
   gallerySplit: "all", // 'all' | 'train' | 'valid' | 'test'
@@ -102,3 +105,7 @@ export const store = new Store({
   rightSidebarCollapsed: false,
   quickClassOpen: false,
 });
+
+export function isClassification() {
+  return store.get("currentProject")?.task_type === "CLASSIFICATION";
+}

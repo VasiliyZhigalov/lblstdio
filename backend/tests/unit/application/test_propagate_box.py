@@ -9,11 +9,19 @@ from app.application.use_cases.keypoints.propagate_box import (
 from app.domain.entities.annotation import Annotation
 from app.domain.entities.annotation_class import AnnotationClass
 from app.domain.entities.image import Image
-from app.domain.enums import ImageStatus, SourceType, SplitType, VerificationStatus
+from app.domain.entities.project import Project
+from app.domain.enums import (
+    ImageStatus,
+    ProjectTaskType,
+    SourceType,
+    SplitType,
+    VerificationStatus,
+)
 from app.domain.exceptions import (
     DomainValidationException,
     KeypointMatchingFailedException,
     ResourceNotFoundException,
+    TaskTypeMismatchException,
 )
 from app.domain.value_objects.bounding_box import BoundingBox
 
@@ -138,10 +146,19 @@ def _image(project_id: UUID, name: str = "a.png") -> Image:
     )
 
 
+class _FakeProjects:
+    def __init__(self, project: Project) -> None:
+        self.project = project
+
+    async def get_by_id(self, project_id: UUID) -> Project | None:
+        return self.project if self.project.id == project_id else None
+
+
 def _setup(
     matcher: _FakeMatcher,
     *,
     with_donor: bool = True,
+    projects: _FakeProjects | None = None,
 ) -> tuple[
     PropagateBoxViaKeypointsUseCase,
     Image,
@@ -173,6 +190,7 @@ def _setup(
         storage=_FakeStorage(),
         matcher=matcher,
         uow=uow,
+        projects=projects,
     )
     return use_case, source, target, annotation_class, annotations, uow, donor
 
@@ -301,5 +319,27 @@ class TestPropagateBoxViaKeypointsUseCase:
             )
 
         assert matcher.calls == []
+        assert repo.replace_calls == 0
+        assert uow.committed is False
+
+    @pytest.mark.asyncio
+    async def test_rejected_on_classification_project(self) -> None:
+        matcher = _FakeMatcher(
+            result=ProjectedBox(
+                bbox=BoundingBox(0.5, 0.5, 0.2, 0.1), match_score=1.0
+            )
+        )
+        project = Project.create("Cls", task_type=ProjectTaskType.CLASSIFICATION)
+        use_case, source, target, annotation_class, repo, uow, donor = _setup(
+            matcher, projects=_FakeProjects(project)
+        )
+        project.id = source.project_id
+        assert donor is not None
+        with pytest.raises(TaskTypeMismatchException):
+            await use_case.execute(
+                source_image_id=source.id,
+                target_image_id=target.id,
+                source_box=_source_box(annotation_class.id, donor.id),
+            )
         assert repo.replace_calls == 0
         assert uow.committed is False

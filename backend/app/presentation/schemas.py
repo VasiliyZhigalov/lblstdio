@@ -3,10 +3,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.domain.enums import ProjectTaskType
+
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1)
     description: str | None = None
+    task_type: ProjectTaskType = ProjectTaskType.DETECTION
 
 
 class ProjectUpdate(BaseModel):
@@ -18,6 +21,7 @@ class ProjectRead(BaseModel):
     id: UUID
     name: str
     description: str | None
+    task_type: ProjectTaskType = ProjectTaskType.DETECTION
     created_at: datetime
     updated_at: datetime
 
@@ -39,6 +43,25 @@ class ClassRead(BaseModel):
     index_id: int
 
 
+class ImageLabelRead(BaseModel):
+    id: UUID
+    image_id: UUID
+    class_id: UUID
+    source: str
+    confidence: float
+    verification_status: str
+    verified_at: datetime | None = None
+    model_version_id: UUID | None = None
+
+
+class ImageLabelAssign(BaseModel):
+    class_id: UUID
+
+
+class ImageHoldoutRequest(BaseModel):
+    holdout: bool
+
+
 class ImageRead(BaseModel):
     id: UUID
     project_id: UUID
@@ -51,6 +74,7 @@ class ImageRead(BaseModel):
     source_type: str
     created_at: datetime
     is_background: bool = False
+    label: ImageLabelRead | None = None
 
 
 class BoxPayload(BaseModel):
@@ -154,9 +178,14 @@ class AugmentationConfigPayload(BaseModel):
 class CreateDatasetVersionRequest(BaseModel):
     name: str | None = None
     augmentation: AugmentationConfigPayload | None = None
-    train: float = Field(default=0.7, ge=0.0, le=1.0)
+    train: float = Field(default=0.8, ge=0.0, le=1.0)
     valid: float = Field(default=0.2, ge=0.0, le=1.0)
-    test: float = Field(default=0.1, ge=0.0, le=1.0)
+    test: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Ignored. Test images are pinned manually and stay out of train/valid.",
+    )
 
 
 class DatasetVersionRead(BaseModel):
@@ -189,8 +218,8 @@ class TrainModelRequest(BaseModel):
         pattern=r"^(?i)(auto|cpu|cuda|gpu|cuda:\d+|\d+)$",
     )
     base_weights: str | None = Field(
-        default="yolov8n.pt",
-        description="Pretrained checkpoint name, e.g. yolov8n.pt",
+        default=None,
+        description="Pretrained checkpoint name, e.g. yolov8n.pt or yolov8n-cls.pt",
     )
     base_model_version_id: UUID | None = Field(
         default=None,
@@ -214,6 +243,7 @@ class TrainingJobRead(BaseModel):
     stopped_early: bool = False
     progress_percent: float
     metrics_history: list[dict] = Field(default_factory=list)
+    test_metrics: dict | None = None
     model_version_id: UUID | None = None
     error_message: str | None = None
     created_at: datetime
@@ -244,6 +274,8 @@ class ModelVersionRead(BaseModel):
     map50_95: float | None = None
     precision: float | None = None
     recall: float | None = None
+    top1: float | None = None
+    test_metrics: dict | None = None
     is_active_for_stream: bool = False
     display_name: str
     created_at: datetime
@@ -273,12 +305,44 @@ class AutoLabelJobRead(BaseModel):
     finished_at: datetime | None = None
 
 
+class AnnotationAuditRequest(BaseModel):
+    image_ids: list[UUID] | None = None
+    max_images: int = Field(default=32, ge=1, le=128)
+    confidence_threshold: float = Field(default=0.5, ge=0.01, le=0.99)
+    iou_threshold: float = Field(default=0.5, ge=0.01, le=0.99)
+
+
+class AnnotationAuditImageRead(BaseModel):
+    image_id: UUID
+    suspicious: bool
+    reasons: list[str]
+    annotation_count: int
+    prediction_count: int
+    minimum_iou: float | None = None
+    minimum_confidence: float | None = None
+
+
+class AnnotationAuditTaskRead(BaseModel):
+    id: UUID
+    project_id: UUID
+    model_version_id: UUID
+    status: str
+    total_images: int
+    processed_images: int
+    suspicious_images: int
+    error_message: str | None = None
+    created_at: datetime
+    finished_at: datetime | None = None
+
+
 class StreamTriggerConfigPayload(BaseModel):
     track_stable_enabled: bool = True
     track_stable_min_frames: int = Field(default=12, ge=2)
     track_stable_max_size_variation: float = Field(default=0.35, ge=0)
     track_stable_min_avg_conf: float = Field(default=0.75, gt=0, le=1)
     track_stable_interval_seconds: float = Field(default=5.0, gt=0)
+    confidence_min: float = Field(default=0.25, ge=0, le=1)
+    confidence_max: float = Field(default=1.0, ge=0, le=1)
     timer_enabled: bool = False
     timer_interval_seconds: float = Field(default=5.0, gt=0)
     tripwire_enabled: bool = False
@@ -302,6 +366,11 @@ class StreamRtspCreate(BaseModel):
 class StreamDeviceCreate(BaseModel):
     name: str = Field(min_length=1)
     device_index: int = Field(default=0, ge=0)
+
+
+class StreamImageFolderCreate(BaseModel):
+    name: str = Field(min_length=1)
+    folder_path: str = Field(min_length=1)
 
 
 class StreamSourceRead(BaseModel):

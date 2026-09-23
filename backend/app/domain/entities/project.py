@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from app.domain.enums import ProjectTaskType
 from app.domain.exceptions import DomainValidationException
 
 _UNSET = object()
@@ -16,6 +17,7 @@ class Project:
     description: str | None
     created_at: datetime
     updated_at: datetime
+    task_type: ProjectTaskType = ProjectTaskType.DETECTION
 
     def __post_init__(self) -> None:
         self.name = self.name.strip()
@@ -28,6 +30,7 @@ class Project:
         name: str,
         description: str | None = None,
         project_id: UUID | None = None,
+        task_type: ProjectTaskType = ProjectTaskType.DETECTION,
     ) -> Project:
         now = datetime.now(UTC)
         return cls(
@@ -36,6 +39,7 @@ class Project:
             description=description,
             created_at=now,
             updated_at=now,
+            task_type=task_type,
         )
 
     def rename(

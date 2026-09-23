@@ -9,7 +9,8 @@ from app.domain.value_objects.bounding_box import BoundingBox
 @dataclass(frozen=True)
 class UploadedFile:
     filename: str
-    content: bytes
+    content: bytes = b""
+    body_path: str | None = None
 
 
 @dataclass(frozen=True)

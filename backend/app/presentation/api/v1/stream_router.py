@@ -25,6 +25,7 @@ from app.presentation.dependencies import (
 )
 from app.presentation.schemas import (
     StreamDeviceCreate,
+    StreamImageFolderCreate,
     StreamRtspCreate,
     StreamSourceRead,
     StreamStatusRead,
@@ -45,6 +46,8 @@ def _config_to_payload(config: StreamTriggerConfig) -> StreamTriggerConfigPayloa
         track_stable_max_size_variation=config.track_stable_max_size_variation,
         track_stable_min_avg_conf=config.track_stable_min_avg_conf,
         track_stable_interval_seconds=config.track_stable_interval_seconds,
+        confidence_min=config.confidence_min,
+        confidence_max=config.confidence_max,
         timer_enabled=config.timer_enabled,
         timer_interval_seconds=config.timer_interval_seconds,
         tripwire_enabled=config.tripwire_enabled,
@@ -83,6 +86,8 @@ def _payload_to_config(payload: StreamTriggerConfigPayload) -> StreamTriggerConf
         track_stable_max_size_variation=payload.track_stable_max_size_variation,
         track_stable_min_avg_conf=payload.track_stable_min_avg_conf,
         track_stable_interval_seconds=payload.track_stable_interval_seconds,
+        confidence_min=payload.confidence_min,
+        confidence_max=payload.confidence_max,
         timer_enabled=payload.timer_enabled,
         timer_interval_seconds=payload.timer_interval_seconds,
         tripwire_enabled=payload.tripwire_enabled,
@@ -128,6 +133,47 @@ async def create_device_stream(
     use_case: ManageStreamSourceUseCase = Depends(get_manage_stream_source_use_case),
 ) -> StreamSourceRead:
     stream = await use_case.create_device(project_id, payload.name, payload.device_index)
+    return _stream_to_read(stream)
+
+
+@router.post(
+    "/projects/{project_id}/streams/image-folder",
+    response_model=StreamSourceRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_image_folder_stream(
+    project_id: UUID,
+    payload: StreamImageFolderCreate,
+    use_case: ManageStreamSourceUseCase = Depends(get_manage_stream_source_use_case),
+) -> StreamSourceRead:
+    stream = await use_case.create_image_folder(
+        project_id, payload.name, payload.folder_path
+    )
+    return _stream_to_read(stream)
+
+
+@router.post(
+    "/projects/{project_id}/streams/image-folder/pick",
+    response_model=StreamSourceRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def pick_image_folder_stream(
+    project_id: UUID,
+    use_case: ManageStreamSourceUseCase = Depends(get_manage_stream_source_use_case),
+) -> StreamSourceRead | Response:
+    from app.infrastructure.system.folder_dialog import ask_image_folder
+
+    try:
+        folder_path = await asyncio.to_thread(ask_image_folder)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Не удалось открыть окно выбора папки",
+        ) from exc
+    if not folder_path:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    name = folder_path.rstrip("\\/").split("\\")[-1].split("/")[-1] or "Папка"
+    stream = await use_case.create_image_folder(project_id, name, folder_path)
     return _stream_to_read(stream)
 
 

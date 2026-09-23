@@ -1,3 +1,4 @@
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -121,6 +122,27 @@ async def test_create_rtsp_rejects_metadata_host() -> None:
     uc, project, _, _ = _uc()
     with pytest.raises(DomainValidationException):
         await uc.create_rtsp(project.id, "bad", "rtsp://169.254.169.254/latest")
+
+
+@pytest.mark.asyncio
+async def test_create_image_folder_stores_absolute_path(tmp_path: Path) -> None:
+    (tmp_path / "b.jpg").write_bytes(b"b")
+    (tmp_path / "a.png").write_bytes(b"a")
+    uc, project, _, _ = _uc()
+    src = await uc.create_image_folder(project.id, "Stills", str(tmp_path))
+    assert src.source_type == StreamSourceType.IMAGE_FOLDER
+    assert Path(src.source_uri) == tmp_path.resolve()
+
+
+@pytest.mark.asyncio
+async def test_create_image_folder_rejects_empty_or_missing(tmp_path: Path) -> None:
+    uc, project, _, _ = _uc()
+    with pytest.raises(DomainValidationException):
+        await uc.create_image_folder(project.id, "Missing", str(tmp_path / "nope"))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(DomainValidationException):
+        await uc.create_image_folder(project.id, "Empty", str(empty))
 
 
 @pytest.mark.asyncio

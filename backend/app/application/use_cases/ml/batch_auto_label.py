@@ -15,16 +15,30 @@ from app.application.ports.repositories.auto_label_job_repository import (
     IAutoLabelJobRepository,
 )
 from app.application.ports.repositories.class_repository import IClassRepository
+from app.application.ports.repositories.image_label_repository import IImageLabelRepository
 from app.application.ports.repositories.image_repository import IImageRepository
 from app.application.ports.repositories.model_version_repository import (
     IModelVersionRepository,
 )
-from app.application.ports.services.model_predictor import Detection, IModelPredictor
+from app.application.ports.repositories.project_repository import IProjectRepository
+from app.application.ports.services.model_predictor import (
+    Classification,
+    Detection,
+    IClassificationPredictor,
+    IModelPredictor,
+)
 from app.application.ports.storage.file_storage import IFileStorage
 from app.application.ports.unit_of_work import IUnitOfWork
 from app.domain.entities.annotation import Annotation
 from app.domain.entities.auto_label_job import AutoLabelJob
-from app.domain.enums import AutoLabelJobStatus, ImageStatus, VerificationStatus
+from app.domain.entities.image_label import ImageLabel
+from app.domain.enums import (
+    AutoLabelJobStatus,
+    ImageStatus,
+    ProjectTaskType,
+    VerificationStatus,
+)
+from app.domain.services.class_dir_name import class_dir_name, require_unique_class_dirs
 from app.domain.services.augmentation_consistency import (
     all_runs_are_consistent,
     transform_center_scale,
@@ -107,6 +121,10 @@ class BatchAutoLabelUseCase:
         predictor: IModelPredictor,
         uow: IUnitOfWork,
         runner: AutoLabelJobRunner | None = None,
+        *,
+        projects: IProjectRepository | None = None,
+        labels: IImageLabelRepository | None = None,
+        classification_predictor: IClassificationPredictor | None = None,
     ) -> None:
         self._models = models
         self._images = images
@@ -117,6 +135,9 @@ class BatchAutoLabelUseCase:
         self._predictor = predictor
         self._uow = uow
         self._runner = runner
+        self._projects = projects
+        self._labels = labels
+        self._classification_predictor = classification_predictor
 
     async def execute(
         self,
@@ -219,7 +240,17 @@ class BatchAutoLabelUseCase:
         await self._jobs.update(job)
         await self._uow.commit()
 
+        is_classification = False
+        if self._projects is not None:
+            project = await self._projects.get_by_id(job.project_id)
+            if project is not None:
+                is_classification = project.task_type == ProjectTaskType.CLASSIFICATION
+
         try:
+            if is_classification:
+                return await self._process_classification(
+                    job, model, selected, weights_abs
+                )
             classes = await self._classes.list_by_project(job.project_id)
             class_by_index = {item.index_id: item for item in classes}
             abs_paths = [
@@ -343,6 +374,96 @@ class BatchAutoLabelUseCase:
             )
         return result
 
+    async def _process_classification(
+        self,
+        job: AutoLabelJob,
+        model,
+        selected,
+        weights_abs: str,
+    ) -> AutoLabelJob:
+        if self._classification_predictor is None or self._labels is None:
+            raise DomainValidationException(
+                "classification predictor is not configured"
+            )
+
+        classes = await self._classes.list_by_project(job.project_id)
+        require_unique_class_dirs([item.name for item in classes])
+        by_folder = {class_dir_name(item.name): item for item in classes}
+        model_names = await anyio.to_thread.run_sync(
+            self._classification_predictor.class_names,
+            weights_abs,
+        )
+        model_folders = {str(name) for name in model_names.values()}
+        if model_folders != set(by_folder):
+            raise DomainValidationException(
+                f"model classes {sorted(model_folders)} do not match "
+                f"project classes {sorted(by_folder)}"
+            )
+
+        existing = await self._labels.list_by_image_ids([item.id for item in selected])
+        by_image = {label.image_id: label for label in existing}
+        skip_statuses = {
+            VerificationStatus.VERIFIED,
+            VerificationStatus.AUTO_VERIFIED,
+        }
+        to_predict = [
+            image
+            for image in selected
+            if by_image.get(image.id) is None
+            or by_image[image.id].verification_status not in skip_statuses
+        ]
+        if not to_predict:
+            job.mark_completed(0, 0)
+            await self._jobs.update(job)
+            await self._uow.commit()
+            return job
+
+        abs_paths = [
+            self._storage.get_absolute_path(item.file_path) for item in to_predict
+        ]
+        predictions = await anyio.to_thread.run_sync(
+            self._classification_predictor.predict,
+            weights_abs,
+            abs_paths,
+            job.confidence_threshold,
+        )
+
+        total_predictions = 0
+        for image in to_predict:
+            abs_path = self._storage.get_absolute_path(image.file_path)
+            classification = predictions.get(abs_path)
+            if (
+                not isinstance(classification, Classification)
+                or classification.confidence < job.confidence_threshold
+            ):
+                if image.id in by_image:
+                    await self._labels.delete_by_image_id(image.id)
+                    image.recalculate_status_from_label(None)
+                    await self._images.update(image)
+                continue
+            folder = model_names.get(classification.class_index)
+            cls = by_folder.get(str(folder)) if folder is not None else None
+            if cls is None:
+                raise DomainValidationException(
+                    f"predicted class_index {classification.class_index} "
+                    "is not in the project"
+                )
+            label = ImageLabel.create_prediction(
+                image_id=image.id,
+                class_id=cls.id,
+                confidence=classification.confidence,
+                model_version_id=model.id,
+            )
+            await self._labels.upsert(label)
+            image.recalculate_status_from_label(label)
+            await self._images.update(image)
+            total_predictions += 1
+
+        job.mark_completed(len(to_predict), total_predictions)
+        await self._jobs.update(job)
+        await self._uow.commit()
+        return job
+
 
 class GetAutoLabelJobUseCase:
     def __init__(self, jobs: IAutoLabelJobRepository) -> None:
@@ -365,10 +486,12 @@ class AutoLabelJobRunner:
         predictor: IModelPredictor,
         *,
         max_concurrent: int = 1,
+        classification_predictor: IClassificationPredictor | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._storage = storage
         self._predictor = predictor
+        self._classification_predictor = classification_predictor
         self._sem = asyncio.Semaphore(max(1, max_concurrent))
         self._tasks: set[asyncio.Task] = set()
 
@@ -416,8 +539,14 @@ class AutoLabelJobRunner:
         from app.infrastructure.db.repositories.image_repository import (
             SqliteImageRepository,
         )
+        from app.infrastructure.db.repositories.image_label_repository import (
+            SqliteImageLabelRepository,
+        )
         from app.infrastructure.db.repositories.model_version_repository import (
             SqliteModelVersionRepository,
+        )
+        from app.infrastructure.db.repositories.project_repository import (
+            SqliteProjectRepository,
         )
         from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 
@@ -431,6 +560,9 @@ class AutoLabelJobRunner:
                 self._storage,
                 self._predictor,
                 SqlAlchemyUnitOfWork(session),
+                projects=SqliteProjectRepository(session),
+                labels=SqliteImageLabelRepository(session),
+                classification_predictor=self._classification_predictor,
             )
             try:
                 await use_case.process_job(job_id)

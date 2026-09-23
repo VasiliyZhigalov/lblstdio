@@ -4,7 +4,9 @@ from app.domain.enums import TripwireDirection
 from app.domain.services.stream_capture_rules import (
     TrackStableSample,
     best_confidence_index,
-  class_is_allowed,
+    class_is_allowed,
+    confidence_in_band,
+    detections_matching_classes,
     is_track_series_stable,
     should_capture_track_stable,
     should_capture_tripwire,
@@ -22,6 +24,29 @@ def test_class_is_allowed_accepts_all_when_filter_is_empty():
     assert class_is_allowed(3, frozenset()) is True
     assert class_is_allowed(3, frozenset({1, 3})) is True
     assert class_is_allowed(2, frozenset({1, 3})) is False
+
+
+class _Det:
+    def __init__(self, class_index: int) -> None:
+        self.class_index = class_index
+
+
+def test_confidence_band_is_inclusive():
+    assert confidence_in_band(0.25, 0.25, 0.8) is True
+    assert confidence_in_band(0.8, 0.25, 0.8) is True
+    assert confidence_in_band(0.24, 0.25, 0.8) is False
+    assert confidence_in_band(0.81, 0.25, 0.8) is False
+
+
+def test_image_folder_capture_uses_class_filter_only():
+    detections = [_Det(0), _Det(2)]
+    assert [item.class_index for item in detections_matching_classes(detections, None)] == [
+        0,
+        2,
+    ]
+    matched = detections_matching_classes(detections, frozenset({2}))
+    assert [item.class_index for item in matched] == [2]
+    assert detections_matching_classes(detections, frozenset({9})) == []
 
 
 def test_size_variation_relative_span():

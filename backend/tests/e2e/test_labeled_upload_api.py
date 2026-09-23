@@ -62,6 +62,44 @@ class TestLabeledUploadApi:
         classes = client.get(f"/api/v1/projects/{project_id}/classes").json()
         assert any(item["name"] == "crack" for item in classes)
 
+    def test_folder_upload_reads_classes_from_meta_files(self, client: TestClient) -> None:
+        project_id = client.post("/api/v1/projects", json={"name": "Meta"}).json()["id"]
+        response = client.post(
+            f"/api/v1/projects/{project_id}/images/upload",
+            files=[
+                ("files", ("a.jpg", _png((10, 20, 30)), "image/jpeg")),
+                ("files", ("a.txt", b"0 0.5 0.5 0.2 0.2\n", "text/plain")),
+                (
+                    "files",
+                    ("data.yaml", b"nc: 1\nnames:\n0: shifted\n", "application/yaml"),
+                ),
+                ("files", ("classes.txt", b"l_front_blizhniy\n", "text/plain")),
+                (
+                    "files",
+                    (
+                        "notes.json",
+                        b'{"categories":[{"id":0,"name":"from_json"}]}',
+                        "application/json",
+                    ),
+                ),
+            ],
+            data={
+                "relative_paths": [
+                    "images/a.jpg",
+                    "labels/a.txt",
+                    "data.yaml",
+                    "classes.txt",
+                    "notes.json",
+                ]
+            },
+        )
+        assert response.status_code == 201, response.text
+        classes = client.get(f"/api/v1/projects/{project_id}/classes").json()
+        names = {item["name"] for item in classes}
+        assert "l_front_blizhniy" in names
+        assert "shifted" not in names
+        assert "from_json" not in names
+
     def test_folder_upload_uses_relative_paths_when_filename_is_basename(
         self, client: TestClient
     ) -> None:
@@ -132,6 +170,12 @@ class TestLabeledUploadApi:
         assert upload.status_code == 201, upload.text
         assert all(item["status"] == "VERIFIED" for item in upload.json())
         assert all(item["split"] == "train" for item in upload.json())
+        pinned = upload.json()[-1]
+        held = client.put(
+            f"/api/v1/images/{pinned['id']}/holdout",
+            json={"holdout": True},
+        )
+        assert held.status_code == 200, held.text
 
         version = client.post(
             f"/api/v1/projects/{project_id}/dataset-versions",
@@ -148,3 +192,57 @@ class TestLabeledUploadApi:
         assert payload["train_count"] == 7
         assert payload["valid_count"] == 2
         assert payload["test_count"] == 1
+
+    def test_upload_openapi_describes_multipart(self, client: TestClient) -> None:
+        schema = client.get("/openapi.json").json()
+        operation = schema["paths"]["/api/v1/projects/{project_id}/images/upload"]["post"]
+        body = operation["requestBody"]["content"]["multipart/form-data"]["schema"]
+        assert "files" in body["properties"]
+        assert "relative_paths" in body["properties"]
+
+    def test_upload_passes_multipart_limits(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from starlette.requests import Request
+
+        from app.application.use_cases.images.upload_images import (
+            MAX_UPLOAD_FILES,
+            MAX_UPLOAD_ZIP_BYTES,
+        )
+
+        seen: dict[str, object] = {}
+        original = Request.form
+
+        def wrapped(self, *args, **kwargs):
+            seen["kwargs"] = kwargs
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Request, "form", wrapped)
+        project_id = client.post("/api/v1/projects", json={"name": "Limits"}).json()["id"]
+        response = client.post(
+            f"/api/v1/projects/{project_id}/images/upload",
+            files=[("files", ("a.png", _png(), "image/png"))],
+        )
+        assert response.status_code == 201, response.text
+        kwargs = seen["kwargs"]
+        assert kwargs["max_files"] == MAX_UPLOAD_FILES
+        assert kwargs["max_fields"] == MAX_UPLOAD_FILES + 16
+        assert kwargs["max_part_size"] == MAX_UPLOAD_ZIP_BYTES
+
+    def test_multipart_file_limit_is_unprocessable(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "app.presentation.api.v1.images_router.MAX_UPLOAD_FILES",
+            2,
+        )
+        project_id = client.post("/api/v1/projects", json={"name": "Cap"}).json()["id"]
+        response = client.post(
+            f"/api/v1/projects/{project_id}/images/upload",
+            files=[
+                ("files", (f"{index}.png", _png(), "image/png"))
+                for index in range(3)
+            ],
+        )
+        assert response.status_code == 422, response.text
+        assert "Too many files" in response.text

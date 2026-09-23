@@ -14,6 +14,7 @@ class TrainingConfig:
     device: str = "cpu"
     base_weights: str = "yolov8n.pt"
     patience: int = 20
+    task: str = "detection"
 
 
 @dataclass
@@ -24,6 +25,8 @@ class TrainingResult:
     map50_95: float | None = None
     precision: float | None = None
     recall: float | None = None
+    top1: float | None = None
+    test_metrics: dict[str, Any] | None = None
     stopped_early: bool = False
     epochs_trained: int | None = None
 

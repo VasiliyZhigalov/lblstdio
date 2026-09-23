@@ -34,6 +34,7 @@ class SqliteProjectRepository(IProjectRepository):
         row.name = project.name
         row.description = project.description
         row.updated_at = project.updated_at
+        row.task_type = project.task_type.value
         await self._session.flush()
 
     async def delete(self, project_id: UUID) -> None:

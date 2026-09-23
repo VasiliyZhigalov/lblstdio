@@ -17,6 +17,7 @@ class VerificationStatus(str, Enum):
 class ImageStatus(str, Enum):
     UNANNOTATED = "UNANNOTATED"
     REQUIRES_REVIEW = "REQUIRES_REVIEW"
+    REQUIRES_RECHECK = "REQUIRES_RECHECK"
     VERIFIED = "VERIFIED"
     AUTO_VERIFIED = "AUTO_VERIFIED"
     REJECTED = "REJECTED"
@@ -54,13 +55,26 @@ class AutoLabelJobStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class AnnotationAuditJobStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 class StreamSourceType(str, Enum):
     RTSP = "RTSP"
     VIDEO_FILE = "VIDEO_FILE"
     DEVICE = "DEVICE"
+    IMAGE_FOLDER = "IMAGE_FOLDER"
 
 
 class TripwireDirection(str, Enum):
     ANY = "ANY"
     FORWARD = "FORWARD"
     BACKWARD = "BACKWARD"
+
+
+class ProjectTaskType(str, Enum):
+    DETECTION = "DETECTION"
+    CLASSIFICATION = "CLASSIFICATION"

@@ -32,3 +32,7 @@ class DatasetNotReadyException(DomainValidationException):
 
 class ModelWeightsMissingException(DomainValidationException):
     """Raised when model weights file is missing on disk."""
+
+
+class TaskTypeMismatchException(DomainError):
+    """Raised when an operation does not apply to the project's task type."""

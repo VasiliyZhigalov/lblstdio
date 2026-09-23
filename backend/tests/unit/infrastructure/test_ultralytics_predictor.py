@@ -2,6 +2,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.infrastructure.ml.ultralytics_predictor import UltralyticsPredictor
 
 
@@ -98,3 +100,34 @@ def test_predictor_passes_iou_threshold_to_yolo(tmp_path, monkeypatch) -> None:
 
     UltralyticsPredictor().predict("w.pt", [str(img)], 0.25, iou_threshold=0.4)
     assert calls == [{"source": [str(img)], "conf": 0.25, "iou": 0.4, "verbose": False}]
+
+
+def test_classification_predictor_returns_top1(tmp_path, monkeypatch) -> None:
+    img = tmp_path / "frame.jpg"
+    img.write_bytes(b"x")
+
+    result = SimpleNamespace(
+        path=str(img),
+        probs=SimpleNamespace(top1=1, top1conf=0.87),
+    )
+
+    class _YOLO:
+        names = {0: "ok", 1: "defect"}
+
+        def __init__(self, _weights: str) -> None:
+            pass
+
+        def predict(self, source, verbose=False):
+            return [result]
+
+    monkeypatch.setitem(__import__("sys").modules, "ultralytics", MagicMock(YOLO=_YOLO))
+
+    from app.infrastructure.ml.ultralytics_predictor import (
+        UltralyticsClassificationPredictor,
+    )
+
+    predictor = UltralyticsClassificationPredictor()
+    assert predictor.class_names("w.pt") == {0: "ok", 1: "defect"}
+    out = predictor.predict("w.pt", [str(img)], 0.5)
+    assert out[str(img)].class_index == 1
+    assert out[str(img)].confidence == pytest.approx(0.87)

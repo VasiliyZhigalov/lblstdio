@@ -134,6 +134,15 @@
                 <i data-lucide="download" class="w-3.5 h-3.5"></i>
                 <span class="hidden sm:inline">Экспорт YOLO</span>
               </button>
+              <button
+                type="button"
+                id="btn-export-crops"
+                class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700"
+                title="Скачать кропы подтверждённых боксов по классам"
+              >
+                <i data-lucide="image" class="w-3.5 h-3.5"></i>
+                <span class="hidden sm:inline">Кропы</span>
+              </button>
             </div>
             <div id="shell-actions-annotate" class="hidden flex items-center gap-2">
               <button
@@ -372,6 +381,14 @@
               <button id="tool-fit" class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" title="Fit (F)">
                 <i data-lucide="maximize" class="w-4 h-4"></i>
               </button>
+              <button
+                id="tool-lock-zoom"
+                class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400"
+                title="Сохранять масштаб между кадрами"
+                type="button"
+              >
+                <i data-lucide="lock" class="w-4 h-4"></i>
+              </button>
               <button id="tool-toggle-hide" class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" title="Скрыть/показать рамки (H)">
                 <i data-lucide="eye" class="w-4 h-4"></i>
               </button>
@@ -442,11 +459,23 @@
                   >
                     Бэкграунд
                   </button>
+                  <button
+                    id="btn-mark-test"
+                    type="button"
+                    title="Закрепить кадр как тестовый: модель на нём не учится, после обучения по нему считается качество"
+                    class="px-2 py-1 text-xs rounded text-zinc-200 hover:bg-zinc-800 border border-zinc-700"
+                  >
+                    Тест
+                  </button>
                 </div>
               </div>
 
               <div id="canvas-container" class="flex-1 relative overflow-hidden bg-canvas">
                 <canvas id="annotation-canvas"></canvas>
+                <div
+                  id="cls-label-overlay"
+                  class="hidden absolute top-3 left-3 z-20 max-w-[70%] rounded-md border border-amber-700/60 bg-zinc-950/85 px-2.5 py-1.5 text-xs text-amber-100"
+                ></div>
                 <div
                   id="matching-overlay"
                   class="hidden absolute inset-0 z-30 flex items-center justify-center bg-zinc-950/40"
@@ -503,9 +532,12 @@
                     id="review-bar"
                     class="hidden flex items-center gap-2 px-2 py-1 rounded-md border border-amber-700/50 bg-amber-950/40"
                   >
-                    <span class="text-[11px] text-amber-200 whitespace-nowrap"
-                      >На проверке: <span id="pending-count">0</span></span
+                    <span
+                      class="text-[11px] text-amber-200 whitespace-nowrap"
+                      id="review-bar-label"
+                      >На проверке:</span
                     >
+                    <span id="pending-count" class="text-[11px] text-amber-200 font-mono">0</span>
                     <button
                       id="btn-approve-all"
                       type="button"
@@ -722,6 +754,12 @@
                       <span class="text-[10px] text-zinc-500">Загрузить видео</span>
                       <input id="stream-video-input" type="file" accept=".mp4,.avi,.mov,.mkv,video/*" class="mt-1 block w-full text-[10px] text-zinc-400" />
                     </label>
+                    <label class="block">
+                      <span class="text-[10px] text-zinc-500">Папка с изображениями</span>
+                      <input id="stream-image-folder-path" type="text" placeholder="C:\path\to\images" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px] font-mono" />
+                    </label>
+                    <button id="btn-stream-add-image-folder" type="button" class="w-full px-2 py-1 text-[11px] rounded-md border border-zinc-700 hover:bg-zinc-800">Добавить папку</button>
+                    <p class="text-[10px] text-zinc-500">Кнопка открывает окно выбора папки на этом компьютере. Либо вставьте путь и нажмите Enter. Берутся jpg, png и webp, включая вложенные каталоги.</p>
                   </div>
                 </div>
                 <div class="rounded-lg border border-indigo-800/60 bg-indigo-950/20 p-2">
@@ -729,13 +767,13 @@
                   <p class="text-[10px] text-zinc-400 mb-1.5">Выберите простой способ для начала или режим с распознаванием объектов.</p>
                   <select id="stream-capture-mode" class="w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1.5 text-[11px]">
                     <option value="TIMER">По таймеру — без нейросети</option>
-                    <option value="AI">По объектам и линии — с нейросетью</option>
+                    <option value="AI">По объектам — с нейросетью</option>
                   </select>
                   <div id="stream-timer-settings" class="mt-2 rounded border border-emerald-800/60 bg-emerald-950/20 p-2">
                     <label class="block text-[10px] text-zinc-300">Сохранять один кадр каждые (сек)
                       <input id="stream-timer-interval" type="number" min="0.5" step="0.5" value="5" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
                     </label>
-                    <p class="text-[10px] text-emerald-300/80 mt-1">Модель не нужна. Кадры попадут в очередь на проверку.</p>
+                    <p class="text-[10px] text-emerald-300/80 mt-1">Модель не нужна. Кадры попадут в неразмеченные.</p>
                   </div>
                 </div>
                 <div>
@@ -746,11 +784,24 @@
                 <div>
                   <h3 class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">Условия захвата</h3>
                   <p id="stream-capture-help" class="text-[10px] text-zinc-500 mb-2">В режиме с нейросетью ниже можно настроить фильтр классов и способ подтверждения объекта.</p>
-                  <div class="rounded-md border border-cyan-800/60 bg-cyan-950/20 p-2 mb-2">
+                  <div id="stream-class-filter" class="rounded-md border border-cyan-800/60 bg-cyan-950/20 p-2 mb-2">
                     <div class="text-[11px] font-medium text-cyan-200">Фильтр классов</div>
                     <p class="text-[10px] text-zinc-400 mt-1">Кадр сохраняется, только если найден хотя бы один выбранный класс. Пусто — разрешены все.</p>
                     <div id="stream-tripwire-classes" class="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-1 max-h-24 overflow-y-auto"></div>
                   </div>
+                  <div id="stream-confidence-band" class="rounded-md border border-amber-800/50 bg-amber-950/20 p-2 mb-2">
+                    <div class="text-[11px] font-medium text-amber-200">Порог уверенности</div>
+                    <p class="text-[10px] text-zinc-400 mt-1">Детекция учитывается, только если уверенность между нижним и верхним порогом.</p>
+                    <div class="mt-1.5 grid grid-cols-2 gap-2">
+                      <label class="block text-[10px] text-zinc-400">Снизу
+                        <input id="stream-conf-min" type="number" min="0" max="1" step="0.05" value="0.25" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
+                      </label>
+                      <label class="block text-[10px] text-zinc-400">Сверху
+                        <input id="stream-conf-max" type="number" min="0" max="1" step="0.05" value="1" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
+                      </label>
+                    </div>
+                  </div>
+                  <div id="stream-track-stable-settings">
                   <label class="flex items-center gap-2 text-[11px] text-zinc-200 mb-1.5">
                     <input id="stream-track-stable-enabled" type="checkbox" class="rounded border-zinc-600" checked />
                     Стабильный трек
@@ -767,6 +818,8 @@
                   <label class="block text-[10px] text-zinc-400 mb-2">Интервал на трек (сек)
                     <input id="stream-track-stable-interval" type="number" min="0.5" step="0.5" value="5" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
                   </label>
+                  </div>
+                  <div id="stream-tripwire-settings">
                   <label class="flex items-center gap-2 text-[11px] text-zinc-200 mb-1.5">
                     <input id="stream-tripwire-enabled" type="checkbox" class="rounded border-zinc-600" />
                     Захват по пересечению линии
@@ -778,13 +831,15 @@
                       <option value="BACKWARD">BACKWARD</option>
                     </select>
                   </label>
+                  </div>
+                  <p id="stream-folder-capture-note" class="hidden text-[10px] text-zinc-500 mb-2">Для папки с изображениями стабильный трек не используется: кадр сохраняется, если модель нашла выбранный класс.</p>
                   <button id="btn-stream-save-triggers" type="button" class="mt-2 w-full px-2 py-1.5 text-[11px] rounded-md bg-indigo-700 hover:bg-indigo-600 text-white">Сохранить настройки</button>
                 </div>
               </aside>
             </div>
             <div class="flex items-center justify-between px-4 py-2.5 border-t border-zinc-800 bg-zinc-950 text-xs text-zinc-300">
               <span>Очередь сбора: захвачено со стрима <strong id="stream-captured-count" class="text-white font-mono">0</strong> кадров</span>
-              <button id="btn-stream-goto-review" type="button" class="text-emerald-400 hover:text-emerald-300">Перейти к верификации в Студию →</button>
+              <button id="btn-stream-goto-review" type="button" class="text-emerald-400 hover:text-emerald-300">Перейти к неразмеченным в Студию →</button>
             </div>
           </div>
         </div>
@@ -806,14 +861,15 @@
           >
             <i data-lucide="image-plus" class="w-8 h-8 mx-auto mb-2 text-zinc-500"></i>
             <p>Перетащите изображения, YOLO labels или zip (Roboflow)</p>
+            <p class="text-[11px] text-zinc-500 mt-1">до 5000 файлов, zip до 512 МБ; классы из data.yaml / classes.txt / notes.json</p>
             <p class="text-[11px] text-zinc-500 mt-1">или выберите файлы / папку ниже</p>
           </div>
           <div class="flex gap-2">
             <button id="btn-upload-files" type="button" class="px-2.5 py-1.5 text-[11px] rounded border border-zinc-700 hover:bg-zinc-800 text-zinc-300">Файлы</button>
             <button id="btn-upload-folder" type="button" class="px-2.5 py-1.5 text-[11px] rounded border border-zinc-700 hover:bg-zinc-800 text-zinc-300">Папка</button>
           </div>
-          <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,.txt,.yaml,.yml,.zip" multiple class="sr-only" />
-          <input id="folder-input" type="file" webkitdirectory directory multiple class="sr-only" />
+          <input id="file-input" type="file" multiple tabindex="-1" class="pointer-events-none absolute h-px w-px opacity-0" />
+          <input id="folder-input" type="file" webkitdirectory directory multiple tabindex="-1" class="pointer-events-none absolute h-px w-px opacity-0" />
           <div id="file-count" class="text-xs text-zinc-500"></div>
           <div class="h-2 rounded-full bg-zinc-800 overflow-hidden">
             <div id="upload-progress" class="h-full w-0 bg-indigo-500 transition-[width]"></div>
@@ -841,6 +897,17 @@
           placeholder="Описание (необязательно)"
           class="w-full bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-sm resize-none"
         ></textarea>
+        <fieldset id="project-task-type-fieldset" class="space-y-1">
+          <legend class="text-xs text-zinc-400">Тип</legend>
+          <label class="text-xs flex items-center gap-2 text-zinc-200">
+            <input type="radio" name="project-task-type" value="DETECTION" checked />
+            Детекция
+          </label>
+          <label class="text-xs flex items-center gap-2 text-zinc-200">
+            <input type="radio" name="project-task-type" value="CLASSIFICATION" />
+            Классификация
+          </label>
+        </fieldset>
         <div class="flex justify-end gap-2">
           <button type="button" id="btn-cancel-project" class="px-3 py-1.5 text-xs rounded-md border border-zinc-700">Отмена</button>
           <button type="submit" id="project-submit-btn" class="px-3 py-1.5 text-xs rounded-md bg-indigo-600 hover:bg-indigo-500">Создать</button>
@@ -922,20 +989,18 @@
             </label>
             <p id="ds-summary" class="text-xs text-zinc-300"></p>
             <div class="space-y-3 text-xs">
-              <div class="text-[11px] uppercase tracking-wide text-zinc-500">Train / Valid / Test</div>
+              <div class="text-[11px] uppercase tracking-wide text-zinc-500">Train / Valid</div>
+              <p class="text-[11px] text-zinc-500">Тестовые кадры задаются вручную и в это деление не входят.</p>
               <div>
-                <div class="flex justify-between mb-1"><span>Train</span><span id="ds-split-train-val">70%</span></div>
-                <input id="ds-split-train" type="range" min="0" max="100" value="70" class="w-full" />
+                <div class="flex justify-between mb-1"><span>Train</span><span id="ds-split-train-val">80%</span></div>
+                <input id="ds-split-train" type="range" min="5" max="95" value="80" class="w-full" />
               </div>
               <div>
                 <div class="flex justify-between mb-1"><span>Valid</span><span id="ds-split-valid-val">20%</span></div>
-                <input id="ds-split-valid" type="range" min="0" max="100" value="20" class="w-full" />
-              </div>
-              <div>
-                <div class="flex justify-between mb-1"><span>Test</span><span id="ds-split-test-val">10%</span></div>
-                <input id="ds-split-test" type="range" min="0" max="100" value="10" class="w-full" />
+                <input id="ds-split-valid" type="range" min="5" max="95" value="20" class="w-full" />
               </div>
             </div>
+            <div id="dataset-aug-block" class="space-y-4">
             <div class="grid grid-cols-2 gap-3">
               <label class="block space-y-1">
                 <span class="text-[11px] uppercase tracking-wide text-zinc-500">Resize W</span>
@@ -1001,6 +1066,7 @@
               <input id="ds-multiplier" type="range" min="1" max="5" step="1" value="3" class="w-full" />
               <p id="ds-aug-forecast" class="text-[11px] text-zinc-400"></p>
             </label>
+            </div>
             <div id="dataset-building" class="hidden flex items-center gap-2 text-xs text-indigo-300">
               <i data-lucide="loader-circle" class="w-4 h-4 animate-spin"></i>
               Сборка версии…
@@ -1106,12 +1172,13 @@
             <canvas id="chart-loss" width="360" height="120" class="w-full bg-zinc-900 rounded border border-zinc-800"></canvas>
           </div>
           <div>
-            <div class="text-[11px] uppercase text-zinc-500 mb-1">mAP@50</div>
+            <div id="chart-map-title" class="text-[11px] uppercase text-zinc-500 mb-1">mAP@50</div>
             <canvas id="chart-map" width="360" height="120" class="w-full bg-zinc-900 rounded border border-zinc-800"></canvas>
           </div>
           <div id="train-complete-badge" class="hidden rounded-lg border border-emerald-800/60 bg-emerald-950/40 px-3 py-3 space-y-2">
             <div class="text-sm font-semibold text-emerald-200">Обучение завершено</div>
             <div id="train-final-score" class="text-xs text-zinc-300"></div>
+            <div id="train-test-score" class="text-xs text-fuchsia-200"></div>
             <button id="btn-use-model-autolabel" type="button" class="w-full px-3 py-2 text-xs rounded-md bg-amber-700 hover:bg-amber-600 text-white">
               Использовать модель для авторазметки
             </button>
@@ -1146,6 +1213,7 @@
               Все найденные объекты получат статус «на проверке».
             </p>
           </label>
+          <div id="autolabel-iou-fields" class="space-y-4">
           <label class="block space-y-2">
             <div class="flex justify-between text-xs text-zinc-300">
               <span>NMS IoU (подавление дублей)</span>
@@ -1167,6 +1235,7 @@
               Детекция будет автоматически подтверждена только при совпадении боксов после отражения и масштабирования.
             </p>
           </label>
+          </div>
           <label class="flex items-center gap-2 text-xs text-zinc-200">
             <input id="autolabel-all-unannotated" type="checkbox" class="rounded border-zinc-600" checked />
             Все неразмеченные кадры (иначе — только текущий)

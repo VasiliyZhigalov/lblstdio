@@ -3,8 +3,9 @@ import { api } from "../api.js";
 
 const IMAGE_RE = /\.(jpe?g|png|webp)$/i;
 const LABEL_RE = /\.txt$/i;
-const META_RE = /(^|[/\\])(data\.ya?ml|classes\.txt)$/i;
+const META_RE = /(^|[/\\])(data\.ya?ml|classes\.txt|notes\.json)$/i;
 const ZIP_RE = /\.zip$/i;
+const MAX_UPLOAD_FILES = 5000;
 
 function showModal(el, visible) {
   el.classList.toggle("hidden", !visible);
@@ -12,7 +13,32 @@ function showModal(el, visible) {
 }
 
 function filePath(file) {
-  return (file.webkitRelativePath || file.name || "").replace(/\\/g, "/");
+  return (file.relativePath || file.webkitRelativePath || file.name || "").replace(/\\/g, "/");
+}
+
+function pickerCancelled(err) {
+  return err?.name === "AbortError";
+}
+
+async function collectDirectoryFiles(directory) {
+  const files = [];
+
+  async function walk(handle, prefix) {
+    for await (const entry of handle.values()) {
+      if (files.length > MAX_UPLOAD_FILES) return;
+      const relative = `${prefix}/${entry.name}`;
+      if (entry.kind === "directory") {
+        await walk(entry, relative);
+        continue;
+      }
+      const file = await entry.getFile();
+      file.relativePath = relative;
+      if (isAcceptedFile(file)) files.push(file);
+    }
+  }
+
+  await walk(directory, directory.name);
+  return files;
 }
 
 function isAcceptedFile(file) {
@@ -53,7 +79,14 @@ export function initUploadModal({ onUploaded, onError }) {
   let files = [];
 
   function setFiles(list) {
-    files = [...list].filter(isAcceptedFile);
+    const accepted = [...list].filter(isAcceptedFile);
+    if (accepted.length > MAX_UPLOAD_FILES) {
+      files = [];
+      fileCount.textContent = `Слишком много файлов: максимум ${MAX_UPLOAD_FILES}`;
+      onError(`Можно загрузить не больше ${MAX_UPLOAD_FILES} файлов за раз`);
+      return;
+    }
+    files = accepted;
     fileCount.textContent = summarize(files);
   }
 
@@ -71,15 +104,36 @@ export function initUploadModal({ onUploaded, onError }) {
     dropzone.classList.remove("dropzone-active");
   }
 
-  function openFilePicker(event) {
-    event?.preventDefault?.();
+  async function openFilePicker(event) {
     event?.stopPropagation?.();
-    fileInput.click();
+    if (typeof window.showOpenFilePicker === "function") {
+      try {
+        const handles = await window.showOpenFilePicker({ multiple: true });
+        const picked = [];
+        for (const handle of handles) picked.push(await handle.getFile());
+        setFiles(picked);
+        if (folderInput) folderInput.value = "";
+      } catch (err) {
+        if (!pickerCancelled(err)) onError(err.message || "Не удалось открыть файлы");
+      }
+      return;
+    }
+    fileInput?.click();
   }
 
-  function openFolderPicker(event) {
-    event?.preventDefault?.();
+  async function openFolderPicker(event) {
     event?.stopPropagation?.();
+    if (typeof window.showDirectoryPicker === "function") {
+      try {
+        const directory = await window.showDirectoryPicker();
+        fileCount.textContent = "Чтение папки…";
+        setFiles(await collectDirectoryFiles(directory));
+        fileInput.value = "";
+      } catch (err) {
+        if (!pickerCancelled(err)) onError(err.message || "Не удалось открыть папку");
+      }
+      return;
+    }
     if (!folderInput) {
       onError("Выбор папки не поддерживается в этом браузере");
       return;

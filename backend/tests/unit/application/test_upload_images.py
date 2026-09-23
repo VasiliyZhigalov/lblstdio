@@ -8,8 +8,12 @@ from app.domain.entities.annotation import Annotation
 from app.domain.entities.annotation_class import AnnotationClass
 from app.domain.entities.image import Image
 from app.domain.entities.project import Project
-from app.domain.enums import ImageStatus, SplitType, VerificationStatus
-from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
+from app.domain.enums import ImageStatus, ProjectTaskType, SplitType, VerificationStatus
+from app.domain.exceptions import (
+    DomainValidationException,
+    ResourceNotFoundException,
+    TaskTypeMismatchException,
+)
 
 
 class _FakeStorage:
@@ -160,6 +164,39 @@ class TestUploadImagesUseCase:
         assert len(images.updated) >= 2
 
     @pytest.mark.asyncio
+    async def test_classification_upload_rejects_yolo_labels(self) -> None:
+        project = Project.create("Cls", task_type=ProjectTaskType.CLASSIFICATION)
+        use_case, _images, _metadata, uow, _project, annotations, class_repo = _use_case(
+            project
+        )
+        with pytest.raises(TaskTypeMismatchException):
+            await use_case.execute(
+                project.id,
+                [
+                    UploadedFile(filename="a.jpg", content=b"img-a"),
+                    UploadedFile(filename="a.txt", content=b"0 0.5 0.5 0.2 0.2\n"),
+                    UploadedFile(filename="data.yaml", content=b"names: [crack]\n"),
+                ],
+            )
+        assert annotations.replaced == {}
+        assert class_repo.classes == []
+        assert uow.committed is False
+
+    @pytest.mark.asyncio
+    async def test_classification_upload_allows_plain_images(self) -> None:
+        project = Project.create("Cls", task_type=ProjectTaskType.CLASSIFICATION)
+        use_case, _images, _metadata, uow, _project, annotations, _class_repo = _use_case(
+            project
+        )
+        result = await use_case.execute(
+            project.id,
+            [UploadedFile(filename="plain.jpg", content=b"img")],
+        )
+        assert result[0].status == ImageStatus.UNANNOTATED
+        assert annotations.replaced == {}
+        assert uow.committed is True
+
+    @pytest.mark.asyncio
     async def test_reuses_existing_class_by_name(self) -> None:
         project = Project.create("Demo")
         existing = AnnotationClass.create(
@@ -263,6 +300,100 @@ class TestUploadImagesUseCase:
                 [UploadedFile(filename="big.png", content=b"0123456789")],
             )
         assert uow.committed is False
+
+    @pytest.mark.asyncio
+    async def test_allows_zip_larger_than_image_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+        import zipfile
+
+        from app.application.use_cases.images import upload_images as upload_mod
+
+        monkeypatch.setattr(upload_mod, "MAX_UPLOAD_BYTES", 8)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("cat.png", b"image-bytes")
+            archive.writestr("data.yaml", b"names: [cat]\n")
+        payload = buf.getvalue()
+        assert len(payload) > 8
+        monkeypatch.setattr(upload_mod, "MAX_UPLOAD_ZIP_BYTES", len(payload) + 8)
+        use_case, images, _, uow, project, *_ = _use_case()
+        result = await use_case.execute(
+            project.id,
+            [UploadedFile(filename="bundle.zip", content=payload)],
+        )
+        assert len(result) == 1
+        assert images.added == result
+        assert uow.committed is True
+
+    @pytest.mark.asyncio
+    async def test_rejects_oversized_zip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.application.use_cases.images import upload_images as upload_mod
+
+        monkeypatch.setattr(upload_mod, "MAX_UPLOAD_ZIP_BYTES", 8)
+        use_case, _, _, uow, project, *_ = _use_case()
+        with pytest.raises(DomainValidationException, match="size"):
+            await use_case.execute(
+                project.id,
+                [UploadedFile(filename="big.zip", content=b"0123456789")],
+            )
+        assert uow.committed is False
+
+    @pytest.mark.asyncio
+    async def test_reads_image_bytes_from_body_path(self, tmp_path) -> None:
+        image_path = tmp_path / "a.png"
+        image_path.write_bytes(b"from-disk")
+        use_case, images, metadata, uow, project, *_ = _use_case()
+        result = await use_case.execute(
+            project.id,
+            [UploadedFile(filename="shots/a.png", body_path=str(image_path))],
+        )
+        assert len(result) == 1
+        assert metadata.seen == [b"from-disk"]
+        assert images.added == result
+        assert uow.committed is True
+
+    @pytest.mark.asyncio
+    async def test_rejects_too_many_files(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.application.use_cases.images import upload_images as upload_mod
+
+        monkeypatch.setattr(upload_mod, "MAX_UPLOAD_FILES", 2)
+        use_case, _, _, uow, project, *_ = _use_case()
+        with pytest.raises(DomainValidationException, match="too many files"):
+            await use_case.execute(
+                project.id,
+                [
+                    UploadedFile(filename="a.png", content=b"one"),
+                    UploadedFile(filename="b.png", content=b"two"),
+                    UploadedFile(filename="c.png", content=b"three"),
+                ],
+            )
+        assert uow.committed is False
+
+    @pytest.mark.asyncio
+    async def test_imports_classes_from_classes_txt_when_yaml_names_missing(
+        self,
+    ) -> None:
+        use_case, _, _, uow, project, annotations, class_repo = _use_case()
+        result = await use_case.execute(
+            project.id,
+            [
+                UploadedFile(filename="images/a.jpg", content=b"img"),
+                UploadedFile(filename="labels/a.txt", content=b"0 0.5 0.5 0.1 0.1\n"),
+                UploadedFile(
+                    filename="data.yaml",
+                    content=b"nc: 1\nnames:\n0: shifted\n",
+                ),
+                UploadedFile(filename="classes.txt", content=b"lamp\n"),
+            ],
+        )
+        assert any(item.name == "lamp" for item in class_repo.classes)
+        assert not any(item.name == "shifted" for item in class_repo.classes)
+        assert annotations.replaced[result[0].id][0].class_id == next(
+            item.id for item in class_repo.classes if item.name == "lamp"
+        )
+        assert uow.committed is True
 
     @pytest.mark.asyncio
     async def test_rejects_unknown_class_index(self) -> None:

@@ -75,13 +75,41 @@ class SnapshotAnnotation:
         )
 
 
+@dataclass(frozen=True)
+class SnapshotClassLabel:
+    class_id: UUID
+    class_index: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "class_id": str(self.class_id),
+            "class_index": self.class_index,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> SnapshotClassLabel:
+        return cls(
+            class_id=UUID(str(raw["class_id"])),
+            class_index=int(raw["class_index"]),
+        )
+
+
+SnapshotEntry = SnapshotAnnotation | SnapshotClassLabel
+
+
+def snapshot_entry_from_dict(raw: dict[str, Any]) -> SnapshotEntry:
+    if "x_center" in raw:
+        return SnapshotAnnotation.from_dict(raw)
+    return SnapshotClassLabel.from_dict(raw)
+
+
 @dataclass
 class DatasetItem:
     id: UUID
     dataset_version_id: UUID
     image_id: UUID
     split: SplitType
-    snapshot_annotations: list[SnapshotAnnotation]
+    snapshot_annotations: list[SnapshotEntry]
     source_file_name: str
 
     def snapshot_as_dicts(self) -> list[dict[str, Any]]:

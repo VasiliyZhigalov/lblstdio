@@ -3,6 +3,7 @@ from uuid import UUID
 from app.application.ports.repositories.project_repository import IProjectRepository
 from app.application.ports.unit_of_work import IUnitOfWork
 from app.domain.entities.project import Project
+from app.domain.enums import ProjectTaskType
 from app.domain.exceptions import ResourceNotFoundException
 
 
@@ -11,8 +12,13 @@ class CreateProjectUseCase:
         self._projects = projects
         self._uow = uow
 
-    async def execute(self, name: str, description: str | None = None) -> Project:
-        project = Project.create(name=name, description=description)
+    async def execute(
+        self,
+        name: str,
+        description: str | None = None,
+        task_type: ProjectTaskType = ProjectTaskType.DETECTION,
+    ) -> Project:
+        project = Project.create(name=name, description=description, task_type=task_type)
         await self._projects.add(project)
         await self._uow.commit()
         return project

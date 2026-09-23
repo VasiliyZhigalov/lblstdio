@@ -2,10 +2,12 @@ from uuid import UUID
 
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
 from app.application.ports.repositories.class_repository import IClassRepository
+from app.application.ports.repositories.image_label_repository import IImageLabelRepository
 from app.application.ports.repositories.image_repository import IImageRepository
 from app.application.ports.repositories.project_repository import IProjectRepository
 from app.application.ports.unit_of_work import IUnitOfWork
-from app.domain.exceptions import ResourceNotFoundException
+from app.domain.enums import ProjectTaskType
+from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
 from app.domain.services.class_index import compact_indices
 
 
@@ -17,12 +19,14 @@ class DeleteClassUseCase:
         uow: IUnitOfWork,
         images: IImageRepository,
         annotations: IAnnotationRepository,
+        labels: IImageLabelRepository | None = None,
     ) -> None:
         self._projects = projects
         self._classes = classes
         self._uow = uow
         self._images = images
         self._annotations = annotations
+        self._labels = labels
 
     async def execute(self, class_id: UUID, project_id: UUID | None = None) -> None:
         annotation_class = await self._classes.get_by_id(class_id)
@@ -40,9 +44,24 @@ class DeleteClassUseCase:
         if compacted:
             await self._classes.update_many(compacted)
 
-        for image in await self._images.list_by_project(owner_id):
-            boxes = await self._annotations.list_by_image(image.id)
-            image.recalculate_status(boxes)
-            await self._images.update(image)
+        owner = await self._projects.get_by_id(owner_id)
+        images = await self._images.list_by_project(owner_id)
+        if owner is not None and owner.task_type == ProjectTaskType.CLASSIFICATION:
+            if self._labels is None:
+                raise DomainValidationException(
+                    "image label repository is not configured"
+                )
+            for image in images:
+                label = await self._labels.get_by_image_id(image.id)
+                if label is not None and label.class_id == class_id:
+                    await self._labels.delete_by_image_id(image.id)
+                    label = None
+                image.recalculate_status_from_label(label)
+                await self._images.update(image)
+        else:
+            for image in images:
+                boxes = await self._annotations.list_by_image(image.id)
+                image.recalculate_status(boxes)
+                await self._images.update(image)
 
         await self._uow.commit()

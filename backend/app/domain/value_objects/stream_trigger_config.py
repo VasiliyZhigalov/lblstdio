@@ -20,6 +20,8 @@ class StreamTriggerConfig:
     track_stable_max_size_variation: float = 0.35
     track_stable_min_avg_conf: float = 0.75
     track_stable_interval_seconds: float = 5.0
+    confidence_min: float = 0.25
+    confidence_max: float = 1.0
     timer_enabled: bool = False
     timer_interval_seconds: float = 5.0
     tripwire_enabled: bool = False
@@ -43,6 +45,10 @@ class StreamTriggerConfig:
         if self.track_stable_interval_seconds <= 0:
             raise DomainValidationException(
                 "track_stable_interval_seconds must be > 0"
+            )
+        if not 0.0 <= self.confidence_min <= self.confidence_max <= 1.0:
+            raise DomainValidationException(
+                "confidence band must satisfy 0 <= min <= max <= 1"
             )
         if self.timer_interval_seconds <= 0:
             raise DomainValidationException("timer_interval_seconds must be > 0")

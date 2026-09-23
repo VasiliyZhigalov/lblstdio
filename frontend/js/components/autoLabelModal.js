@@ -42,6 +42,8 @@ export function initAutoLabelModal({
       return;
     }
     preferredModelId = modelId;
+    const classification = project.task_type === "CLASSIFICATION";
+    document.getElementById("autolabel-iou-fields")?.classList.toggle("hidden", classification);
     showModal(modal, true);
     refreshIcons();
     try {
@@ -102,12 +104,15 @@ export function initAutoLabelModal({
     progressText.textContent = "Постановка в очередь…";
     try {
       onStarted?.();
+      const classification = project.task_type === "CLASSIFICATION";
       const body = {
         confidence_threshold: conf,
-        iou_threshold: iou,
-        consistency_iou_threshold: consistencyIou,
         all_unannotated: allUnannotated,
       };
+      if (!classification) {
+        body.iou_threshold = iou;
+        body.consistency_iou_threshold = consistencyIou;
+      }
       if (!allUnannotated) {
         const current = getCurrentImage?.();
         if (!current?.id) {
@@ -132,16 +137,19 @@ export function initAutoLabelModal({
         return;
       }
       const preds = job.total_predictions_generated || 0;
+      const unit = classification ? "меток" : "объектов";
       if (preds === 0) {
-        progressText.textContent = `Готово: ${job.total_images_processed} кадров, 0 объектов. Попробуйте снизить порог (сейчас ${conf.toFixed(2)}).`;
+        progressText.textContent = `Готово: ${job.total_images_processed} кадров, 0 ${unit}. Попробуйте снизить порог (сейчас ${conf.toFixed(2)}).`;
         onDone?.(job, {
           empty: true,
-          message: `Модель не нашла объектов при пороге ${conf.toFixed(2)}. Снизьте Confidence (для текущей модели часто нужно ≤0.05).`,
+          message: classification
+            ? `Модель не присвоила класс при пороге ${conf.toFixed(2)}. Снизьте Confidence.`
+            : `Модель не нашла объектов при пороге ${conf.toFixed(2)}. Снизьте Confidence (для текущей модели часто нужно ≤0.05).`,
         });
         progress?.classList.add("hidden");
         return;
       }
-      progressText.textContent = `Готово: ${job.total_images_processed} кадров, ${preds} объектов`;
+      progressText.textContent = `Готово: ${job.total_images_processed} кадров, ${preds} ${unit}`;
       onDone?.(job);
       setTimeout(close, 700);
     } catch (err) {

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from uuid import UUID, uuid4
 
 from app.application.ports.repositories.class_repository import IClassRepository
@@ -18,6 +18,7 @@ from app.application.use_cases.streaming.control_stream import allowed_class_ind
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
+from app.domain.services.image_folder import list_image_files
 from app.domain.services.rtsp_url import validate_rtsp_url
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
 
@@ -75,6 +76,33 @@ class ManageStreamSourceUseCase:
             name=name,
             source_type=StreamSourceType.DEVICE,
             source_uri=str(device_index),
+        )
+        await self._streams.add(stream)
+        await self._uow.commit()
+        return stream
+
+    async def create_image_folder(
+        self, project_id: UUID, name: str, folder_path: str
+    ) -> StreamSource:
+        await self._require_project(project_id)
+        raw = folder_path.strip().strip('"').strip("'")
+        if not raw:
+            raise DomainValidationException("Укажите путь к папке")
+        try:
+            resolved = Path(raw).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise DomainValidationException(f"Папка не найдена: {raw}") from exc
+        if not resolved.is_dir():
+            raise DomainValidationException("Укажите путь к папке, а не к файлу")
+        if not list_image_files(resolved):
+            raise DomainValidationException(
+                "В папке нет изображений jpg, png или webp"
+            )
+        stream = StreamSource.create(
+            project_id=project_id,
+            name=name,
+            source_type=StreamSourceType.IMAGE_FOLDER,
+            source_uri=str(resolved),
         )
         await self._streams.add(stream)
         await self._uow.commit()

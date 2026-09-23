@@ -20,6 +20,7 @@ _DATASET_VERSION_COLUMNS = (
 _TRAINING_JOB_COLUMNS = (
     ("patience", "INTEGER NOT NULL DEFAULT 20"),
     ("stopped_early", "INTEGER NOT NULL DEFAULT 0"),
+    ("test_metrics", "TEXT"),
 )
 
 _IMAGE_COLUMNS = (
@@ -28,6 +29,12 @@ _IMAGE_COLUMNS = (
 
 _MODEL_VERSION_COLUMNS = (
     ("name", "TEXT NOT NULL DEFAULT ''"),
+    ("top1", "FLOAT"),
+    ("test_metrics", "TEXT"),
+)
+
+_PROJECT_COLUMNS = (
+    ("task_type", "VARCHAR(32) NOT NULL DEFAULT 'DETECTION'"),
 )
 
 _AUTO_LABEL_JOB_COLUMNS = (
@@ -63,6 +70,7 @@ def _ensure_sqlite_columns(connection) -> None:
     _ensure_table_columns(connection, "images", _IMAGE_COLUMNS)
     _ensure_table_columns(connection, "model_versions", _MODEL_VERSION_COLUMNS)
     _ensure_table_columns(connection, "auto_label_jobs", _AUTO_LABEL_JOB_COLUMNS)
+    _ensure_table_columns(connection, "projects", _PROJECT_COLUMNS)
     _ensure_model_versions_nullable_fks(connection)
 
 
@@ -107,6 +115,8 @@ def _ensure_model_versions_nullable_fks(connection) -> None:
             map50_95 FLOAT,
             precision FLOAT,
             recall FLOAT,
+            top1 FLOAT,
+            test_metrics TEXT,
             is_active_for_stream INTEGER NOT NULL DEFAULT 0,
             created_at DATETIME NOT NULL,
             PRIMARY KEY (id),
@@ -120,12 +130,12 @@ def _ensure_model_versions_nullable_fks(connection) -> None:
         INSERT INTO model_versions__nullable (
             id, project_id, dataset_version_id, training_job_id, version_number,
             name, weights_path, map50, map50_95, precision, recall,
-            is_active_for_stream, created_at
+            top1, test_metrics, is_active_for_stream, created_at
         )
         SELECT
             id, project_id, dataset_version_id, training_job_id, version_number,
             COALESCE(name, ''), weights_path, map50, map50_95, precision, recall,
-            is_active_for_stream, created_at
+            NULL, NULL, is_active_for_stream, created_at
         FROM model_versions
         """
     )

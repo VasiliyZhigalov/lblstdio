@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { isClassification } from "../store.js";
 import { escapeHtml, formatRelative, refreshIcons, showModal } from "../utils/dom.js";
 
 function pct(value) {
@@ -15,6 +16,17 @@ function weightsLabel(path) {
   if (!path) return "yolov8n";
   const base = String(path).split(/[/\\]/).pop() || path;
   return base;
+}
+
+function formatTestLine(model, classification) {
+  const metrics = model.test_metrics;
+  if (!metrics) return "Тест: —";
+  if (classification && metrics.top1 != null) return `Тест Top-1 ${formatPct(metrics.top1)}`;
+  if (metrics.map50 != null) {
+    return `Тест mAP@50 ${formatPct(metrics.map50)} · P ${formatPct(metrics.precision)} · R ${formatPct(metrics.recall)}`;
+  }
+  if (metrics.top1 != null) return `Тест Top-1 ${formatPct(metrics.top1)}`;
+  return "Тест: —";
 }
 
 function metricBar(map50) {
@@ -200,7 +212,10 @@ function renderModels(models, handlers) {
 
   grid.innerHTML = models
     .map((model) => {
-      const map50 = formatPct(model.map50);
+      const classification = isClassification();
+      const metricLabel = classification ? "Top-1" : "mAP@50";
+      const metricValue = classification ? formatPct(model.top1) : formatPct(model.map50);
+      const metricBarValue = classification ? model.top1 : model.map50;
       return `
         <article class="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 space-y-2">
           <div class="flex items-center justify-between gap-2 min-w-0">
@@ -212,18 +227,23 @@ function renderModels(models, handlers) {
           </div>
           <div>
             <div class="flex justify-between text-[10px]">
-              <span class="text-zinc-400">mAP@50</span>
-              <span class="font-mono text-emerald-400">${map50}</span>
+              <span class="text-zinc-400">${metricLabel}</span>
+              <span class="font-mono text-emerald-400">${metricValue}</span>
             </div>
-            ${metricBar(model.map50)}
+            ${metricBar(metricBarValue)}
           </div>
-          <div class="flex items-center gap-2 text-[10px] font-mono text-zinc-400">
+          <p class="text-[10px] font-mono text-fuchsia-300">${escapeHtml(formatTestLine(model, classification))}</p>
+          ${
+            classification
+              ? ""
+              : `<div class="flex items-center gap-2 text-[10px] font-mono text-zinc-400">
             <span>50-95 ${formatPct(model.map50_95)}</span>
             <span class="text-zinc-700">·</span>
             <span>P ${formatPct(model.precision)}</span>
             <span class="text-zinc-700">·</span>
             <span>R ${formatPct(model.recall)}</span>
-          </div>
+          </div>`
+          }
           <div class="grid grid-cols-2 gap-1.5">
             ${actionBtn(`data-rename-model="${model.id}" data-name="${escapeHtml(model.name || "")}"`, "Переименовать", "pencil")}
             ${actionBtn(`data-export-model="${model.id}"`, "Выгрузить", "download")}
@@ -233,6 +253,15 @@ function renderModels(models, handlers) {
               <i data-lucide="sparkles" class="w-3 h-3"></i>
               Авторазметка
             </button>
+            ${
+              classification
+                ? ""
+                : `<button type="button" data-audit-model="${model.id}"
+              class="px-2 py-1 text-[10px] rounded-md border border-red-800/60 text-red-300 hover:bg-red-950/40 flex items-center justify-center gap-1">
+              <i data-lucide="shield-alert" class="w-3 h-3"></i>
+              Аудит разметки
+            </button>`
+            }
           </div>
         </article>`;
     })
@@ -240,6 +269,9 @@ function renderModels(models, handlers) {
 
   grid.querySelectorAll("[data-use-model]").forEach((btn) => {
     btn.addEventListener("click", () => handlers.onUseModel?.(btn.dataset.useModel));
+  });
+  grid.querySelectorAll("[data-audit-model]").forEach((btn) => {
+    btn.addEventListener("click", () => handlers.onAuditModel?.(btn.dataset.auditModel));
   });
   grid.querySelectorAll("[data-rename-model]").forEach((btn) => {
     btn.addEventListener("click", () =>
@@ -263,6 +295,7 @@ export function initModelsHub({
   onTrainDataset,
   onAutoLabel,
   onUseModel,
+  onAuditModel,
   onCreateDataset,
   onUploadModel,
   onError,
@@ -329,6 +362,7 @@ export function initModelsHub({
       const handlers = {
         onTrainDataset,
         onUseModel,
+        onAuditModel,
         onRenameDataset: (id, name) => {
           pendingRename = { kind: "dataset", id };
           renameTitle.textContent = "Переименовать датасет";

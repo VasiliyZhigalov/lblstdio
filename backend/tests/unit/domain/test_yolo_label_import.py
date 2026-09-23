@@ -1,5 +1,6 @@
 import io
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +37,55 @@ def test_parse_class_names_from_yaml_list_and_classes_txt() -> None:
         {},
         {"classes.txt": b"dog\ncat\n"},
     ) == ["dog", "cat"]
+
+
+def test_parse_class_names_prefers_yaml_over_classes_txt() -> None:
+    assert parse_class_names(
+        {"data.yaml": b"names: [from_yaml]\n"},
+        {"classes.txt": b"from_txt\n"},
+    ) == ["from_yaml"]
+
+
+def test_parse_class_names_falls_back_when_yaml_names_is_null() -> None:
+    """Label Studio often emits `names:` with no indented mapping."""
+    yaml_payload = (
+        b"nc: 1\n"
+        b"names:\n"
+        b"0: shifted_name\n"
+        b"1: other\n"
+    )
+    assert parse_class_names(
+        {"export/data.yaml": yaml_payload},
+        {"export/classes.txt": b"l_front_blizhniy\nl_front_dalniy\n"},
+    ) == ["l_front_blizhniy", "l_front_dalniy"]
+
+
+def test_parse_class_names_falls_back_when_yaml_nc_mismatches() -> None:
+    yaml_payload = b"nc: 1\nnames:\n  0: shifted\n  1: other\n"
+    assert parse_class_names(
+        {"data.yaml": yaml_payload},
+        {"classes.txt": b"l_front_blizhniy\nl_front_dalniy\nl_front_gab_dho\n"},
+    ) == ["l_front_blizhniy", "l_front_dalniy", "l_front_gab_dho"]
+
+
+def test_parse_class_names_keeps_inconsistent_yaml_without_fallback() -> None:
+    yaml_payload = b"nc: 1\nnames:\n  0: only_yaml\n  1: other\n"
+    assert parse_class_names({"data.yaml": yaml_payload}, {}) == ["only_yaml", "other"]
+
+
+def test_parse_class_names_from_notes_json() -> None:
+    notes = (
+        b'{"categories":[{"id":1,"name":"car"},{"id":0,"name":"person"}]}'
+    )
+    assert parse_class_names({}, {}, {"notes.json": notes}) == ["person", "car"]
+
+
+def test_parse_class_names_prefers_classes_txt_over_notes_json() -> None:
+    assert parse_class_names(
+        {},
+        {"classes.txt": b"from_txt\n"},
+        {"notes.json": b'{"categories":[{"id":0,"name":"from_json"}]}'},
+    ) == ["from_txt"]
 
 
 def test_parse_class_names_rejects_bad_dict_keys() -> None:
@@ -120,6 +170,38 @@ def test_expand_upload_bundle_unpacks_zip_and_keeps_relative_paths() -> None:
     assert "loose/dog.png" in images
     assert "loose/dog.txt" in labels
     assert "data.yaml" in class_files
+
+
+def test_expand_stages_zip_images_from_path(tmp_path) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("train/images/cat.jpg", b"jpg")
+        archive.writestr("train/labels/cat.txt", b"0 0.5 0.5 0.2 0.2\n")
+    zip_path = tmp_path / "bundle.zip"
+    zip_path.write_bytes(buf.getvalue())
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    images, labels, class_files = expand_upload_bundle(
+        [("bundle.zip", zip_path)],
+        image_staging_dir=stage,
+    )
+    stored = images["train/images/cat.jpg"]
+    assert isinstance(stored, Path)
+    assert stored.read_bytes() == b"jpg"
+    assert labels["train/labels/cat.txt"] == b"0 0.5 0.5 0.2 0.2\n"
+    assert class_files == {}
+
+
+def test_expand_upload_bundle_keeps_notes_json() -> None:
+    images, labels, class_files = expand_upload_bundle(
+        [
+            ("images/a.jpg", b"jpg"),
+            ("notes.json", b'{"categories":[{"id":0,"name":"obj"}]}'),
+        ]
+    )
+    assert "images/a.jpg" in images
+    assert labels == {}
+    assert class_files["notes.json"] == b'{"categories":[{"id":0,"name":"obj"}]}'
 
 
 def test_expand_rejects_path_traversal_in_zip() -> None:

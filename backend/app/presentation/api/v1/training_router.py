@@ -6,6 +6,7 @@ from app.application.use_cases.ml.batch_auto_label import (
     BatchAutoLabelUseCase,
     GetAutoLabelJobUseCase,
 )
+from app.application.use_cases.ml.audit_annotations import AuditAnnotationsRunner
 from app.application.use_cases.ml.manage_model_version import (
     DeleteModelVersionUseCase,
     ExportModelVersionUseCase,
@@ -19,6 +20,7 @@ from app.application.use_cases.ml.train_model import (
 )
 from app.presentation.dependencies import (
     get_batch_auto_label_use_case,
+    get_audit_annotations_runner,
     get_delete_model_version_use_case,
     get_export_model_version_use_case,
     get_get_auto_label_job_use_case,
@@ -31,6 +33,8 @@ from app.presentation.dependencies import (
 from app.presentation.schemas import (
     AutoLabelJobRead,
     AutoLabelRequest,
+    AnnotationAuditRequest,
+    AnnotationAuditTaskRead,
     ModelVersionRead,
     RenameRequest,
     TrainModelRequest,
@@ -59,6 +63,7 @@ def _job_to_read(job) -> TrainingJobRead:
         stopped_early=job.stopped_early,
         progress_percent=job.progress_percent,
         metrics_history=list(job.metrics_history),
+        test_metrics=job.test_metrics,
         model_version_id=job.model_version_id,
         error_message=job.error_message,
         created_at=job.created_at,
@@ -80,6 +85,8 @@ def _model_to_read(model) -> ModelVersionRead:
         map50_95=model.map50_95,
         precision=model.precision,
         recall=model.recall,
+        top1=getattr(model, "top1", None),
+        test_metrics=getattr(model, "test_metrics", None),
         is_active_for_stream=model.is_active_for_stream,
         display_name=model.display_name,
         created_at=model.created_at,
@@ -245,3 +252,56 @@ async def get_auto_label_job(
     use_case: GetAutoLabelJobUseCase = Depends(get_get_auto_label_job_use_case),
 ) -> AutoLabelJobRead:
     return _auto_to_read(await use_case.execute(job_id))
+
+
+@router.post(
+    "/projects/{project_id}/models/{model_id}/audit-annotations",
+    response_model=AnnotationAuditTaskRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def audit_annotations(
+    project_id: UUID,
+    model_id: UUID,
+    payload: AnnotationAuditRequest,
+    runner: AuditAnnotationsRunner = Depends(get_audit_annotations_runner),
+) -> AnnotationAuditTaskRead:
+    task = await runner.start(
+        project_id,
+        model_id,
+        image_ids=payload.image_ids,
+        max_images=payload.max_images,
+        confidence_threshold=payload.confidence_threshold,
+        iou_threshold=payload.iou_threshold,
+    )
+    return _audit_task_to_read(task)
+
+
+def _audit_task_to_read(task) -> AnnotationAuditTaskRead:
+    return AnnotationAuditTaskRead(
+        id=task.id,
+        project_id=task.project_id,
+        model_version_id=task.model_version_id,
+        status=task.status,
+        total_images=task.total_images,
+        processed_images=task.processed_images,
+        suspicious_images=task.suspicious_images,
+        error_message=task.error_message,
+        created_at=task.created_at,
+        finished_at=task.finished_at,
+    )
+
+
+@router.get(
+    "/annotation-audit-jobs/{job_id}",
+    response_model=AnnotationAuditTaskRead,
+)
+async def get_annotation_audit_job(
+    job_id: UUID,
+    runner: AuditAnnotationsRunner = Depends(get_audit_annotations_runner),
+) -> AnnotationAuditTaskRead:
+    task = await runner.get(job_id)
+    if task is None:
+        from app.domain.exceptions import ResourceNotFoundException
+
+        raise ResourceNotFoundException(f"annotation audit job {job_id} not found")
+    return _audit_task_to_read(task)

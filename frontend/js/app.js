@@ -1,5 +1,5 @@
-import { store } from "./store.js";
-import { api } from "./api.js";
+import { store, isClassification } from "./store.js";
+import { API_BASE, api } from "./api.js";
 import { AnnotationCanvas } from "./components/canvas.js";
 import { initProjectsHub, loadProjectsHub } from "./components/projectsHub.js";
 import { getFilmstripImages, initFilmstrip } from "./components/filmstrip.js";
@@ -34,8 +34,14 @@ let quickClassBoxId = null;
 
 function statusFromAnnotations(boxes) {
   if (!boxes?.length) return "UNANNOTATED";
-  if (boxes.some((box) => box.verification_status === "PENDING_REVIEW")) {
-    return "REQUIRES_REVIEW";
+  const pending = boxes.some((box) => box.verification_status === "PENDING_REVIEW");
+  const confirmed = boxes.some(
+    (box) =>
+      box.verification_status === "VERIFIED" ||
+      box.verification_status === "AUTO_VERIFIED"
+  );
+  if (pending) {
+    return confirmed ? "REQUIRES_RECHECK" : "REQUIRES_REVIEW";
   }
   if (
     boxes.every((box) => box.verification_status === "AUTO_VERIFIED") &&
@@ -76,17 +82,26 @@ const TAB_BTN_ACTIVE = "flex items-center gap-1.5 px-3 py-1 text-xs font-medium 
 const TAB_BTN_IDLE = "flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition text-zinc-400 hover:text-zinc-200";
 
 function syncTabChrome(tab) {
+  const classification = isClassification();
   for (const name of ["data", "annotate", "models", "stream"]) {
     const btn = document.getElementById(`tab-btn-${name}`);
-    if (btn) btn.className = name === tab ? TAB_BTN_ACTIVE : TAB_BTN_IDLE;
+    if (btn) {
+      btn.className = name === tab ? TAB_BTN_ACTIVE : TAB_BTN_IDLE;
+      if (name === "stream") btn.classList.toggle("hidden", classification);
+    }
     const view = document.getElementById(`tab-view-${name}`);
-    if (view) view.classList.toggle("hidden", name !== tab);
+    if (view) view.classList.toggle("hidden", name !== tab || (name === "stream" && classification));
     const actions = document.getElementById(`shell-actions-${name}`);
-    if (actions) actions.classList.toggle("hidden", name !== tab);
+    if (actions) actions.classList.toggle("hidden", name !== tab || (name === "stream" && classification));
   }
 }
 
 async function setProjectTab(tab, { skipSave = false } = {}) {
+  if (isClassification() && tab === "stream") {
+    tab = "data";
+    const project = store.get("currentProject");
+    if (project) replaceHash(projectPath(project.id, "data"));
+  }
   const prev = store.get("projectTab");
   if (prev === "annotate" && tab !== "annotate" && !skipSave) {
     try {
@@ -106,7 +121,7 @@ async function setProjectTab(tab, { skipSave = false } = {}) {
     document.activeElement?.blur?.();
     requestAnimationFrame(() => {
       canvas?.resize();
-      canvas?.fitToScreen();
+      if (!store.get("zoomLocked")) canvas?.fitToScreen();
     });
   }
   if (tab === "data") {
@@ -168,7 +183,25 @@ function updateStudioChrome() {
   const fileEl = document.getElementById("image-filename");
   if (fileEl) fileEl.textContent = image?.file_name || "";
   const badge = document.getElementById("badge-split");
-  if (badge) badge.textContent = (image?.split || "train").toUpperCase();
+  if (badge) {
+    const split = image?.split || "train";
+    const pinned = split === "test";
+    badge.textContent = pinned ? "TEST" : "TRAIN";
+    badge.className = pinned
+      ? "px-1.5 py-0.5 rounded text-[10px] border bg-fuchsia-950 text-fuchsia-300 border-fuchsia-800/50"
+      : "px-1.5 py-0.5 rounded text-[10px] border bg-blue-950 text-blue-400 border-blue-800/50";
+    badge.title = pinned
+      ? "Тестовый кадр: не участвует в обучении"
+      : "Кадр может попасть в train или valid";
+  }
+  const testBtn = document.getElementById("btn-mark-test");
+  if (testBtn) {
+    const pinned = image?.split === "test";
+    testBtn.textContent = pinned ? "Снять тест" : "Тест";
+    testBtn.classList.toggle("border-fuchsia-500", pinned);
+    testBtn.classList.toggle("text-fuchsia-200", pinned);
+    testBtn.classList.toggle("bg-fuchsia-950/40", pinned);
+  }
   const idx = images.findIndex((item) => item.id === image?.id);
   const currentIdx = document.getElementById("current-idx");
   const totalIdx = document.getElementById("total-idx");
@@ -177,6 +210,52 @@ function updateStudioChrome() {
   updateActiveLearningGuide();
   updateSaveButton();
   syncHideButtons();
+  syncClassifyChrome();
+  syncClsLabelOverlay();
+}
+
+function syncClassifyChrome() {
+  const cls = isClassification();
+  document.getElementById("tab-btn-stream")?.classList.toggle("hidden", cls);
+  document.getElementById("btn-mark-background")?.classList.toggle("hidden", cls);
+  document.getElementById("tool-draw")?.classList.toggle("hidden", cls);
+  document.getElementById("tool-select")?.classList.toggle("hidden", cls);
+  document.getElementById("btn-copy-annotations")?.classList.toggle("hidden", cls);
+  document.getElementById("btn-paste-annotations")?.classList.toggle("hidden", cls);
+  document.getElementById("btn-save-annotations")?.classList.toggle("hidden", cls);
+  document.getElementById("tool-toggle-hide")?.classList.toggle("hidden", cls);
+  document.getElementById("btn-clear-review-annotations")?.classList.toggle("hidden", cls);
+  document.getElementById("btn-shell-toggle-hide")?.classList.toggle("hidden", cls);
+  document.getElementById("btn-toggle-match-debug")?.classList.toggle("hidden", cls);
+  document.getElementById("btn-export-crops")?.classList.toggle("hidden", cls);
+  const opacityWrap = document.getElementById("tool-opacity")?.parentElement;
+  opacityWrap?.classList.toggle("hidden", cls);
+  const clearBtn = document.getElementById("btn-clear-annotations");
+  if (clearBtn) {
+    clearBtn.textContent = cls ? "Сбросить класс" : "Очистить кадр";
+  }
+}
+
+function syncClsLabelOverlay() {
+  const el = document.getElementById("cls-label-overlay");
+  if (!el) return;
+  if (!isClassification()) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    return;
+  }
+  const image = store.get("currentImage");
+  const label = image?.label;
+  const classes = store.get("classes") || [];
+  const cls = classes.find((item) => item.id === label?.class_id);
+  if (!label || label.verification_status !== "PENDING_REVIEW") {
+    el.classList.add("hidden");
+    el.textContent = "";
+    return;
+  }
+  const pct = Math.round(Number(label.confidence || 0) * 100);
+  el.textContent = `${cls?.name || "класс"} · ${pct}% · на проверке`;
+  el.classList.remove("hidden");
 }
 
 function updateActiveLearningGuide() {
@@ -271,6 +350,7 @@ async function saveCurrent({ silent = false, force = false, celebrate = false } 
   const run = async () => {
     const image = store.get("currentImage");
     if (!image) return;
+    if (isClassification()) return;
     if (!force && !store.get("hasUnsavedChanges")) return;
 
     const imageId = image.id;
@@ -358,7 +438,9 @@ async function openImage(imageId, expectedProjectId = null) {
     const annotations = detail.annotations || [];
     setBoxCount(imageId, annotations.length, annotations);
     const images = (store.get("images") || []).map((item) =>
-      item.id === imageId ? { ...item, status: detail.status } : item
+      item.id === imageId
+        ? { ...item, status: detail.status, label: detail.label ?? null }
+        : item
     );
     store.patch({
       currentImage: detail,
@@ -390,6 +472,72 @@ async function go(delta) {
   if (next) await openImage(next.id);
 }
 
+function statusFromLabel(label) {
+  if (!label) return "UNANNOTATED";
+  if (label.verification_status === "PENDING_REVIEW") return "REQUIRES_REVIEW";
+  if (label.verification_status === "AUTO_VERIFIED") return "AUTO_VERIFIED";
+  return "VERIFIED";
+}
+
+function applyImageLabel(imageId, label) {
+  const status = statusFromLabel(label);
+  patchImageStatus(imageId, status, { label: label || null });
+}
+
+async function assignClass(classId) {
+  const image = store.get("currentImage");
+  if (!image || !classId) return;
+  try {
+    const label = await api.putImageLabel(image.id, classId);
+    applyImageLabel(image.id, label);
+    await go(1);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function assignClassByDigit(digit) {
+  const classes = [...(store.get("classes") || [])].sort((a, b) => a.index_id - b.index_id);
+  const cls = classes[digit - 1];
+  if (!cls) return;
+  await assignClass(cls.id);
+}
+
+async function confirmLabel() {
+  const image = store.get("currentImage");
+  if (!image?.label) return;
+  try {
+    const label = await api.confirmImageLabel(image.id);
+    applyImageLabel(image.id, label);
+    await go(1);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function clearLabel() {
+  const image = store.get("currentImage");
+  if (!image) return;
+  try {
+    await api.deleteImageLabel(image.id);
+    applyImageLabel(image.id, null);
+    toast("Класс сброшен");
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 async function exportDataset() {
   const project = store.get("currentProject");
   if (!project) {
@@ -399,17 +547,45 @@ async function exportDataset() {
   try {
     if (store.get("hasUnsavedChanges")) await saveCurrent({ silent: true });
     const blob = await api.exportYolo(project.id);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `project-${project.id}-yolo.zip`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    await downloadBlob(blob, `project-${project.id}-yolo.zip`);
   } catch (err) {
     toast(err.message);
   }
+}
+
+function cropDownloadName(projectName) {
+  const cleaned = String(projectName || "")
+    .trim()
+    .replace(/[\\/]/g, "_")
+    .replace(/\.\./g, "_");
+  return `${cleaned || "project"}_crop.zip`;
+}
+
+function exportCrops() {
+  const project = store.get("currentProject");
+  if (!project) {
+    toast("Нет выбранного проекта");
+    return;
+  }
+  const btn = document.getElementById("btn-export-crops");
+  if (btn?.dataset.busy === "1") return;
+  if (btn) {
+    btn.dataset.busy = "1";
+    btn.disabled = true;
+  }
+  const link = document.createElement("a");
+  link.href = `${API_BASE}/projects/${project.id}/export-crops`;
+  link.download = cropDownloadName(project.name);
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  toast("Собираем кропы… файл появится в загрузках браузера", 6000);
+  setTimeout(() => {
+    if (!btn) return;
+    btn.dataset.busy = "0";
+    btn.disabled = false;
+  }, 8000);
 }
 
 async function leaveStudio() {
@@ -437,16 +613,22 @@ async function enterProject(route, seq) {
   await loadProject(projectId);
   if (seq !== routeSeq) return;
 
+  let nextTab = tab || "data";
+  if (isClassification() && nextTab === "stream") {
+    nextTab = "data";
+    replaceHash(projectPath(projectId, "data"));
+  }
+
   showShell(true);
   try {
-    await setProjectTab(tab || "data", { skipSave: true });
+    await setProjectTab(nextTab, { skipSave: true });
   } catch {
     return;
   }
   refreshIcons();
   updateStudioChrome();
 
-  if (tab === "annotate") {
+  if (nextTab === "annotate") {
     const images = store.get("images") || [];
     const targetId =
       imageId && images.some((item) => item.id === imageId)
@@ -521,12 +703,17 @@ async function onRoute() {
   // Same project, tab change via hash
   if (previousProjectId === route.projectId && store.get("view") === "studio") {
     try {
-      await setProjectTab(route.tab || "data");
+      let nextTab = route.tab || "data";
+      if (isClassification() && nextTab === "stream") {
+        nextTab = "data";
+        replaceHash(projectPath(route.projectId, "data"));
+      }
+      await setProjectTab(nextTab);
     } catch {
       restoreProjectHash(previousProjectId, previousTab, store.get("currentImage")?.id);
       return;
     }
-    if (route.tab === "annotate") {
+    if ((route.tab === "annotate" || store.get("projectTab") === "annotate") && store.get("projectTab") === "annotate") {
       const images = store.get("images") || [];
       const target =
         route.imageId && images.some((item) => item.id === route.imageId)
@@ -794,12 +981,17 @@ async function deleteCurrentImage() {
 }
 
 async function verifyAllPending({ goNext = true } = {}) {
+  if (isClassification()) {
+    await confirmLabel();
+    return;
+  }
   const image = store.get("currentImage");
   if (!image) return;
   const pending = (store.get("annotations") || []).filter(
     (box) => box.verification_status === "PENDING_REVIEW"
   );
-  if (!pending.length) return;
+  const recheck = image.status === "REQUIRES_RECHECK";
+  if (!pending.length && !recheck) return;
 
   try {
     if (store.get("hasUnsavedChanges")) {
@@ -818,7 +1010,11 @@ async function verifyAllPending({ goNext = true } = {}) {
     });
     patchImageStatus(image.id, statusFromAnnotations(annotations));
     setBoxCount(image.id, annotations.length, annotations);
-    toast(`Подтверждено рамок: ${pending.length}`);
+    toast(
+      pending.length
+        ? `Приняты предсказания модели: ${pending.length}`
+        : "Разметка подтверждена"
+    );
     if (goNext) await go(1);
   } catch (err) {
     toast(err.message);
@@ -826,6 +1022,10 @@ async function verifyAllPending({ goNext = true } = {}) {
 }
 
 async function rejectAllPending({ goNext = true } = {}) {
+  if (isClassification()) {
+    await clearLabel();
+    return;
+  }
   const image = store.get("currentImage");
   if (!image) return;
   const pending = (store.get("annotations") || []).filter(
@@ -848,7 +1048,11 @@ async function rejectAllPending({ goNext = true } = {}) {
     });
     patchImageStatus(image.id, statusFromAnnotations(remaining));
     setBoxCount(image.id, remaining.length, remaining);
-    toast(`Удалено аннотаций: ${pending.length}`);
+    toast(
+      image.status === "REQUIRES_RECHECK"
+        ? "Оставлена исходная разметка, предсказания модели сняты"
+        : `Удалено аннотаций: ${pending.length}`
+    );
     if (goNext) await go(1);
   } catch (err) {
     toast(err.message);
@@ -902,6 +1106,22 @@ async function clearAllReviewAnnotations() {
   }
 }
 
+async function toggleCurrentTestHoldout() {
+  const image = store.get("currentImage");
+  if (!image) {
+    toast("Нет открытого кадра");
+    return;
+  }
+  const holdout = image.split !== "test";
+  try {
+    const updated = await api.setImageHoldout(image.id, holdout);
+    patchImageStatus(updated.id, updated.status, { split: updated.split });
+    toast(holdout ? "Кадр закреплён как тестовый" : "Кадр возвращён в обучение");
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 async function markCurrentAsBackground() {
   const image = store.get("currentImage");
   if (!image) {
@@ -929,6 +1149,9 @@ async function markCurrentAsBackground() {
 }
 
 function frameHasPending() {
+  if (isClassification()) {
+    return store.get("currentImage")?.label?.verification_status === "PENDING_REVIEW";
+  }
   return (store.get("annotations") || []).some(
     (box) => box.verification_status === "PENDING_REVIEW"
   );
@@ -1059,6 +1282,24 @@ function toggleHideAnnotations() {
   syncHideButtons();
 }
 
+function syncZoomLockButton() {
+  const btn = document.getElementById("tool-lock-zoom");
+  if (!btn) return;
+  const locked = Boolean(store.get("zoomLocked"));
+  const active = "p-2 rounded-lg hover:bg-zinc-800 text-indigo-400 bg-zinc-800/80";
+  const idle = "p-2 rounded-lg hover:bg-zinc-800 text-zinc-400";
+  btn.className = locked ? active : idle;
+  btn.title = locked
+    ? "Масштаб зафиксирован между кадрами"
+    : "Сохранять масштаб между кадрами";
+  btn.setAttribute("aria-pressed", locked ? "true" : "false");
+}
+
+function toggleZoomLock() {
+  store.set("zoomLocked", !store.get("zoomLocked"));
+  syncZoomLockButton();
+}
+
 function applySidebarCollapsed() {
   const leftCollapsed = store.get("leftSidebarCollapsed");
   const rightCollapsed = store.get("rightSidebarCollapsed");
@@ -1102,9 +1343,9 @@ function boot() {
 
   initProjectsHub({
     onOpenProject: (id) => navigate(projectPath(id, "data")),
-    onCreateProject: async (name, description) => {
+    onCreateProject: async (name, description, taskType = "DETECTION") => {
       try {
-        const created = await api.createProject(name, description);
+        const created = await api.createProject(name, description, taskType);
         await loadProjectsHub();
         navigate(projectPath(created.id, "data"));
       } catch (err) {
@@ -1151,6 +1392,9 @@ function boot() {
     onError: toast,
     onDeleteBox: (id) => {
       deleteBoxById(id).catch(() => {});
+    },
+    onAssignClass: (classId) => {
+      assignClass(classId).catch(() => {});
     },
   });
   initReviewBar({
@@ -1231,12 +1475,55 @@ function boot() {
     },
   });
 
+  let auditInProgress = false;
   modelsHub = initModelsHub({
     getProject: () => store.get("currentProject"),
     onTrain: () => trainingDrawer?.open(),
     onTrainDataset: (versionId) => trainingDrawer?.open(versionId),
     onAutoLabel: () => autoLabelModal?.open(),
     onUseModel: (modelId) => autoLabelModal?.open(modelId),
+    onAuditModel: async (modelId) => {
+      if (auditInProgress) {
+        toast("Аудит уже выполняется");
+        return;
+      }
+      const project = store.get("currentProject");
+      if (!project) return;
+      auditInProgress = true;
+      try {
+        const queued = await api.auditAnnotations(project.id, modelId, {
+          max_images: 32,
+        });
+        toast("Аудит запущен в фоне");
+        let task = queued;
+        let lastProgress = 0;
+        while (task.status === "PENDING" || task.status === "RUNNING") {
+          await new Promise((resolve) => setTimeout(resolve, 700));
+          task = await api.getAnnotationAuditJob(task.id);
+          if (
+            task.processed_images > lastProgress &&
+            (task.processed_images - lastProgress >= 8 ||
+              task.processed_images === task.total_images)
+          ) {
+            lastProgress = task.processed_images;
+            toast(`Аудит: ${task.processed_images}/${task.total_images}`);
+          }
+        }
+        if (task.status === "FAILED") {
+          throw new Error(task.error_message || "Аудит завершился с ошибкой");
+        }
+        store.set("images", await api.listImages(project.id));
+        toast(
+          task.suspicious_images
+            ? `Аудит завершён: ${task.suspicious_images} кадров требуют повторной проверки`
+            : "Аудит завершён: подозрительных кадров не найдено"
+        );
+      } catch (err) {
+        toast(err.message || String(err));
+      } finally {
+        auditInProgress = false;
+      }
+    },
     onCreateDataset: () => datasetModal?.open(),
     onUploadModel: async (file) => {
       const project = store.get("currentProject");
@@ -1322,6 +1609,8 @@ function boot() {
     toggleLeftSidebar,
     toggleRightSidebar,
     applyQuickClassDigit,
+    assignClass: (digit) => assignClassByDigit(digit).catch(() => {}),
+    clearLabel: () => clearLabel().catch(() => {}),
   });
 
   document.getElementById("btn-copy-annotations")?.addEventListener("click", () => {
@@ -1359,6 +1648,8 @@ function boot() {
   document.getElementById("tool-select").addEventListener("click", () => setMode("SELECT"));
   document.getElementById("tool-draw").addEventListener("click", () => setMode("DRAW"));
   document.getElementById("tool-fit").addEventListener("click", () => canvas.fitToScreen());
+  document.getElementById("tool-lock-zoom")?.addEventListener("click", toggleZoomLock);
+  syncZoomLockButton();
   document.getElementById("tool-toggle-hide")?.addEventListener("click", toggleHideAnnotations);
   document.getElementById("btn-shell-toggle-hide")?.addEventListener("click", toggleHideAnnotations);
   document.getElementById("btn-toggle-filmstrip")?.addEventListener("click", toggleLeftSidebar);
@@ -1391,6 +1682,7 @@ function boot() {
   document.getElementById("btn-prev").addEventListener("click", () => go(-1));
   document.getElementById("btn-next").addEventListener("click", () => go(1));
   document.getElementById("btn-export-studio").addEventListener("click", exportDataset);
+  document.getElementById("btn-export-crops")?.addEventListener("click", exportCrops);
   document.getElementById("btn-create-dataset")?.addEventListener("click", () => {
     datasetModal?.open();
   });
@@ -1398,6 +1690,10 @@ function boot() {
     saveCurrent({ force: true, celebrate: true }).catch(() => {});
   });
   document.getElementById("btn-clear-annotations").addEventListener("click", () => {
+    if (isClassification()) {
+      clearLabel().catch(() => {});
+      return;
+    }
     const image = store.get("currentImage");
     if (!image) {
       toast("Нет открытого кадра");
@@ -1411,6 +1707,9 @@ function boot() {
   });
   document.getElementById("btn-mark-background")?.addEventListener("click", () => {
     markCurrentAsBackground().catch(() => {});
+  });
+  document.getElementById("btn-mark-test")?.addEventListener("click", () => {
+    toggleCurrentTestHoldout().catch(() => {});
   });
   document.getElementById("btn-cancel-clear").addEventListener("click", () => {
     pendingClearImageId = null;

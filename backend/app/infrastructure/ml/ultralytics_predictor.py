@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.application.ports.services.model_predictor import Detection, IModelPredictor
+from app.application.ports.services.model_predictor import (
+    Classification,
+    Detection,
+    IClassificationPredictor,
+    IModelPredictor,
+)
 
 
 def _norm(path: str) -> str:
@@ -55,4 +60,51 @@ class UltralyticsPredictor(IModelPredictor):
                     )
                 )
             output[matched] = dets
+        return output
+
+
+def _yolo_class_names(model) -> dict[int, str]:
+    names = getattr(model, "names", {}) or {}
+    return {int(index): str(name) for index, name in names.items()}
+
+
+class UltralyticsClassificationPredictor(IClassificationPredictor):
+    def class_names(self, weights_path: str) -> dict[int, str]:
+        from ultralytics import YOLO
+
+        return _yolo_class_names(YOLO(weights_path))
+
+    def predict(
+        self,
+        weights_path: str,
+        image_paths: list[str],
+        confidence_threshold: float,
+    ) -> dict[str, Classification]:
+        if not image_paths:
+            return {}
+        from ultralytics import YOLO
+
+        model = YOLO(weights_path)
+        results = model.predict(
+            source=image_paths,
+            verbose=False,
+        )
+        by_resolved = {_norm(path): path for path in image_paths}
+        output: dict[str, Classification] = {}
+        for result in results:
+            path = _norm(getattr(result, "path", "") or "")
+            matched = by_resolved.get(path)
+            if matched is None:
+                continue
+            probs = getattr(result, "probs", None)
+            if probs is None:
+                continue
+            top1 = getattr(probs, "top1", None)
+            top1conf = getattr(probs, "top1conf", None)
+            if top1 is None or top1conf is None:
+                continue
+            output[matched] = Classification(
+                class_index=int(top1),
+                confidence=float(top1conf),
+            )
         return output

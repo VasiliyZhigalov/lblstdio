@@ -1,11 +1,19 @@
-import { store } from "../store.js";
+import { store, isClassification } from "../store.js";
 import { api } from "../api.js";
 import { escapeHtml } from "../utils/dom.js";
+import {
+  clearGalleryFilters,
+  describeGalleryFilters,
+  galleryFilterState,
+  hasActiveGalleryFilters,
+  matchesGalleryFilters,
+} from "../utils/imageFilters.js";
 
 const FILTERS = [
   { id: "all", label: "Все" },
   { id: "review", label: "Требуют проверки" },
   { id: "unannotated", label: "Неразмеченные" },
+  { id: "auto_verified", label: "Автоверифицированные" },
 ];
 
 const GAP_PX = 8;
@@ -21,6 +29,9 @@ const virtual = {
 };
 
 function statusMeta(image) {
+  if (image.status === "REQUIRES_RECHECK") {
+    return { label: "Подозрительное", className: "text-red-400" };
+  }
   if (image.status === "REQUIRES_REVIEW") {
     return { label: "На проверке", className: "text-amber-400" };
   }
@@ -39,12 +50,33 @@ function statusMeta(image) {
 function filteredImages() {
   const query = (store.get("filmstripQuery") || "").trim().toLowerCase();
   const filter = store.get("filmstripFilter") || "all";
+  const gallery = galleryFilterState(store);
   return (store.get("images") || []).filter((image) => {
-    if (query && !image.file_name.toLowerCase().includes(query)) return false;
-    if (filter === "review" && image.status !== "REQUIRES_REVIEW") return false;
+    if (!matchesGalleryFilters(image, gallery)) return false;
+    if (query && !(image.file_name || "").toLowerCase().includes(query)) return false;
+    if (filter === "review" &&
+      image.status !== "REQUIRES_REVIEW" &&
+      image.status !== "REQUIRES_RECHECK"
+    ) {
+      return false;
+    }
     if (filter === "unannotated" && image.status !== "UNANNOTATED") return false;
+    if (filter === "auto_verified" && image.status !== "AUTO_VERIFIED") return false;
     return true;
   });
+}
+
+function syncGalleryFilterBanner() {
+  const root = document.getElementById("filmstrip-gallery-filter");
+  const label = document.getElementById("filmstrip-gallery-filter-label");
+  if (!root || !label) return;
+  const state = galleryFilterState(store);
+  const active = hasActiveGalleryFilters(state);
+  root.classList.toggle("hidden", !active);
+  if (active) {
+    const summary = describeGalleryFilters(state, store.get("classes") || []);
+    label.textContent = summary ? `Фильтр: ${summary}` : "Фильтр с вкладки «Данные»";
+  }
 }
 
 /** Filtered list for A/D; keeps the current frame reachable if the filter hides it. */
@@ -59,6 +91,16 @@ export function getFilmstripImages() {
 }
 
 function boxCountLabel(image) {
+  if (isClassification()) {
+    const label = image.label;
+    if (!label) return "без класса";
+    const cls = (store.get("classes") || []).find((item) => item.id === label.class_id);
+    const name = cls?.name || "класс";
+    if (label.verification_status === "PENDING_REVIEW") {
+      return `${name} ${Math.round(Number(label.confidence || 0) * 100)}%`;
+    }
+    return name;
+  }
   const counts = store.get("boxCounts") || {};
   const known = Object.hasOwn(counts, image.id);
   if (image.is_background && image.status === "VERIFIED") {
@@ -156,6 +198,9 @@ function paintVisible({ scrollToCurrent = false } = {}) {
   if (!images.length) {
     list.innerHTML = "";
     empty.classList.remove("hidden");
+    empty.textContent = hasActiveGalleryFilters(galleryFilterState(store))
+      ? "Нет кадров по текущему фильтру."
+      : "Нет кадров. Загрузите на вкладке «Данные».";
     return;
   }
   empty.classList.add("hidden");
@@ -272,6 +317,7 @@ function onCurrentImageChange() {
 
 export function initFilmstrip({ onOpenImage }) {
   renderFilters();
+  syncGalleryFilterBanner();
   rebuildList();
 
   document.getElementById("filmstrip-filters").addEventListener("click", (event) => {
@@ -285,17 +331,43 @@ export function initFilmstrip({ onOpenImage }) {
     const card = event.target.closest("[data-image-id]");
     if (card) onOpenImage(card.dataset.imageId);
   });
+  document.getElementById("btn-clear-image-filters")?.addEventListener("click", () => {
+    clearGalleryFilters(store);
+  });
+
+  const onGalleryFilterChange = () => {
+    syncGalleryFilterBanner();
+    rebuildList({ scrollToCurrent: true });
+  };
 
   store.addEventListener("change:images", onImagesChange);
   store.addEventListener("change:currentImage", onCurrentImageChange);
-  store.addEventListener("change:boxCounts", syncVisibleMeta);
+  store.addEventListener("change:boxCounts", () => {
+    if (
+      store.get("galleryBoxCountMin") != null ||
+      store.get("galleryBoxCountMax") != null
+    ) {
+      onImagesChange();
+      return;
+    }
+    syncVisibleMeta();
+  });
+  store.addEventListener("change:imageClassIds", () => {
+    if ((store.get("galleryClassFilter") || []).length) onImagesChange();
+  });
   store.addEventListener("change:filmstripQuery", () => rebuildList());
   store.addEventListener("change:filmstripFilter", () => {
     renderFilters();
     rebuildList();
   });
+  store.addEventListener("change:galleryQuery", onGalleryFilterChange);
+  store.addEventListener("change:galleryClassFilter", onGalleryFilterChange);
+  store.addEventListener("change:galleryStatusFilter", onGalleryFilterChange);
+  store.addEventListener("change:galleryBoxCountMin", onGalleryFilterChange);
+  store.addEventListener("change:galleryBoxCountMax", onGalleryFilterChange);
   store.addEventListener("change:projectTab", () => {
     if (store.get("projectTab") !== "annotate") return;
+    syncGalleryFilterBanner();
     requestAnimationFrame(() => {
       virtual.measured = false;
       paintVisible({ scrollToCurrent: true });

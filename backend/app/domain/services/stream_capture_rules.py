@@ -25,6 +25,15 @@ def class_is_allowed(
     return not allowed_class_indices or class_index in allowed_class_indices
 
 
+def confidence_in_band(confidence: float, low: float, high: float) -> bool:
+    return low <= confidence <= high
+
+
+def detections_matching_classes(detections: Sequence, allowed: frozenset[int] | None) -> list:
+    """Detections that pass the class filter. Empty filter means every class."""
+    return [item for item in detections if class_is_allowed(item.class_index, allowed)]
+
+
 def size_variation(areas: Sequence[float]) -> float:
     """Relative area span: max/min - 1. Zero areas → infinitely unstable."""
     if not areas:

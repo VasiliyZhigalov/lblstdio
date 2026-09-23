@@ -17,6 +17,49 @@ def client(tmp_path: Path) -> TestClient:
         yield test_client
 
 
+def test_pick_image_folder_stream(client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    folder = tmp_path / "picked"
+    folder.mkdir()
+    (folder / "frame.png").write_bytes(b"png")
+    monkeypatch.setattr(
+        "app.infrastructure.system.folder_dialog.ask_image_folder",
+        lambda: str(folder),
+    )
+    project_id = client.post("/api/v1/projects", json={"name": "Pick"}).json()["id"]
+    created = client.post(f"/api/v1/projects/{project_id}/streams/image-folder/pick")
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["source_type"] == "IMAGE_FOLDER"
+    assert Path(body["source_uri"]) == folder.resolve()
+    assert body["name"] == "picked"
+
+
+def test_pick_image_folder_cancel(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.infrastructure.system.folder_dialog.ask_image_folder",
+        lambda: None,
+    )
+    project_id = client.post("/api/v1/projects", json={"name": "PickCancel"}).json()["id"]
+    created = client.post(f"/api/v1/projects/{project_id}/streams/image-folder/pick")
+    assert created.status_code == 204
+    assert client.get(f"/api/v1/projects/{project_id}/streams").json() == []
+
+
+def test_create_image_folder_stream(client: TestClient, tmp_path: Path) -> None:
+    folder = tmp_path / "stills"
+    folder.mkdir()
+    (folder / "frame.png").write_bytes(b"png")
+    project_id = client.post("/api/v1/projects", json={"name": "Folder"}).json()["id"]
+    created = client.post(
+        f"/api/v1/projects/{project_id}/streams/image-folder",
+        json={"name": "Stills", "folder_path": str(folder)},
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["source_type"] == "IMAGE_FOLDER"
+    assert Path(body["source_uri"]) == folder.resolve()
+
+
 def test_stream_crud_api(client: TestClient) -> None:
     project_id = client.post("/api/v1/projects", json={"name": "StreamProj"}).json()["id"]
 

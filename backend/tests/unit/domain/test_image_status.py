@@ -58,6 +58,30 @@ class TestImageStatusDerivation:
         assert image.status == ImageStatus.REQUIRES_REVIEW
         assert image.can_be_included_in_export() is False
 
+    def test_verified_plus_pending_prediction_is_recheck(self) -> None:
+        image = _image()
+        annotations = [
+            Annotation.create_manual(image.id, uuid4(), _box()),
+            Annotation.create_prediction(
+                image_id=image.id,
+                class_id=uuid4(),
+                bbox=_box(),
+                confidence=0.7,
+            ),
+        ]
+
+        image.recalculate_status(annotations)
+
+        assert image.status == ImageStatus.REQUIRES_RECHECK
+        assert image.can_be_included_in_dataset() is False
+
+    def test_recheck_image_is_blocked_from_dataset(self) -> None:
+        image = _image()
+        image.status = ImageStatus.REQUIRES_RECHECK
+
+        assert image.can_be_included_in_dataset() is False
+        assert image.can_be_included_in_export() is False
+
     def test_rejected_image_is_excluded_from_export(self) -> None:
         image = _image()
         image.reject()

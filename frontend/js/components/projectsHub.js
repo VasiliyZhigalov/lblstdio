@@ -2,6 +2,10 @@ import { store } from "../store.js";
 import { api } from "../api.js";
 import { escapeHtml, formatRelative, refreshIcons, showModal } from "../utils/dom.js";
 
+function taskTypeLabel(taskType) {
+  return taskType === "CLASSIFICATION" ? "Классификация" : "Детекция";
+}
+
 async function enrichProject(project) {
   try {
     const [images, classes] = await Promise.all([
@@ -57,7 +61,10 @@ function renderProjects() {
           class="relative group rounded-xl border border-zinc-800 bg-zinc-900/70 hover:border-indigo-500/50 transition p-4 flex flex-col gap-3">
           <div class="flex items-start justify-between gap-2">
             <div class="min-w-0">
-              <h3 class="text-sm font-semibold truncate">${escapeHtml(project.name)}</h3>
+              <div class="flex items-center gap-2 min-w-0">
+                <h3 class="text-sm font-semibold truncate">${escapeHtml(project.name)}</h3>
+                <span class="shrink-0 px-1.5 py-0.5 text-[10px] rounded border border-zinc-700 text-zinc-400">${escapeHtml(taskTypeLabel(project.task_type))}</span>
+              </div>
               <p class="text-[11px] text-zinc-500 mt-0.5">${
                 project.created_at === project.updated_at ? "Создан" : "Обновлено"
               }: ${escapeHtml(updated)}</p>
@@ -120,6 +127,10 @@ export function initProjectsHub({
     submitBtn.textContent = "Создать";
     nameInput.value = "";
     descInput.value = "";
+    const fieldset = document.getElementById("project-task-type-fieldset");
+    fieldset?.classList.remove("hidden");
+    const detection = document.querySelector('input[name="project-task-type"][value="DETECTION"]');
+    if (detection) detection.checked = true;
     showModal(modal, true);
     nameInput.focus();
   };
@@ -130,6 +141,7 @@ export function initProjectsHub({
     submitBtn.textContent = "Сохранить";
     nameInput.value = project.name || "";
     descInput.value = project.description || "";
+    document.getElementById("project-task-type-fieldset")?.classList.add("hidden");
     showModal(modal, true);
     nameInput.focus();
     nameInput.select();
@@ -150,7 +162,10 @@ export function initProjectsHub({
       if (editingProjectId) {
         await onUpdateProject(editingProjectId, name, description);
       } else {
-        await onCreateProject(name, description);
+        const taskType =
+          document.querySelector('input[name="project-task-type"]:checked')?.value ||
+          "DETECTION";
+        await onCreateProject(name, description, taskType);
       }
       editingProjectId = null;
       showModal(modal, false);

@@ -78,3 +78,13 @@ class TestBoundingBoxInvariant:
         box = BoundingBox(x_center=0.5, y_center=0.25, width=0.2, height=0.1)
 
         assert box.to_yolo_coords() == "0.500000 0.250000 0.200000 0.100000"
+
+    def test_pixel_slice_maps_normalized_box(self) -> None:
+        box = BoundingBox(x_center=0.4, y_center=0.6, width=0.1, height=0.2)
+
+        assert box.pixel_slice(100, 80) == (35, 40, 45, 56)
+
+    def test_pixel_slice_covers_full_frame(self) -> None:
+        box = BoundingBox(x_center=0.5, y_center=0.5, width=1.0, height=1.0)
+
+        assert box.pixel_slice(100, 80) == (0, 0, 100, 80)

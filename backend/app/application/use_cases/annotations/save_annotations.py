@@ -4,9 +4,11 @@ from app.application.dto import BoxInput
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
 from app.application.ports.repositories.class_repository import IClassRepository
 from app.application.ports.repositories.image_repository import IImageRepository
+from app.application.ports.repositories.project_repository import IProjectRepository
 from app.application.ports.unit_of_work import IUnitOfWork
+from app.application.services.task_policy import require_task
 from app.domain.entities.annotation import Annotation
-from app.domain.enums import VerificationStatus
+from app.domain.enums import ProjectTaskType, VerificationStatus
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
 from app.domain.value_objects.bounding_box import BoundingBox
 
@@ -25,11 +27,13 @@ class SaveAnnotationsUseCase:
         classes: IClassRepository,
         annotations: IAnnotationRepository,
         uow: IUnitOfWork,
+        projects: IProjectRepository | None = None,
     ) -> None:
         self._images = images
         self._classes = classes
         self._annotations = annotations
         self._uow = uow
+        self._projects = projects
 
     async def execute(
         self, image_id: UUID, boxes: list[BoxInput]
@@ -37,6 +41,12 @@ class SaveAnnotationsUseCase:
         image = await self._images.get_by_id(image_id)
         if image is None:
             raise ResourceNotFoundException(f"image {image_id} not found")
+
+        if self._projects is not None:
+            project = await self._projects.get_by_id(image.project_id)
+            if project is None:
+                raise ResourceNotFoundException(f"project {image.project_id} not found")
+            require_task(project, ProjectTaskType.DETECTION)
 
         project_classes = await self._classes.list_by_project(image.project_id)
         known_ids = {item.id for item in project_classes}

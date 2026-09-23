@@ -6,6 +6,19 @@ const defaultBase =
 
 export const API_BASE = params.get("api") || defaultBase;
 
+function filenameFromDisposition(disposition, fallback = "download.zip") {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      /* use the plain filename */
+    }
+  }
+  const match = /filename="([^"]+)"/.exec(disposition);
+  return match?.[1] || fallback;
+}
+
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -21,7 +34,12 @@ async function request(path, options = {}) {
     let detail = `${response.status} ${response.statusText}`;
     try {
       const payload = await response.json();
-      detail = payload.detail || JSON.stringify(payload);
+      const rawDetail = payload.detail;
+      if (Array.isArray(rawDetail)) {
+        detail = rawDetail.map((item) => item.msg || JSON.stringify(item)).join("; ");
+      } else {
+        detail = rawDetail || JSON.stringify(payload);
+      }
     } catch {
       try {
         detail = await response.text();
@@ -38,10 +56,10 @@ async function request(path, options = {}) {
 
 export const api = {
   listProjects: () => request("/projects"),
-  createProject: (name, description = null) =>
+  createProject: (name, description = null, task_type = "DETECTION") =>
     request("/projects", {
       method: "POST",
-      body: JSON.stringify({ name, description }),
+      body: JSON.stringify({ name, description, task_type }),
     }),
   updateProject: (id, name, description = null) =>
     request(`/projects/${id}`, {
@@ -70,6 +88,18 @@ export const api = {
   listImages: (projectId) => request(`/projects/${projectId}/images`),
   getImage: (imageId) => request(`/images/${imageId}`),
   imageFileUrl: (imageId) => `${API_BASE}/images/${imageId}/file`,
+
+  putImageLabel: (imageId, classId) =>
+    request(`/images/${imageId}/label`, {
+      method: "PUT",
+      body: JSON.stringify({ class_id: classId }),
+    }),
+  deleteImageLabel: (imageId) =>
+    request(`/images/${imageId}/label`, { method: "DELETE" }),
+  confirmImageLabel: (imageId) =>
+    request(`/images/${imageId}/label/confirm`, { method: "POST" }),
+  rejectImageLabel: (imageId) =>
+    request(`/images/${imageId}/label/reject`, { method: "POST" }),
 
   saveAnnotations: (imageId, boxes) =>
     request(`/images/${imageId}/annotations`, {
@@ -148,6 +178,12 @@ export const api = {
       method: "POST",
     }),
 
+  setImageHoldout: (imageId, holdout) =>
+    request(`/images/${imageId}/holdout`, {
+      method: "PUT",
+      body: JSON.stringify({ holdout }),
+    }),
+
   deleteAnnotation: (imageId, annotationId) =>
     request(`/images/${imageId}/annotations/${annotationId}`, {
       method: "DELETE",
@@ -168,7 +204,7 @@ export const api = {
         form.append("files", file, file.name);
         form.append(
           "relative_paths",
-          (file.webkitRelativePath || file.name || "").replace(/\\/g, "/")
+          (file.relativePath || file.webkitRelativePath || file.name || "").replace(/\\/g, "/")
         );
       }
       xhr.open("POST", `${API_BASE}/projects/${projectId}/images/upload`);
@@ -228,8 +264,11 @@ export const api = {
     }
     const blob = await response.blob();
     const disposition = response.headers.get("Content-Disposition") || "";
-    const match = /filename="([^"]+)"/.exec(disposition);
-    return { blob, filename: match?.[1] || "download.zip" };
+    return { blob, filename: filenameFromDisposition(disposition) };
+  },
+
+  async exportCrops(projectId) {
+    return this._downloadBlob(`/projects/${projectId}/export-crops`);
   },
 
   listDatasetVersions: (projectId) =>
@@ -295,6 +334,14 @@ export const api = {
       body: JSON.stringify(body || {}),
     }),
 
+  auditAnnotations: (projectId, modelId, body) =>
+    request(`/projects/${projectId}/models/${modelId}/audit-annotations`, {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
+
+  getAnnotationAuditJob: (jobId) => request(`/annotation-audit-jobs/${jobId}`),
+
   getAutoLabelJob: (jobId) => request(`/auto-label-jobs/${jobId}`),
 
   listStreams: (projectId) => request(`/projects/${projectId}/streams`),
@@ -308,6 +355,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  createImageFolderStream: (projectId, body) =>
+    request(`/projects/${projectId}/streams/image-folder`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  pickImageFolderStream: (projectId) =>
+    request(`/projects/${projectId}/streams/image-folder/pick`, { method: "POST" }),
   uploadStreamVideo: (projectId, file, name = "") => {
     const form = new FormData();
     form.append("file", file, file.name || "video.mp4");

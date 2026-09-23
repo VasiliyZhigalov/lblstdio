@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from app.domain.exceptions import DomainValidationException
@@ -19,6 +20,8 @@ class ModelVersion:
     map50_95: float | None
     precision: float | None
     recall: float | None
+    top1: float | None = None
+    test_metrics: dict[str, Any] | None = None
     name: str = ""
     is_active_for_stream: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -44,6 +47,8 @@ class ModelVersion:
         map50_95: float | None = None,
         precision: float | None = None,
         recall: float | None = None,
+        top1: float | None = None,
+        test_metrics: dict[str, Any] | None = None,
         name: str | None = None,
         model_id: UUID | None = None,
         is_active_for_stream: bool = True,
@@ -59,6 +64,8 @@ class ModelVersion:
             map50_95=map50_95,
             precision=precision,
             recall=recall,
+            top1=top1,
+            test_metrics=test_metrics,
             name=(name or f"Model v{version_number}").strip(),
             is_active_for_stream=is_active_for_stream,
         )

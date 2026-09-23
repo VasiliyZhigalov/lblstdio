@@ -237,6 +237,10 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     if (trackSize) trackSize.value = cfg.track_stable_max_size_variation ?? 0.35;
     if (trackIv) trackIv.value = cfg.track_stable_interval_seconds ?? 5;
     if (timerIv) timerIv.value = cfg.timer_interval_seconds ?? 5;
+    const confMin = document.getElementById("stream-conf-min");
+    const confMax = document.getElementById("stream-conf-max");
+    if (confMin) confMin.value = cfg.confidence_min ?? 0.25;
+    if (confMax) confMax.value = cfg.confidence_max ?? 1;
     if (tripEn) tripEn.checked = Boolean(cfg.tripwire_enabled);
     if (tripDir) tripDir.value = cfg.tripwire_direction || "ANY";
     if (els.captureMode()) {
@@ -249,19 +253,39 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     lastCaptured = s?.captured_frames_count ?? 0;
   }
 
+  function isImageFolder() {
+    return selected()?.source_type === "IMAGE_FOLDER";
+  }
+
   function syncCaptureMode() {
     const timer = els.captureMode()?.value === "TIMER";
+    const folder = isImageFolder();
     els.timerSettings()?.classList.toggle("hidden", !timer);
+    document.getElementById("stream-class-filter")?.classList.toggle("hidden", timer);
+    document.getElementById("stream-confidence-band")?.classList.toggle("hidden", timer);
+    document.getElementById("stream-track-stable-settings")?.classList.toggle("hidden", timer || folder);
+    document.getElementById("stream-tripwire-settings")?.classList.toggle("hidden", timer || folder);
+    document.getElementById("stream-folder-capture-note")?.classList.toggle("hidden", timer || !folder);
     const help = document.getElementById("stream-capture-help");
     if (help) {
-      help.textContent = timer
-        ? "Таймер сохраняет кадры через заданный интервал. Фильтр классов и линия здесь не применяются."
-        : "Ниже можно настроить фильтр классов, стабильный объект и захват по пересечению линии.";
+      if (timer) {
+        help.textContent = "Таймер сохраняет кадр каждые N секунд без модели. Кадры попадают в неразмеченные.";
+      } else if (folder) {
+        help.textContent = "Для папки кадр сохраняется, если модель нашла выбранный класс. Стабильный трек не применяется.";
+      } else {
+        help.textContent = "Фильтр классов, затем стабильный трек. Линию можно включить отдельно.";
+      }
     }
     const model = els.modelSelect();
     if (model) {
       model.disabled = timer;
       model.classList.toggle("opacity-50", timer);
+    }
+    const goto = document.getElementById("btn-stream-goto-review");
+    if (goto) {
+      goto.textContent = timer
+        ? "Перейти к неразмеченным в Студию →"
+        : "Перейти к верификации в Студию →";
     }
   }
 
@@ -272,9 +296,9 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     const s = selected();
     const timerEnabled = els.captureMode()?.value === "TIMER";
     return {
-      track_stable_enabled: Boolean(
-        document.getElementById("stream-track-stable-enabled")?.checked
-      ),
+      track_stable_enabled:
+        !isImageFolder() &&
+        Boolean(document.getElementById("stream-track-stable-enabled")?.checked),
       track_stable_min_frames: Number(
         document.getElementById("stream-track-stable-n")?.value || 12
       ),
@@ -284,11 +308,15 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       track_stable_interval_seconds: Number(
         document.getElementById("stream-track-stable-interval")?.value || 5
       ),
+      confidence_min: Number(document.getElementById("stream-conf-min")?.value ?? 0.25),
+      confidence_max: Number(document.getElementById("stream-conf-max")?.value ?? 1),
       timer_enabled: timerEnabled,
       timer_interval_seconds: Number(
         document.getElementById("stream-timer-interval")?.value || 5
       ),
-      tripwire_enabled: Boolean(document.getElementById("stream-tripwire-enabled")?.checked),
+      tripwire_enabled:
+        !isImageFolder() &&
+        Boolean(document.getElementById("stream-tripwire-enabled")?.checked),
       tripwire_line: line,
       tripwire_classes: classBoxes.map((el) => el.value),
       tripwire_direction: document.getElementById("stream-tripwire-direction")?.value || "ANY",
@@ -428,6 +456,56 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     }
   });
 
+  async function addImageFolderFromPath(folder_path) {
+    const projectId = currentProjectId();
+    if (!projectId) throw new Error("Сначала откройте проект");
+    const fallback = folder_path.split(/[\\/]/).filter(Boolean).pop() || "Папка";
+    const name = document.getElementById("stream-rtsp-name")?.value?.trim() || fallback;
+    const created = await api.createImageFolderStream(projectId, { name, folder_path });
+    selectedId = created.id;
+    const input = document.getElementById("stream-image-folder-path");
+    if (input) input.value = created.source_uri || folder_path;
+    await refresh();
+    toast("Папка добавлена. Нажмите «Запустить», чтобы показать кадры.", 6000);
+  }
+
+  document.getElementById("btn-stream-add-image-folder")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-stream-add-image-folder");
+    if (btn?.disabled) return;
+    try {
+      const projectId = currentProjectId();
+      if (!projectId) throw new Error("Сначала откройте проект");
+      if (btn) btn.disabled = true;
+      toast("Откроется окно выбора папки.", 4000);
+      const created = await api.pickImageFolderStream(projectId);
+      if (!created) {
+        toast("Выбор папки отменён");
+        return;
+      }
+      selectedId = created.id;
+      const input = document.getElementById("stream-image-folder-path");
+      if (input && created.source_uri) input.value = created.source_uri;
+      await refresh();
+      toast("Папка добавлена. Нажмите «Запустить», чтобы показать кадры.", 6000);
+    } catch (err) {
+      toast(err.message || "Не удалось добавить папку", 8000);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  document.getElementById("stream-image-folder-path")?.addEventListener("keydown", async (ev) => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    const folder_path = ev.currentTarget.value.trim();
+    if (!folder_path) return;
+    try {
+      await addImageFolderFromPath(folder_path);
+    } catch (err) {
+      toast(err.message || "Не удалось добавить папку", 8000);
+    }
+  });
+
   document.getElementById("stream-video-input")?.addEventListener("change", async (ev) => {
     const file = ev.target.files?.[0];
     if (!file) return;
@@ -457,6 +535,8 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     "stream-track-stable-n",
     "stream-track-stable-size",
     "stream-track-stable-interval",
+    "stream-conf-min",
+    "stream-conf-max",
     "stream-timer-interval",
     "stream-capture-mode",
     "stream-tripwire-enabled",
@@ -508,9 +588,13 @@ export function initStreamHub({ toast, navigate, projectPath }) {
   document.getElementById("btn-stream-goto-review")?.addEventListener("click", () => {
     const project = store.get("currentProject");
     if (!project) return;
-    store.set("filmstripFilter", "review");
-    const reviewImage = firstReviewImage(store.get("images"));
-    navigate(projectPath(project.id, "annotate", reviewImage?.id || null));
+    const timer = els.captureMode()?.value === "TIMER";
+    const images = store.get("images") || [];
+    store.set("filmstripFilter", timer ? "unannotated" : "review");
+    const target = timer
+      ? images.find((image) => image.status === "UNANNOTATED") || null
+      : firstReviewImage(images);
+    navigate(projectPath(project.id, "annotate", target?.id || null));
   });
 
   const canvas = els.canvas();

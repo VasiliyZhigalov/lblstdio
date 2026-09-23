@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from app.domain.entities.annotation import Annotation
+from app.domain.entities.image_label import ImageLabel
 from app.domain.enums import ImageSourceType, ImageStatus, SplitType, VerificationStatus
 from app.domain.exceptions import DomainValidationException
 
@@ -72,7 +73,14 @@ class Image:
             for item in active
         ):
             self.is_background = False
-            self.status = ImageStatus.REQUIRES_REVIEW
+            confirmed = any(
+                item.verification_status
+                in (VerificationStatus.VERIFIED, VerificationStatus.AUTO_VERIFIED)
+                for item in active
+            )
+            self.status = (
+                ImageStatus.REQUIRES_RECHECK if confirmed else ImageStatus.REQUIRES_REVIEW
+            )
         elif not active:
             self.status = (
                 ImageStatus.VERIFIED if self.is_background else ImageStatus.UNANNOTATED
@@ -87,6 +95,24 @@ class Image:
                 )
                 else ImageStatus.VERIFIED
             )
+
+    def recalculate_status_from_label(self, label: ImageLabel | None) -> None:
+        if self.status == ImageStatus.REJECTED:
+            return
+        if label is None:
+            self.status = ImageStatus.UNANNOTATED
+            return
+        if label.verification_status == VerificationStatus.PENDING_REVIEW:
+            self.status = ImageStatus.REQUIRES_REVIEW
+            return
+        if label.verification_status == VerificationStatus.AUTO_VERIFIED:
+            self.status = ImageStatus.AUTO_VERIFIED
+            return
+        self.status = ImageStatus.VERIFIED
+
+    def set_test_holdout(self, holdout: bool) -> None:
+        """Pin or unpin the image as a manual test frame excluded from training."""
+        self.split = SplitType.TEST if holdout else SplitType.TRAIN
 
     def mark_as_background(self) -> None:
         """Confirm empty frame as a negative / background sample for the dataset."""

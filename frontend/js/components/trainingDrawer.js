@@ -1,10 +1,16 @@
 import { api } from "../api.js";
 import { showModal, refreshIcons } from "../utils/dom.js";
 
-const PRETRAINED_OPTIONS = [
+const PRETRAINED_DET = [
   { value: "pretrained:yolov8n.pt", label: "YOLOv8n (pretrained)" },
   { value: "pretrained:yolov8s.pt", label: "YOLOv8s (pretrained)" },
   { value: "pretrained:yolov8m.pt", label: "YOLOv8m (pretrained)" },
+];
+
+const PRETRAINED_CLS = [
+  { value: "pretrained:yolov8n-cls.pt", label: "YOLOv8n-cls (pretrained)" },
+  { value: "pretrained:yolov8s-cls.pt", label: "YOLOv8s-cls (pretrained)" },
+  { value: "pretrained:yolov8m-cls.pt", label: "YOLOv8m-cls (pretrained)" },
 ];
 
 function drawSeries(canvas, values, color) {
@@ -31,15 +37,16 @@ function drawSeries(canvas, values, color) {
   ctx.stroke();
 }
 
-function parseBaseModelSelection(raw) {
-  if (!raw) return { base_weights: "yolov8n.pt" };
+function parseBaseModelSelection(raw, classification = false) {
+  const fallback = classification ? "yolov8n-cls.pt" : "yolov8n.pt";
+  if (!raw) return { base_weights: fallback };
   if (raw.startsWith("pretrained:")) {
     return { base_weights: raw.slice("pretrained:".length) };
   }
   if (raw.startsWith("model:")) {
     return { base_model_version_id: raw.slice("model:".length) };
   }
-  return { base_weights: "yolov8n.pt" };
+  return { base_weights: fallback };
 }
 
 function deviceBadgeClass(backend) {
@@ -104,7 +111,9 @@ export function initTrainingDrawer({
     }
 
     const baseSelect = document.getElementById("train-base-model");
-    const pretrained = PRETRAINED_OPTIONS.map(
+    const classification = getProject()?.task_type === "CLASSIFICATION";
+    const pretrainedOptions = classification ? PRETRAINED_CLS : PRETRAINED_DET;
+    const pretrained = pretrainedOptions.map(
       (item) => `<option value="${item.value}">${item.label}</option>`
     ).join("");
     const projectModels = (models || [])
@@ -128,6 +137,11 @@ export function initTrainingDrawer({
     }
     showModal(drawer, true);
     refreshIcons();
+    const chartTitle = document.getElementById("chart-map-title");
+    if (chartTitle) {
+      chartTitle.textContent =
+        project.task_type === "CLASSIFICATION" ? "Accuracy" : "mAP@50";
+    }
     // Re-open while a job is still polling: keep the live progress view.
     if (pollTimer) {
       setup?.classList.add("hidden");
@@ -169,6 +183,9 @@ export function initTrainingDrawer({
     }
     bar.style.width = `${job.progress_percent || 0}%`;
     const history = job.metrics_history || [];
+    const classification = getProject()?.task_type === "CLASSIFICATION";
+    const chartTitle = document.getElementById("chart-map-title");
+    if (chartTitle) chartTitle.textContent = classification ? "Accuracy" : "mAP@50";
     drawSeries(
       document.getElementById("chart-loss"),
       history.map((item) => Number(item.train_loss ?? item.val_loss ?? 0)),
@@ -176,7 +193,7 @@ export function initTrainingDrawer({
     );
     drawSeries(
       document.getElementById("chart-map"),
-      history.map((item) => Number(item.map50 ?? 0)),
+      history.map((item) => Number(item.accuracy ?? item.map50 ?? 0)),
       "#34d399"
     );
     if (job.status === "FAILED") {
@@ -193,17 +210,38 @@ export function initTrainingDrawer({
       const badge = document.getElementById("train-complete-badge");
       badge.classList.remove("hidden");
       const last = history[history.length - 1] || {};
+      const accuracy = last.accuracy != null ? Number(last.accuracy) : null;
       const map50 = last.map50 != null ? Number(last.map50) : null;
-      const score = map50 != null ? `mAP@50: ${map50.toFixed(3)}` : "Метрики сохранены";
+      let score = "Метрики сохранены";
+      if (classification && accuracy != null) score = `Top-1: ${accuracy.toFixed(3)}`;
+      else if (map50 != null) score = `mAP@50: ${map50.toFixed(3)}`;
       const early = job.stopped_early
         ? ` · early stop на эпохе ${job.current_epoch}`
         : ` · эпох: ${job.current_epoch}/${job.epochs}`;
       document.getElementById("train-final-score").textContent = `${score}${early}`;
+      const testScore = document.getElementById("train-test-score");
+      if (testScore) testScore.textContent = formatTestScore(job.test_metrics, classification);
       if (terminalNotifiedJobId !== job.id) {
         terminalNotifiedJobId = job.id;
         onCompleted?.(job);
       }
     }
+  }
+
+  function formatTestScore(metrics, classification) {
+    if (!metrics) return "Тест: набор не задан";
+    if (classification && metrics.top1 != null) {
+      return `Тест Top-1: ${Number(metrics.top1).toFixed(3)}`;
+    }
+    if (metrics.map50 != null) {
+      const parts = [`Тест mAP@50: ${Number(metrics.map50).toFixed(3)}`];
+      if (metrics.map50_95 != null) parts.push(`mAP@50-95: ${Number(metrics.map50_95).toFixed(3)}`);
+      if (metrics.precision != null) parts.push(`P: ${Number(metrics.precision).toFixed(3)}`);
+      if (metrics.recall != null) parts.push(`R: ${Number(metrics.recall).toFixed(3)}`);
+      return parts.join(" · ");
+    }
+    if (metrics.top1 != null) return `Тест Top-1: ${Number(metrics.top1).toFixed(3)}`;
+    return "Тест: метрики недоступны";
   }
 
   document.getElementById("train-patience")?.addEventListener("input", (event) => {
@@ -233,7 +271,7 @@ export function initTrainingDrawer({
         dataset_version_id: versionId,
         epochs,
         patience,
-        ...parseBaseModelSelection(baseRaw),
+        ...parseBaseModelSelection(baseRaw, project.task_type === "CLASSIFICATION"),
       });
       terminalNotifiedJobId = null;
       setup?.classList.add("hidden");

@@ -167,7 +167,7 @@ async def test_get_and_list_images() -> None:
     unannotated = await ListImagesUseCase(images).execute(
         project_id, status=ImageStatus.UNANNOTATED
     )
-    fetched, annotations = await GetImageUseCase(images, _FakeAnnotations([box])).execute(
+    fetched, annotations, _label = await GetImageUseCase(images, _FakeAnnotations([box])).execute(
         image.id
     )
 

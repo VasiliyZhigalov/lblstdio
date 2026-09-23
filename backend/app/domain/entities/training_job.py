@@ -22,6 +22,7 @@ class TrainingJob:
     base_weights: str
     patience: int = 20
     metrics_history: list[dict[str, Any]] = field(default_factory=list)
+    test_metrics: dict[str, Any] | None = None
     current_epoch: int = 0
     stopped_early: bool = False
     model_version_id: UUID | None = None

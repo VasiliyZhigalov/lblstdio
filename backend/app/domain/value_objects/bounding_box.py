@@ -44,3 +44,17 @@ class BoundingBox:
             f"{self.x_center:.6f} {self.y_center:.6f} "
             f"{self.width:.6f} {self.height:.6f}"
         )
+
+    def pixel_slice(self, image_width: int, image_height: int) -> tuple[int, int, int, int]:
+        """Exclusive pixel box (left, top, right, bottom) for PIL crop."""
+        if image_width <= 0 or image_height <= 0:
+            raise DomainValidationException("image dimensions must be positive")
+        x1 = int(round((self.x_center - self.width / 2) * image_width))
+        y1 = int(round((self.y_center - self.height / 2) * image_height))
+        x2 = int(round((self.x_center + self.width / 2) * image_width))
+        y2 = int(round((self.y_center + self.height / 2) * image_height))
+        x1 = min(max(x1, 0), image_width - 1)
+        y1 = min(max(y1, 0), image_height - 1)
+        x2 = min(max(x2, x1 + 1), image_width)
+        y2 = min(max(y2, y1 + 1), image_height)
+        return x1, y1, x2, y2

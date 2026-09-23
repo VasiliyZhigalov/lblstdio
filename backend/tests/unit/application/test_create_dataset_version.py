@@ -399,3 +399,65 @@ async def test_dataset_version_is_immutable_after_source_edit() -> None:
     assert storage.files[label_path] == frozen_label
     train_item = next(item for item in result.items if item.image_id == train.id)
     assert train_item.snapshot_annotations[0].x_center == 0.5
+
+
+@pytest.mark.asyncio
+async def test_manual_test_images_stay_out_of_train_and_valid() -> None:
+    project = Project.create("Holdout")
+    class_id = uuid4()
+    annotation_class = AnnotationClass(
+        id=class_id,
+        project_id=project.id,
+        name="crack",
+        color_hex="#FF0000",
+        index_id=0,
+    )
+    images = [
+        _make_image(
+            project.id,
+            split=SplitType.TRAIN,
+            status=ImageStatus.VERIFIED,
+            file_path=f"{index}.png",
+        )
+        for index in range(4)
+    ]
+    images[1].set_test_holdout(True)
+    boxes = {
+        image.id: [
+            Annotation.create_manual(image.id, class_id, BoundingBox(0.5, 0.5, 0.2, 0.2))
+        ]
+        for image in images
+    }
+    storage = _FakeStorage()
+    for image in images:
+        storage.files[image.file_path] = b"img"
+    use_case = CreateDatasetVersionUseCase(
+        _FakeProjects(project),
+        _FakeImages(images),
+        _FakeAnnotations(boxes),
+        _FakeClasses([annotation_class]),
+        _FakeVersions(),
+        storage,
+        _FakeAugmentation(),
+        _FakeUow(),
+        min_verified_images=4,
+    )
+
+    result = await use_case.execute(
+        project.id,
+        AugmentationConfig(multiplier=2),
+        ratios=SplitRatios(train=0.7, valid=0.2, test=0.1),
+        rng=Random(0),
+    )
+
+    by_image = {item.image_id: item.split for item in result.items}
+    assert by_image[images[1].id] == SplitType.TEST
+    assert SplitType.TEST not in {
+        split for image_id, split in by_image.items() if image_id != images[1].id
+    }
+    assert result.test_count == 1
+    assert result.train_count + result.valid_count == 3
+    assert result.test_file_count == 1
+    test_files = [path for path in storage.files if "/test/images/" in path]
+    assert len(test_files) == 1
+    assert "_aug_" not in test_files[0]

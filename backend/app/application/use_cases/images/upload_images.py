@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path, PurePosixPath
 from uuid import UUID
 
@@ -12,8 +13,12 @@ from app.application.ports.unit_of_work import IUnitOfWork
 from app.domain.entities.annotation import Annotation
 from app.domain.entities.annotation_class import AnnotationClass
 from app.domain.entities.image import Image
-from app.domain.enums import ImageSourceType, ImageStatus, SplitType
-from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
+from app.domain.enums import ImageSourceType, ImageStatus, ProjectTaskType, SplitType
+from app.domain.exceptions import (
+    DomainValidationException,
+    ResourceNotFoundException,
+    TaskTypeMismatchException,
+)
 from app.domain.services.class_index import allocate_next_index
 from app.domain.services.yolo_label_import import (
     expand_upload_bundle,
@@ -24,8 +29,16 @@ from app.domain.services.yolo_label_import import (
 from app.domain.value_objects.bounding_box import BoundingBox
 
 _ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-_ALLOWED_SIDECAR_EXTENSIONS = {".txt", ".yaml", ".yml", ".zip"}
+_ALLOWED_SIDECAR_EXTENSIONS = {".txt", ".yaml", ".yml", ".zip", ".json"}
+MAX_UPLOAD_FILES = 5000
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_UPLOAD_ZIP_BYTES = 512 * 1024 * 1024
+
+
+def _image_bytes(payload: bytes | Path) -> bytes:
+    if isinstance(payload, Path):
+        return payload.read_bytes()
+    return payload
 
 _CLASS_COLORS = (
     "#EF4444",
@@ -70,21 +83,54 @@ class UploadImagesUseCase:
             raise ResourceNotFoundException(f"project {project_id} not found")
         if not files:
             raise DomainValidationException("at least one image file is required")
+        if len(files) > MAX_UPLOAD_FILES:
+            raise DomainValidationException(
+                f"too many files: maximum is {MAX_UPLOAD_FILES}"
+            )
 
-        for uploaded in files:
-            if len(uploaded.content) > MAX_UPLOAD_BYTES:
-                raise DomainValidationException(
-                    f"file '{uploaded.filename}' exceeds the size limit"
+        with tempfile.TemporaryDirectory() as staging_name:
+            staging = Path(staging_name)
+            image_dir = staging / "images"
+            image_dir.mkdir()
+            staged: list[tuple[str, Path]] = []
+            for index, uploaded in enumerate(files):
+                extension = Path(uploaded.filename).suffix.lower()
+                if extension not in _ALLOWED_IMAGE_EXTENSIONS | _ALLOWED_SIDECAR_EXTENSIONS:
+                    raise DomainValidationException(
+                        f"unsupported file format '{extension or uploaded.filename}'"
+                    )
+                if uploaded.body_path:
+                    source = Path(uploaded.body_path)
+                else:
+                    source = staging / f"part_{index:05d}"
+                    source.write_bytes(uploaded.content)
+                size_limit = (
+                    MAX_UPLOAD_ZIP_BYTES if extension == ".zip" else MAX_UPLOAD_BYTES
                 )
-            extension = Path(uploaded.filename).suffix.lower()
-            if extension not in _ALLOWED_IMAGE_EXTENSIONS | _ALLOWED_SIDECAR_EXTENSIONS:
-                raise DomainValidationException(
-                    f"unsupported file format '{extension or uploaded.filename}'"
-                )
+                if source.stat().st_size > size_limit:
+                    raise DomainValidationException(
+                        f"file '{uploaded.filename}' exceeds the size limit"
+                    )
+                staged.append((uploaded.filename, source))
 
-        images_map, labels_map, class_files = expand_upload_bundle(
-            [(item.filename, item.content) for item in files]
-        )
+            images_map, labels_map, class_files = expand_upload_bundle(
+                staged, image_staging_dir=image_dir
+            )
+            if project.task_type == ProjectTaskType.CLASSIFICATION and (
+                labels_map or class_files
+            ):
+                raise TaskTypeMismatchException(
+                    "classification projects accept images only"
+                )
+            return await self._persist_bundle(project_id, images_map, labels_map, class_files)
+
+    async def _persist_bundle(
+        self,
+        project_id: UUID,
+        images_map: dict[str, bytes | Path],
+        labels_map: dict[str, bytes],
+        class_files: dict[str, bytes],
+    ) -> list[Image]:
         if not images_map:
             raise DomainValidationException("at least one image file is required")
 
@@ -98,7 +144,12 @@ class UploadImagesUseCase:
             for path, payload in class_files.items()
             if PurePosixPath(path).name.lower() == "classes.txt"
         }
-        class_names = parse_class_names(yaml_files, text_class_files)
+        json_class_files = {
+            path: payload
+            for path, payload in class_files.items()
+            if PurePosixPath(path).name.lower() == "notes.json"
+        }
+        class_names = parse_class_names(yaml_files, text_class_files, json_class_files)
 
         paired = pair_images_and_labels(images_map, labels_map)
         prepared_labels: dict[str, list] = {}
@@ -153,7 +204,8 @@ class UploadImagesUseCase:
             for created_class in created_classes:
                 await self._classes.add(created_class)
 
-            for image_path, content in images_map.items():
+            for image_path, payload in images_map.items():
+                content = _image_bytes(payload)
                 width, height = self._metadata.read_size(content)
                 basename = PurePosixPath(image_path).name
                 relative_dir = f"projects/{project_id}/images"

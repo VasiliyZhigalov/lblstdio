@@ -20,16 +20,20 @@ from app.domain.enums import StreamSourceType
 from app.domain.services.stream_capture_rules import (
     TrackStableSample,
     class_is_allowed,
+    confidence_in_band,
+    detections_matching_classes,
     should_capture_track_stable,
     should_capture_tripwire,
 )
 from app.domain.services.tripwire import TripwireDebouncer
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
+from app.infrastructure.streaming.image_folder_capture import ImageFolderCapture
 
 logger = logging.getLogger(__name__)
 
 _VIDEO_FAIL_LIMIT = 30
 _VIDEO_FAIL_SLEEP_S = 0.05
+_IMAGE_FOLDER_FRAME_INTERVAL_S = 0.5
 _INGEST_QUEUE_MAXSIZE = 64
 _RECONNECT_DELAY_INITIAL_S = 1.0
 _RECONNECT_DELAY_MAX_S = 30.0
@@ -224,7 +228,9 @@ class OpenCVStreamRunner:
             (parts.scheme, f"{userinfo}@{hostport}", parts.path, parts.query, parts.fragment)
         )
 
-    def _open_capture(self, stream: StreamSource) -> cv2.VideoCapture:
+    def _open_capture(self, stream: StreamSource):
+        if stream.source_type == StreamSourceType.IMAGE_FOLDER:
+            return ImageFolderCapture(stream.source_uri)
         if stream.source_type == StreamSourceType.DEVICE:
             index = int(stream.source_uri)
             backends: list[int] = []
@@ -300,6 +306,8 @@ class OpenCVStreamRunner:
                     "failed to open camera device - index may be wrong or "
                     "OpenCV build has no webcam backend"
                 )
+            elif stream.source_type == StreamSourceType.IMAGE_FOLDER:
+                message = "image folder has no readable images"
             else:
                 message = "failed to open video source"
             self._fail_ready(stream.id, ready_event, message)
@@ -338,6 +346,13 @@ class OpenCVStreamRunner:
 
                 ok, frame = cap.read()
                 if not ok:
+                    if stream.source_type == StreamSourceType.IMAGE_FOLDER:
+                        self._fail_ready(
+                            stream.id,
+                            ready_event,
+                            "image folder has no readable images",
+                        )
+                        break
                     if stream.source_type == StreamSourceType.VIDEO_FILE:
                         video_fail_streak += 1
                         if video_fail_streak >= _VIDEO_FAIL_LIMIT:
@@ -379,7 +394,11 @@ class OpenCVStreamRunner:
                     detections, track_meta, box_xyxy = self._parse_results(
                         results, w, h
                     )
+                    detections, track_meta = self._apply_confidence_band(
+                        detections, track_meta, config
+                    )
                 captured = False
+                folder_stills = stream.source_type == StreamSourceType.IMAGE_FOLDER
 
                 if (
                     config.timer_enabled
@@ -394,7 +413,19 @@ class OpenCVStreamRunner:
                         ingest_in_flight = True
                         captured = True
 
-                if config.tripwire_enabled and config.tripwire_line is not None:
+                if folder_stills and not config.timer_enabled and not ingest_in_flight:
+                    matched = detections_matching_classes(detections, allowed)
+                    if matched and self._enqueue_ingest(
+                        stream.id, frame, matched, "class_filter", now
+                    ):
+                        ingest_in_flight = True
+                        captured = True
+
+                if (
+                    not folder_stills
+                    and config.tripwire_enabled
+                    and config.tripwire_line is not None
+                ):
                     for track_id, (center, class_index, conf, _area) in track_meta.items():
                         prev = prev_centers.get(track_id)
                         prev_centers[track_id] = center
@@ -421,7 +452,8 @@ class OpenCVStreamRunner:
                             break
 
                 if (
-                    not captured
+                    not folder_stills
+                    and not captured
                     and not ingest_in_flight
                     and config.track_stable_enabled
                 ):
@@ -462,7 +494,7 @@ class OpenCVStreamRunner:
                             last_saved_at=track_last_saved.get(track_id),
                             interval_seconds=config.track_stable_interval_seconds,
                             min_frames=config.track_stable_min_frames,
-                            min_avg_conf=config.track_stable_min_avg_conf,
+                            min_avg_conf=max(config.confidence_min, 1e-6),
                             max_size_variation=config.track_stable_max_size_variation,
                         )
                         if best_i is None:
@@ -504,6 +536,10 @@ class OpenCVStreamRunner:
                 if not marked_ready:
                     marked_ready = True
                     ready_event.set()
+
+                if stream.source_type == StreamSourceType.IMAGE_FOLDER:
+                    if stop_event.wait(_IMAGE_FOLDER_FRAME_INTERVAL_S):
+                        break
         except Exception as exc:
             logger.exception("stream runner crashed")
             self._fail_ready(stream.id, ready_event, str(exc))
@@ -583,6 +619,21 @@ class OpenCVStreamRunner:
             x1, y1, x2, y2 = map(int, xyxy[i])
             box_xyxy[tid] = (x1, y1, x2, y2)
         return detections, track_meta, box_xyxy
+
+    @staticmethod
+    def _apply_confidence_band(detections, track_meta, config: StreamTriggerConfig):
+        low, high = config.confidence_min, config.confidence_max
+        kept = [
+            item
+            for item in detections
+            if confidence_in_band(item.confidence, low, high)
+        ]
+        meta = {
+            track_id: sample
+            for track_id, sample in track_meta.items()
+            if confidence_in_band(sample[2], low, high)
+        }
+        return kept, meta
 
     def _draw_overlay(
         self,

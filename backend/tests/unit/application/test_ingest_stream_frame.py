@@ -136,3 +136,31 @@ async def test_ingest_creates_hitl_image_and_predictions() -> None:
     assert boxes[0].model_version_id == stream.model_version_id
     assert streams.stream.captured_frames_count == 1
     assert uow.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_timer_ingest_without_detections_is_unannotated() -> None:
+    project_id = uuid4()
+    stream = StreamSource.create(
+        project_id=project_id,
+        name="Cam",
+        source_type=StreamSourceType.RTSP,
+        source_uri="rtsp://x",
+    )
+    streams = _FakeStreams(stream)
+    images = _FakeImages()
+    annotations = _FakeAnnotations()
+    use_case = IngestStreamFrameUseCase(
+        streams=streams,
+        images=images,
+        annotations=annotations,
+        classes=_FakeClasses([]),
+        storage=_FakeStorage(),
+        metadata=_FakeMetadata(),
+        uow=_FakeUow(),
+    )
+
+    image = await use_case.execute(stream.id, b"fake-jpeg", [], reason="timer")
+
+    assert image.status == ImageStatus.UNANNOTATED
+    assert annotations.store[image.id] == []

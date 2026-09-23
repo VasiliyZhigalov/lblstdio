@@ -59,6 +59,13 @@ def _seed_verified_triplet(client: TestClient) -> str:
         ],
     )
     assert upload.status_code == 201, upload.text
+    test_image = next(item for item in upload.json() if item["file_name"] == "test.png")
+    held = client.put(
+        f"/api/v1/images/{test_image['id']}/holdout",
+        json={"holdout": True},
+    )
+    assert held.status_code == 200, held.text
+    assert held.json()["split"] == "test"
     for image in upload.json():
         saved = client.put(
             f"/api/v1/images/{image['id']}/annotations",

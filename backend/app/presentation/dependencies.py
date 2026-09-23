@@ -22,14 +22,21 @@ from app.application.use_cases.dataset.create_dataset_version import (
     GetDatasetVersionUseCase,
     ListDatasetVersionsUseCase,
 )
+from app.application.use_cases.dataset.export_crops import ExportCropsUseCase
 from app.application.use_cases.dataset.export_yolo import ExportYOLOUseCase
 from app.application.use_cases.dataset.manage_dataset_version import (
     DeleteDatasetVersionUseCase,
     ExportDatasetVersionUseCase,
     RenameDatasetVersionUseCase,
 )
+from app.application.use_cases.labels.save_image_label import (
+    ClearImageLabelUseCase,
+    ConfirmImageLabelUseCase,
+    SaveImageLabelUseCase,
+)
 from app.application.use_cases.images.delete_image import DeleteImageUseCase
 from app.application.use_cases.images.get_image import GetImageUseCase, ListImagesUseCase
+from app.application.use_cases.images.set_test_holdout import SetImageTestHoldoutUseCase
 from app.application.use_cases.images.upload_images import UploadImagesUseCase
 from app.application.use_cases.keypoints.propagate_box import PropagateBoxViaKeypointsUseCase
 from app.application.use_cases.projects.create_project import (
@@ -42,6 +49,7 @@ from app.application.use_cases.ml.batch_auto_label import (
     BatchAutoLabelUseCase,
     GetAutoLabelJobUseCase,
 )
+from app.application.use_cases.ml.audit_annotations import AuditAnnotationsRunner
 from app.application.use_cases.ml.manage_model_version import (
     DeleteModelVersionUseCase,
     ExportModelVersionUseCase,
@@ -70,6 +78,9 @@ from app.infrastructure.db.repositories.class_repository import SqliteClassRepos
 from app.infrastructure.db.repositories.dataset_version_repository import (
     SqliteDatasetVersionRepository,
 )
+from app.infrastructure.db.repositories.image_label_repository import (
+    SqliteImageLabelRepository,
+)
 from app.infrastructure.db.repositories.image_repository import SqliteImageRepository
 from app.infrastructure.db.repositories.model_version_repository import (
     SqliteModelVersionRepository,
@@ -84,7 +95,10 @@ from app.infrastructure.db.repositories.training_job_repository import (
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 from app.infrastructure.ml.albumentations_service import AlbumentationsAugmentationService
 from app.infrastructure.ml.sift_matcher import SiftKeypointMatcher
-from app.infrastructure.ml.ultralytics_predictor import UltralyticsPredictor
+from app.infrastructure.ml.ultralytics_predictor import (
+    UltralyticsClassificationPredictor,
+    UltralyticsPredictor,
+)
 from app.infrastructure.storage.local_storage import LocalFileStorage
 from app.infrastructure.storage.pillow_metadata import PillowMetadataReader
 from app.infrastructure.storage.zip_packer import ZipArchivePacker
@@ -119,6 +133,12 @@ def get_annotation_repo(
     session: AsyncSession = Depends(get_session),
 ) -> SqliteAnnotationRepository:
     return SqliteAnnotationRepository(session)
+
+
+def get_image_label_repo(
+    session: AsyncSession = Depends(get_session),
+) -> SqliteImageLabelRepository:
+    return SqliteImageLabelRepository(session)
 
 
 def get_dataset_version_repo(
@@ -264,8 +284,9 @@ def get_delete_class_use_case(
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     images: SqliteImageRepository = Depends(get_image_repo),
     annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
 ) -> DeleteClassUseCase:
-    return DeleteClassUseCase(projects, classes, uow, images, annotations)
+    return DeleteClassUseCase(projects, classes, uow, images, annotations, labels)
 
 
 def get_rename_class_use_case(
@@ -299,8 +320,9 @@ def get_list_images_use_case(
 def get_get_image_use_case(
     images: SqliteImageRepository = Depends(get_image_repo),
     annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
 ) -> GetImageUseCase:
-    return GetImageUseCase(images, annotations)
+    return GetImageUseCase(images, annotations, labels)
 
 
 def get_delete_image_use_case(
@@ -317,8 +339,9 @@ def get_save_annotations_use_case(
     classes: SqliteClassRepository = Depends(get_class_repo),
     annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+    projects: SqliteProjectRepository = Depends(get_project_repo),
 ) -> SaveAnnotationsUseCase:
-    return SaveAnnotationsUseCase(images, classes, annotations, uow)
+    return SaveAnnotationsUseCase(images, classes, annotations, uow, projects)
 
 
 def get_verify_annotation_use_case(
@@ -353,12 +376,48 @@ def get_clear_review_annotations_use_case(
     return ClearReviewImagesAnnotationsUseCase(images, annotations, uow)
 
 
+def get_set_image_holdout_use_case(
+    images: SqliteImageRepository = Depends(get_image_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> SetImageTestHoldoutUseCase:
+    return SetImageTestHoldoutUseCase(images, uow)
+
+
 def get_mark_background_use_case(
     images: SqliteImageRepository = Depends(get_image_repo),
     annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+    projects: SqliteProjectRepository = Depends(get_project_repo),
 ) -> MarkImageAsBackgroundUseCase:
-    return MarkImageAsBackgroundUseCase(images, annotations, uow)
+    return MarkImageAsBackgroundUseCase(images, annotations, uow, projects)
+
+
+def get_save_image_label_use_case(
+    projects: SqliteProjectRepository = Depends(get_project_repo),
+    images: SqliteImageRepository = Depends(get_image_repo),
+    classes: SqliteClassRepository = Depends(get_class_repo),
+    labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> SaveImageLabelUseCase:
+    return SaveImageLabelUseCase(projects, images, classes, labels, uow)
+
+
+def get_clear_image_label_use_case(
+    projects: SqliteProjectRepository = Depends(get_project_repo),
+    images: SqliteImageRepository = Depends(get_image_repo),
+    labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> ClearImageLabelUseCase:
+    return ClearImageLabelUseCase(projects, images, labels, uow)
+
+
+def get_confirm_image_label_use_case(
+    projects: SqliteProjectRepository = Depends(get_project_repo),
+    images: SqliteImageRepository = Depends(get_image_repo),
+    labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> ConfirmImageLabelUseCase:
+    return ConfirmImageLabelUseCase(projects, images, labels, uow)
 
 
 def get_delete_annotation_use_case(
@@ -380,10 +439,22 @@ def get_propagate_box_use_case(
     storage: LocalFileStorage = Depends(get_storage),
     matcher: SiftKeypointMatcher = Depends(get_matcher),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+    projects: SqliteProjectRepository = Depends(get_project_repo),
 ) -> PropagateBoxViaKeypointsUseCase:
     return PropagateBoxViaKeypointsUseCase(
-        images, classes, annotations, storage, matcher, uow
+        images, classes, annotations, storage, matcher, uow, projects
     )
+
+
+def get_export_crops_use_case(
+    projects: SqliteProjectRepository = Depends(get_project_repo),
+    classes: SqliteClassRepository = Depends(get_class_repo),
+    images: SqliteImageRepository = Depends(get_image_repo),
+    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    storage: LocalFileStorage = Depends(get_storage),
+    packer: ZipArchivePacker = Depends(get_packer),
+) -> ExportCropsUseCase:
+    return ExportCropsUseCase(projects, classes, images, annotations, storage, packer)
 
 
 def get_export_yolo_use_case(
@@ -393,8 +464,11 @@ def get_export_yolo_use_case(
     annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
     storage: LocalFileStorage = Depends(get_storage),
     packer: ZipArchivePacker = Depends(get_packer),
+    labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
 ) -> ExportYOLOUseCase:
-    return ExportYOLOUseCase(projects, classes, images, annotations, storage, packer)
+    return ExportYOLOUseCase(
+        projects, classes, images, annotations, storage, packer, labels
+    )
 
 
 def get_augmentation_service() -> AlbumentationsAugmentationService:
@@ -410,6 +484,7 @@ def get_create_dataset_version_use_case(
     storage: LocalFileStorage = Depends(get_storage),
     augmentation: AlbumentationsAugmentationService = Depends(get_augmentation_service),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+    labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
 ) -> CreateDatasetVersionUseCase:
     return CreateDatasetVersionUseCase(
         projects,
@@ -420,6 +495,7 @@ def get_create_dataset_version_use_case(
         storage,
         augmentation,
         uow,
+        labels=labels,
     )
 
 
@@ -462,6 +538,10 @@ def get_delete_dataset_version_use_case(
 
 def get_predictor() -> UltralyticsPredictor:
     return UltralyticsPredictor()
+
+
+def get_classification_predictor() -> UltralyticsClassificationPredictor:
+    return UltralyticsClassificationPredictor()
 
 
 def get_train_model_use_case(
@@ -543,6 +623,11 @@ def get_batch_auto_label_use_case(
     storage: LocalFileStorage = Depends(get_storage),
     predictor: UltralyticsPredictor = Depends(get_predictor),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+    projects: SqliteProjectRepository = Depends(get_project_repo),
+    labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
+    classification_predictor: UltralyticsClassificationPredictor = Depends(
+        get_classification_predictor
+    ),
 ) -> BatchAutoLabelUseCase:
     return BatchAutoLabelUseCase(
         models,
@@ -554,7 +639,14 @@ def get_batch_auto_label_use_case(
         predictor,
         uow,
         runner=getattr(request.app.state, "auto_label_runner", None),
+        projects=projects,
+        labels=labels,
+        classification_predictor=classification_predictor,
     )
+
+
+def get_audit_annotations_runner(request: Request) -> AuditAnnotationsRunner:
+    return request.app.state.audit_annotations_runner
 
 
 def get_get_auto_label_job_use_case(

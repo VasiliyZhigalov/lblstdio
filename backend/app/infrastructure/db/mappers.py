@@ -7,14 +7,16 @@ from app.domain.entities.dataset_version import (
     AugmentationConfig,
     DatasetItem,
     DatasetVersion,
-    SnapshotAnnotation,
+    snapshot_entry_from_dict,
 )
 from app.domain.entities.image import Image
+from app.domain.entities.image_label import ImageLabel
 from app.domain.entities.project import Project
 from app.domain.enums import (
     DatasetVersionStatus,
     ImageSourceType,
     ImageStatus,
+    ProjectTaskType,
     SourceType,
     SplitType,
     StreamSourceType,
@@ -29,6 +31,7 @@ from app.infrastructure.db.tables import (
     ClassRow,
     DatasetItemRow,
     DatasetVersionRow,
+    ImageLabelRow,
     ImageRow,
     ProjectRow,
     StreamSourceRow,
@@ -50,16 +53,19 @@ def project_to_row(project: Project) -> ProjectRow:
         description=project.description,
         created_at=project.created_at,
         updated_at=project.updated_at,
+        task_type=project.task_type.value,
     )
 
 
 def row_to_project(row: ProjectRow) -> Project:
+    raw_type = getattr(row, "task_type", None) or ProjectTaskType.DETECTION.value
     return Project(
         id=UUID(row.id),
         name=row.name,
         description=row.description,
         created_at=ensure_utc(row.created_at),
         updated_at=ensure_utc(row.updated_at),
+        task_type=ProjectTaskType(raw_type),
     )
 
 
@@ -163,6 +169,34 @@ def row_to_annotation(row: AnnotationRow) -> Annotation:
     )
 
 
+def label_to_row(label: ImageLabel) -> ImageLabelRow:
+    return ImageLabelRow(
+        id=str(label.id),
+        image_id=str(label.image_id),
+        class_id=str(label.class_id),
+        source=label.source.value,
+        confidence=label.confidence,
+        verification_status=label.verification_status.value,
+        verified_at=label.verified_at,
+        model_version_id=(
+            str(label.model_version_id) if label.model_version_id else None
+        ),
+    )
+
+
+def row_to_label(row: ImageLabelRow) -> ImageLabel:
+    return ImageLabel(
+        id=UUID(row.id),
+        image_id=UUID(row.image_id),
+        class_id=UUID(row.class_id),
+        source=SourceType(row.source),
+        verification_status=VerificationStatus(row.verification_status),
+        confidence=row.confidence,
+        verified_at=ensure_utc(row.verified_at),
+        model_version_id=UUID(row.model_version_id) if row.model_version_id else None,
+    )
+
+
 def augmentation_to_dict(config: AugmentationConfig) -> dict:
     return {
         "resize_width": config.resize_width,
@@ -247,7 +281,7 @@ def row_to_dataset_item(row: DatasetItemRow) -> DatasetItem:
         image_id=UUID(row.image_id),
         split=SplitType(row.split),
         snapshot_annotations=[
-            SnapshotAnnotation.from_dict(raw) for raw in (row.snapshot_annotations or [])
+            snapshot_entry_from_dict(raw) for raw in (row.snapshot_annotations or [])
         ],
         source_file_name=row.source_file_name,
     )
@@ -280,6 +314,8 @@ def stream_trigger_config_to_dict(config: StreamTriggerConfig) -> dict:
         "track_stable_max_size_variation": config.track_stable_max_size_variation,
         "track_stable_min_avg_conf": config.track_stable_min_avg_conf,
         "track_stable_interval_seconds": config.track_stable_interval_seconds,
+        "confidence_min": config.confidence_min,
+        "confidence_max": config.confidence_max,
         "timer_enabled": config.timer_enabled,
         "timer_interval_seconds": config.timer_interval_seconds,
         "tripwire_enabled": config.tripwire_enabled,
@@ -309,6 +345,8 @@ def dict_to_stream_trigger_config(raw: dict) -> StreamTriggerConfig:
         ),
         track_stable_min_avg_conf=float(raw.get("track_stable_min_avg_conf", 0.75)),
         track_stable_interval_seconds=float(interval),
+        confidence_min=float(raw.get("confidence_min", 0.25)),
+        confidence_max=float(raw.get("confidence_max", 1.0)),
         timer_enabled=bool(raw.get("timer_enabled", False)),
         timer_interval_seconds=float(raw.get("timer_interval_seconds", 5.0)),
         tripwire_enabled=bool(raw.get("tripwire_enabled", False)),

@@ -6,8 +6,8 @@ from app.application.ports.services.model_trainer import TrainingConfig, Trainin
 from app.application.use_cases.ml.train_model import TrainModelUseCase
 from app.domain.entities.dataset_version import AugmentationConfig, DatasetVersion
 from app.domain.entities.project import Project
-from app.domain.enums import DatasetVersionStatus, TrainingJobStatus
-from app.domain.exceptions import DatasetNotReadyException
+from app.domain.enums import DatasetVersionStatus, ProjectTaskType, TrainingJobStatus
+from app.domain.exceptions import DatasetNotReadyException, DomainValidationException
 
 
 class _FakeProjects:
@@ -192,3 +192,155 @@ async def test_train_model_uses_project_model_weights(tmp_path, monkeypatch) -> 
         base_weights=None,
     )
     assert Path(job.base_weights) == weights
+
+
+def _ready(project: Project, yaml_path: str) -> DatasetVersion:
+    version = DatasetVersion.create(project.id, 1, "v1")
+    version.mark_ready(
+        train_count=1,
+        valid_count=1,
+        test_count=1,
+        train_file_count=1,
+        valid_file_count=1,
+        test_file_count=1,
+        yaml_path=yaml_path,
+        items=[],
+    )
+    return version
+
+
+@pytest.mark.asyncio
+async def test_train_classification_defaults_cls_weights() -> None:
+    project = Project.create("Cls", task_type=ProjectTaskType.CLASSIFICATION)
+    version = _ready(project, "projects/p/datasets/v1")
+    jobs = _FakeJobs()
+    job = await TrainModelUseCase(
+        _FakeProjects(project),
+        _FakeVersions(version),
+        jobs,
+        _FakeStorage(),
+        _FakeUow(),
+        device_resolver=lambda _: "cpu",
+    ).execute(project.id, version.id)
+    assert job.base_weights == "yolov8n-cls.pt"
+
+
+@pytest.mark.asyncio
+async def test_train_classification_rejects_detection_checkpoint(tmp_path) -> None:
+    from app.domain.entities.model_version import ModelVersion
+    from app.domain.exceptions import DomainValidationException
+
+    project = Project.create("Cls", task_type=ProjectTaskType.CLASSIFICATION)
+    version = _ready(project, "projects/p/datasets/v1")
+    model = ModelVersion.create(
+        project_id=project.id,
+        dataset_version_id=version.id,
+        training_job_id=uuid4(),
+        version_number=1,
+        weights_path="projects/p/models/v1/best.pt",
+        map50=0.8,
+    )
+    weights = tmp_path / "best.pt"
+    weights.write_bytes(b"w")
+
+    class _Models:
+        async def get_by_id(self, model_id):
+            return model if model.id == model_id else None
+
+    class _Storage(_FakeStorage):
+        def get_absolute_path(self, relative_path: str) -> str:
+            if relative_path.endswith("best.pt"):
+                return str(weights)
+            return super().get_absolute_path(relative_path)
+
+    use_case = TrainModelUseCase(
+        _FakeProjects(project),
+        _FakeVersions(version),
+        _FakeJobs(),
+        _Storage(),
+        _FakeUow(),
+        models=_Models(),
+    )
+    with pytest.raises(DomainValidationException, match="detection checkpoint"):
+        await use_case.execute(
+            project.id,
+            version.id,
+            base_model_version_id=model.id,
+            base_weights=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_train_detection_rejects_classification_checkpoint(tmp_path) -> None:
+    from app.domain.entities.model_version import ModelVersion
+
+    project = Project.create("Det")
+    version = _ready(project, "projects/p/datasets/v1/data.yaml")
+    model = ModelVersion.create(
+        project_id=project.id,
+        dataset_version_id=version.id,
+        training_job_id=uuid4(),
+        version_number=1,
+        weights_path="projects/p/models/v1/best.pt",
+        top1=0.9,
+    )
+    weights = tmp_path / "best.pt"
+    weights.write_bytes(b"w")
+
+    class _Models:
+        async def get_by_id(self, model_id):
+            return model if model.id == model_id else None
+
+    class _Storage(_FakeStorage):
+        def get_absolute_path(self, relative_path: str) -> str:
+            if relative_path.endswith("best.pt"):
+                return str(weights)
+            return super().get_absolute_path(relative_path)
+
+    use_case = TrainModelUseCase(
+        _FakeProjects(project),
+        _FakeVersions(version),
+        _FakeJobs(),
+        _Storage(),
+        _FakeUow(),
+        models=_Models(),
+    )
+    with pytest.raises(DomainValidationException, match="classification checkpoint"):
+        await use_case.execute(
+            project.id,
+            version.id,
+            base_model_version_id=model.id,
+            base_weights=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_train_classification_rejects_det_weights() -> None:
+    project = Project.create("Cls", task_type=ProjectTaskType.CLASSIFICATION)
+    version = _ready(project, "projects/p/datasets/v1")
+    use_case = TrainModelUseCase(
+        _FakeProjects(project),
+        _FakeVersions(version),
+        _FakeJobs(),
+        _FakeStorage(),
+        _FakeUow(),
+        device_resolver=lambda _: "cpu",
+    )
+    with pytest.raises(DomainValidationException, match="base_weights"):
+        await use_case.execute(project.id, version.id, base_weights="yolov8n.pt")
+
+
+@pytest.mark.asyncio
+async def test_train_detection_rejects_cls_weights() -> None:
+    project = Project.create("Det")
+    version = _ready(project, "projects/p/datasets/v1/data.yaml")
+    use_case = TrainModelUseCase(
+        _FakeProjects(project),
+        _FakeVersions(version),
+        _FakeJobs(),
+        _FakeStorage(),
+        _FakeUow(),
+        device_resolver=lambda _: "cpu",
+    )
+    with pytest.raises(DomainValidationException, match="base_weights"):
+        await use_case.execute(project.id, version.id, base_weights="yolov8n-cls.pt")

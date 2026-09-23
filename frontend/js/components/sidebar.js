@@ -1,9 +1,9 @@
-import { store } from "../store.js";
+import { store, isClassification } from "../store.js";
 import { nextClassColor } from "../utils/math.js";
 import { api } from "../api.js";
 import { escapeHtml, refreshIcons } from "../utils/dom.js";
 
-export function initSidebar({ onError, onDeleteBox }) {
+export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
   const classesList = document.getElementById("classes-list");
   const annotationsList = document.getElementById("annotations-list");
   const addBtn = document.getElementById("btn-add-class");
@@ -24,7 +24,9 @@ export function initSidebar({ onError, onDeleteBox }) {
         return `
           <div class="flex items-stretch gap-0.5 group/class">
             <button type="button" data-class-id="${cls.id}"
-              class="flex-1 flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-sm min-w-0 ${
+              class="flex-1 flex items-center gap-2 px-2 ${
+                isClassification() ? "py-2.5" : "py-1.5"
+              } rounded-md text-left text-sm min-w-0 ${
                 selected ? "bg-zinc-800 text-white" : "hover:bg-zinc-800/60 text-zinc-300"
               }">
               <span class="font-mono text-[10px] text-zinc-500 w-4 shrink-0">${hotkey}</span>
@@ -48,6 +50,34 @@ export function initSidebar({ onError, onDeleteBox }) {
   let annotationsSignature = "";
 
   function renderAnnotations() {
+    if (isClassification()) {
+      const image = store.get("currentImage");
+      const label = image?.label;
+      const classes = store.get("classes") || [];
+      const cls = classes.find((item) => item.id === label?.class_id);
+      if (!label) {
+        annotationsList.innerHTML = `<p class="text-[11px] text-zinc-500">Класс не назначен. Нажмите класс или клавишу 1–9.</p>`;
+        return;
+      }
+      const pending = label.verification_status === "PENDING_REVIEW";
+      const confidence =
+        label.confidence == null ? "" : `${Math.round(Number(label.confidence) * 100)}%`;
+      annotationsList.innerHTML = `
+        <div class="rounded-md border ${
+          pending ? "border-amber-800/60 bg-amber-950/30" : "border-zinc-800 bg-zinc-950/40"
+        } px-2 py-2 text-xs text-zinc-200 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:${escapeHtml(cls?.color_hex || "#6366F1")}"></span>
+            <span class="truncate font-medium">${escapeHtml(cls?.name || "класс")}</span>
+          </div>
+          ${
+            pending
+              ? `<div class="text-[10px] text-amber-300">Предсказание модели · ${escapeHtml(confidence)} · Space подтвердить, U сбросить</div>`
+              : `<div class="text-[10px] text-zinc-500">${escapeHtml(label.verification_status)}</div>`
+          }
+        </div>`;
+      return;
+    }
     const annotations = store.get("annotations") || [];
     const classes = store.get("classes") || [];
     const selectedId = store.get("selectedBoxId");
@@ -77,7 +107,7 @@ export function initSidebar({ onError, onDeleteBox }) {
             <span class="truncate flex-1">${index + 1}. ${escapeHtml(name)}</span>
             ${
               pending
-                ? `<span class="text-[9px] text-amber-300 border border-amber-800/60 rounded px-1" title="Требует проверки">Проверить</span>`
+                ? `<span class="text-[9px] text-amber-300 border border-amber-800/60 rounded px-1" title="Предсказание модели">Модель</span>`
                 : ""
             }
             <span class="text-[9px] font-mono text-zinc-500">${confidence}</span>
@@ -166,6 +196,10 @@ export function initSidebar({ onError, onDeleteBox }) {
     const btn = event.target.closest("[data-class-id]");
     if (!btn) return;
     const classId = btn.dataset.classId;
+    if (isClassification()) {
+      onAssignClass?.(classId);
+      return;
+    }
     const selectedId = store.get("selectedBoxId");
     if (selectedId) {
       const annotations = store.get("annotations").map((box) =>
@@ -239,6 +273,11 @@ export function initSidebar({ onError, onDeleteBox }) {
   store.addEventListener("change:annotations", renderAnnotations);
   store.addEventListener("change:selectedBoxId", renderAnnotations);
   store.addEventListener("change:hoveredBoxId", renderAnnotations);
+  store.addEventListener("change:currentImage", renderAnnotations);
+  store.addEventListener("change:currentProject", () => {
+    renderClasses();
+    renderAnnotations();
+  });
 
   renderClasses();
   renderAnnotations();

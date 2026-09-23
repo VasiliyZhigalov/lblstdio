@@ -13,6 +13,8 @@ def test_defaults_are_valid():
     assert cfg.track_stable_min_frames == 12
     assert cfg.track_stable_max_size_variation == 0.35
     assert cfg.track_stable_min_avg_conf == 0.75
+    assert cfg.confidence_min == 0.25
+    assert cfg.confidence_max == 1.0
     assert cfg.track_stable_interval_seconds == 5.0
     assert cfg.cooldown_seconds == 3.0
     assert cfg.tripwire_direction == TripwireDirection.ANY
@@ -27,6 +29,10 @@ def test_rejects_invalid_track_stable_params():
         StreamTriggerConfig(track_stable_min_avg_conf=0.0)
     with pytest.raises(DomainValidationException):
         StreamTriggerConfig(timer_interval_seconds=0.0)
+    with pytest.raises(DomainValidationException):
+        StreamTriggerConfig(confidence_min=0.8, confidence_max=0.2)
+    with pytest.raises(DomainValidationException):
+        StreamTriggerConfig(confidence_max=1.1)
 
 
 def test_rejects_line_coords_outside_unit_square():

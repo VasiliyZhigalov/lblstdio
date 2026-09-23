@@ -26,6 +26,7 @@ def _to_row(job: TrainingJob) -> TrainingJobRow:
         base_weights=job.base_weights,
         patience=job.patience,
         metrics_history=list(job.metrics_history),
+        test_metrics=job.test_metrics,
         current_epoch=job.current_epoch,
         stopped_early=1 if job.stopped_early else 0,
         model_version_id=str(job.model_version_id) if job.model_version_id else None,
@@ -49,6 +50,7 @@ def _from_row(row: TrainingJobRow) -> TrainingJob:
         base_weights=row.base_weights,
         patience=getattr(row, "patience", 20) or 20,
         metrics_history=list(row.metrics_history or []),
+        test_metrics=getattr(row, "test_metrics", None),
         current_epoch=row.current_epoch,
         stopped_early=bool(getattr(row, "stopped_early", 0)),
         model_version_id=UUID(row.model_version_id) if row.model_version_id else None,
@@ -73,6 +75,7 @@ class SqliteTrainingJobRepository(ITrainingJobRepository):
             return
         row.status = job.status.value
         row.metrics_history = list(job.metrics_history)
+        row.test_metrics = job.test_metrics
         row.current_epoch = job.current_epoch
         row.stopped_early = 1 if job.stopped_early else 0
         row.model_version_id = str(job.model_version_id) if job.model_version_id else None

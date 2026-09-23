@@ -6,16 +6,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.application.use_cases.ml.batch_auto_label import AutoLabelJobRunner
+from app.application.use_cases.ml.audit_annotations import AuditAnnotationsRunner
 from app.application.use_cases.ml.train_model import TrainingJobRunner
 from app.infrastructure.db.session import create_session_factory, dispose_engine
 from app.infrastructure.ml.device import UltralyticsDeviceResolver
-from app.infrastructure.ml.ultralytics_predictor import UltralyticsPredictor
+from app.infrastructure.ml.ultralytics_predictor import (
+    UltralyticsClassificationPredictor,
+    UltralyticsPredictor,
+)
 from app.infrastructure.ml.ultralytics_trainer import ProcessUltralyticsTrainer
 from app.infrastructure.storage.local_storage import LocalFileStorage
 from app.infrastructure.storage.pillow_metadata import PillowMetadataReader
 from app.presentation.api.v1.annotations_router import router as annotations_router
 from app.presentation.api.v1.dataset_versions_router import router as dataset_versions_router
 from app.presentation.api.v1.images_router import router as images_router
+from app.presentation.api.v1.labels_router import router as labels_router
 from app.presentation.api.v1.matching_router import router as matching_router
 from app.presentation.api.v1.projects_router import router as projects_router
 from app.presentation.api.v1.stream_router import router as stream_router
@@ -51,6 +56,8 @@ def create_app(
         app.state.settings = settings
         app.state.metadata_reader = PillowMetadataReader()
         trainer = training_trainer or ProcessUltralyticsTrainer()
+        predictor_instance = predictor or UltralyticsPredictor()
+        classification_predictor = UltralyticsClassificationPredictor()
         device_resolver = UltralyticsDeviceResolver()
         app.state.training_runner = TrainingJobRunner(
             factory,
@@ -62,7 +69,14 @@ def create_app(
         app.state.auto_label_runner = AutoLabelJobRunner(
             factory,
             app.state.storage,
-            predictor or UltralyticsPredictor(),
+            predictor_instance,
+            max_concurrent=1,
+            classification_predictor=classification_predictor,
+        )
+        app.state.audit_annotations_runner = AuditAnnotationsRunner(
+            factory,
+            app.state.storage,
+            predictor_instance,
             max_concurrent=1,
         )
         app.state.stream_runner = stream_runner or OpenCVStreamRunner()
@@ -71,8 +85,10 @@ def create_app(
         )
         await app.state.training_runner.fail_orphaned_jobs()
         await app.state.auto_label_runner.fail_orphaned_jobs()
+        await app.state.audit_annotations_runner.fail_orphaned_jobs()
         app.state.stream_ingest_consumer.start()
         yield
+        await app.state.audit_annotations_runner.close()
         await app.state.stream_ingest_consumer.stop()
         app.state.stream_runner.stop_all()
         await dispose_engine(engine)
@@ -93,6 +109,7 @@ def create_app(
     register_exception_handlers(app)
     app.include_router(projects_router, prefix="/api/v1")
     app.include_router(images_router, prefix="/api/v1")
+    app.include_router(labels_router, prefix="/api/v1")
     app.include_router(annotations_router, prefix="/api/v1")
     app.include_router(matching_router, prefix="/api/v1")
     app.include_router(dataset_versions_router, prefix="/api/v1")

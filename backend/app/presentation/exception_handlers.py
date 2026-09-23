@@ -6,6 +6,7 @@ from app.domain.exceptions import (
     DomainValidationException,
     InsufficientVerifiedDataException,
     ResourceNotFoundException,
+    TaskTypeMismatchException,
     UnverifiedDataException,
 )
 
@@ -34,6 +35,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         _request: Request, exc: InsufficientVerifiedDataException
     ) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.exception_handler(TaskTypeMismatchException)
+    async def task_type_handler(
+        _request: Request, exc: TaskTypeMismatchException
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(IntegrityError)
     async def integrity_handler(_request: Request, exc: IntegrityError) -> JSONResponse:

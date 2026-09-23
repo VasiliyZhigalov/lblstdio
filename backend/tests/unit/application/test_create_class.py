@@ -8,7 +8,8 @@ from app.domain.entities.annotation import Annotation
 from app.domain.entities.annotation_class import AnnotationClass
 from app.domain.entities.image import Image
 from app.domain.entities.project import Project
-from app.domain.enums import ImageStatus, SplitType
+from app.domain.entities.image_label import ImageLabel
+from app.domain.enums import ImageStatus, ProjectTaskType, SplitType
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
 from app.domain.value_objects.bounding_box import BoundingBox
 
@@ -188,6 +189,61 @@ async def test_delete_class_recalculates_image_status() -> None:
     )
 
     assert images.images[0].status == ImageStatus.UNANNOTATED
+
+
+class _FakeLabels:
+    def __init__(self, labels: list[ImageLabel]) -> None:
+        self.by_image = {item.image_id: item for item in labels}
+
+    async def get_by_image_id(self, image_id):
+        return self.by_image.get(image_id)
+
+    async def delete_by_image_id(self, image_id) -> None:
+        self.by_image.pop(image_id, None)
+
+
+@pytest.mark.asyncio
+async def test_delete_class_keeps_other_classification_labels() -> None:
+    project = Project.create("Cls", task_type=ProjectTaskType.CLASSIFICATION)
+    classes = _FakeClasses()
+    create = CreateClassUseCase(_FakeProjects(project), classes, _FakeUow())
+    keep = await create.execute(project.id, "good", "#00FF00")
+    drop = await create.execute(project.id, "bad", "#FF0000")
+    kept_image = Image.create(
+        project_id=project.id,
+        file_path="good.png",
+        file_name="good.png",
+        width=10,
+        height=10,
+        split=SplitType.TRAIN,
+    )
+    dropped_image = Image.create(
+        project_id=project.id,
+        file_path="bad.png",
+        file_name="bad.png",
+        width=10,
+        height=10,
+        split=SplitType.TRAIN,
+    )
+    kept_label = ImageLabel.create_manual(kept_image.id, keep.id)
+    dropped_label = ImageLabel.create_manual(dropped_image.id, drop.id)
+    kept_image.recalculate_status_from_label(kept_label)
+    dropped_image.recalculate_status_from_label(dropped_label)
+    images = _FakeImages([kept_image, dropped_image])
+    labels = _FakeLabels([kept_label, dropped_label])
+    await DeleteClassUseCase(
+        _FakeProjects(project),
+        classes,
+        _FakeUow(),
+        images,
+        _FakeAnnotations(),
+        labels=labels,
+    ).execute(drop.id, project.id)
+
+    assert images.images[0].status == ImageStatus.VERIFIED
+    assert images.images[1].status == ImageStatus.UNANNOTATED
+    assert labels.by_image[kept_image.id].class_id == keep.id
+    assert dropped_image.id not in labels.by_image
 
 
 @pytest.mark.asyncio

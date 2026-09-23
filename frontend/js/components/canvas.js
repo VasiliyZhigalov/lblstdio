@@ -103,7 +103,8 @@ export class AnnotationCanvas {
     await done;
     if (loadId !== this._loadId) return false;
     this.image = img;
-    this.fitToScreen();
+    if (!store.get("zoomLocked")) this.fitToScreen();
+    else this.scheduleRender();
     return true;
   }
 
@@ -294,6 +295,7 @@ export class AnnotationCanvas {
       return;
     }
     if (event.button !== 0) return;
+    if (store.get("currentProject")?.task_type === "CLASSIFICATION") return;
 
     const screen = this.pointerScreen(event);
     const imgPt = this.pointerImage(event);
@@ -504,6 +506,8 @@ export class AnnotationCanvas {
       }
     }
 
+    this.drawRecheckHint(ctx);
+
     if (this.draft) {
       const { w: imgW, h: imgH } = this.imgSize();
       const x = Math.max(0, Math.min(this.draft.x, this.draft.x + this.draft.w));
@@ -632,6 +636,38 @@ export class AnnotationCanvas {
     ctx.restore();
   }
 
+  drawRecheckHint(ctx) {
+    const image = store.get("currentImage");
+    if (image?.status !== "REQUIRES_RECHECK") return;
+    const pending = (store.get("annotations") || []).filter(
+      (box) => box.verification_status === "PENDING_REVIEW"
+    ).length;
+    const lines = [
+      "АУДИТ МОДЕЛИ",
+      "сплошные — текущая разметка",
+      "пунктир — что увидела модель",
+      pending
+        ? `предсказаний: ${pending}`
+        : "модель ничего не нашла на кадре",
+    ];
+    ctx.save();
+    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+    const pad = 8;
+    const lineH = 15;
+    const boxW = Math.max(...lines.map((line) => ctx.measureText(line).width)) + pad * 2;
+    const boxH = lines.length * lineH + pad * 2;
+    ctx.fillStyle = "rgba(69, 10, 10, 0.88)";
+    ctx.strokeStyle = "rgba(248, 113, 113, 0.7)";
+    ctx.lineWidth = 1;
+    ctx.fillRect(10, 10, boxW, boxH);
+    ctx.strokeRect(10, 10, boxW, boxH);
+    lines.forEach((line, index) => {
+      ctx.fillStyle = index === 0 ? "#fca5a5" : "#fecaca";
+      ctx.fillText(line, 10 + pad, 10 + pad + (index + 1) * lineH - 4);
+    });
+    ctx.restore();
+  }
+
   drawBox(ctx, box, cls, rect, isSelected, isHovered) {
     const pending = box.verification_status === "PENDING_REVIEW";
     const boxOpacity = store.get("boxOpacity") ?? 0.2;
@@ -647,7 +683,7 @@ export class AnnotationCanvas {
     ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
 
     const conf = pending && box.confidence ? ` ${Math.round(box.confidence * 100)}%` : "";
-    const label = `${pending ? "⚡ " : ""}${cls.name}${conf}`;
+    const label = `${pending ? "модель " : ""}${cls.name}${conf}`;
     ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
     const textW = ctx.measureText(label).width;
     const badgeH = 18;

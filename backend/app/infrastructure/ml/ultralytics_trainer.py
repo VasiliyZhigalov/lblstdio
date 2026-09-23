@@ -6,6 +6,8 @@ from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from app.application.ports.services.model_trainer import (
     EpochCallback,
     IModelTrainer,
@@ -41,14 +43,89 @@ def _extract_metrics(trainer: Any) -> dict[str, Any]:
         "map50_95": _get("metrics/mAP50-95(B)", "mAP50-95"),
         "precision": _get("metrics/precision(B)", "precision"),
         "recall": _get("metrics/recall(B)", "recall"),
+        "accuracy": _get("metrics/accuracy_top1"),
     }
+
+
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+
+
+def _number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
+
+
+def _extract_val_metrics(metrics: Any) -> dict[str, float | None]:
+    box = getattr(metrics, "box", None)
+    results_dict = getattr(metrics, "results_dict", None) or {}
+    if not isinstance(results_dict, dict):
+        results_dict = {}
+    top1 = _number(getattr(metrics, "top1", None))
+    if top1 is None:
+        top1 = _number(results_dict.get("metrics/accuracy_top1"))
+    map50 = _number(getattr(box, "map50", None))
+    if map50 is None:
+        map50 = _number(results_dict.get("metrics/mAP50(B)"))
+    map50_95 = _number(getattr(box, "map", None))
+    if map50_95 is None:
+        map50_95 = _number(results_dict.get("metrics/mAP50-95(B)"))
+    precision = _number(getattr(box, "mp", None))
+    if precision is None:
+        precision = _number(results_dict.get("metrics/precision(B)"))
+    recall = _number(getattr(box, "mr", None))
+    if recall is None:
+        recall = _number(results_dict.get("metrics/recall(B)"))
+    return {
+        "map50": map50,
+        "map50_95": map50_95,
+        "precision": precision,
+        "recall": recall,
+        "top1": top1,
+    }
+
+
+def split_has_images(data_path: str) -> bool:
+    path = Path(data_path)
+    if path.is_dir():
+        test_root = path / "test"
+    elif path.is_file():
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        root = Path(str(payload.get("path") or path.parent))
+        test_root = root / str(payload.get("test") or "test/images")
+    else:
+        return False
+    if not test_root.is_dir():
+        return False
+    return any(
+        item.is_file() and item.suffix.lower() in _IMAGE_SUFFIXES
+        for item in test_root.rglob("*")
+    )
+
+
+def _ultralytics_task(task: str | None) -> str:
+    if task == "classification":
+        return "classify"
+    return "detect"
 
 
 def _training_worker(config: dict[str, Any], progress_queue, result_queue) -> None:
     try:
         from ultralytics import YOLO
 
-        model = YOLO(config["base_weights"])
+        expected_task = _ultralytics_task(config.get("task"))
+        model = YOLO(config["base_weights"], task=expected_task)
+        if getattr(model, "task", None) != expected_task:
+            raise RuntimeError(
+                f"checkpoint task '{getattr(model, 'task', None)}' does not match "
+                f"project task '{expected_task}'"
+            )
         history: list[dict[str, Any]] = []
 
         def on_fit_epoch_end(trainer: Any) -> None:
@@ -93,6 +170,19 @@ def _training_worker(config: dict[str, Any], progress_queue, result_queue) -> No
 
         epochs_trained = len(history)
         planned = int(config.get("epochs", epochs_trained) or epochs_trained)
+        test_metrics = None
+        if best.is_file() and split_has_images(config["data_yaml_path"]):
+            eval_model = YOLO(str(best), task=expected_task)
+            val_metrics = eval_model.val(
+                data=config["data_yaml_path"],
+                split="test",
+                imgsz=config["imgsz"],
+                batch=config["batch_size"],
+                device=config["device"],
+                plots=False,
+                verbose=False,
+            )
+            test_metrics = _extract_val_metrics(val_metrics)
         result_queue.put(
             {
                 "ok": True,
@@ -101,6 +191,8 @@ def _training_worker(config: dict[str, Any], progress_queue, result_queue) -> No
                 "map50_95": _final("metrics/mAP50-95(B)", "mAP50-95"),
                 "precision": _final("metrics/precision(B)", "precision"),
                 "recall": _final("metrics/recall(B)", "recall"),
+                "top1": _final("metrics/accuracy_top1"),
+                "test_metrics": test_metrics,
                 "epochs_trained": epochs_trained,
                 "stopped_early": epochs_trained < planned,
             }
@@ -134,6 +226,7 @@ class ProcessUltralyticsTrainer(IModelTrainer):
             "device": config.device,
             "base_weights": config.base_weights,
             "patience": config.patience,
+            "task": config.task,
         }
         process = ctx.Process(
             target=_training_worker,
@@ -173,6 +266,8 @@ class ProcessUltralyticsTrainer(IModelTrainer):
             map50_95=result.get("map50_95"),
             precision=result.get("precision"),
             recall=result.get("recall"),
+            top1=result.get("top1"),
+            test_metrics=result.get("test_metrics"),
             stopped_early=stopped_early,
             epochs_trained=epochs_trained,
         )

@@ -1,10 +1,13 @@
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response, status
+from fastapi.responses import StreamingResponse
 
 from app.application.use_cases.classes.create_class import CreateClassUseCase, ListClassesUseCase
 from app.application.use_cases.classes.delete_class import DeleteClassUseCase
 from app.application.use_cases.classes.rename_class import RenameClassUseCase
+from app.application.use_cases.dataset.export_crops import ExportCropsUseCase
 from app.application.use_cases.dataset.export_yolo import ExportYOLOUseCase
 from app.application.use_cases.projects.create_project import (
     CreateProjectUseCase,
@@ -18,6 +21,7 @@ from app.presentation.dependencies import (
     get_create_project_use_case,
     get_delete_class_use_case,
     get_delete_project_use_case,
+    get_export_crops_use_case,
     get_export_yolo_use_case,
     get_get_project_use_case,
     get_list_classes_use_case,
@@ -42,7 +46,7 @@ async def create_project(
     payload: ProjectCreate,
     use_case: CreateProjectUseCase = Depends(get_create_project_use_case),
 ) -> ProjectRead:
-    project = await use_case.execute(payload.name, payload.description)
+    project = await use_case.execute(payload.name, payload.description, payload.task_type)
     return ProjectRead.model_validate(project, from_attributes=True)
 
 
@@ -134,6 +138,11 @@ async def delete_class(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+def _attachment(filename: str) -> str:
+    encoded = quote(filename)
+    return f"attachment; filename=\"crops.zip\"; filename*=UTF-8''{encoded}"
+
+
 @router.get("/projects/{project_id}/export-yolo")
 async def export_yolo(
     project_id: UUID,
@@ -146,4 +155,22 @@ async def export_yolo(
         headers={
             "Content-Disposition": f'attachment; filename="project-{project_id}-yolo.zip"'
         },
+    )
+
+
+@router.get("/projects/{project_id}/export-crops")
+async def export_crops(
+    project_id: UUID,
+    use_case: ExportCropsUseCase = Depends(get_export_crops_use_case),
+) -> StreamingResponse:
+    filename = await use_case.archive_filename(project_id)
+
+    async def chunks():
+        payload, _name = await use_case.execute(project_id)
+        yield payload
+
+    return StreamingResponse(
+        chunks(),
+        media_type="application/zip",
+        headers={"Content-Disposition": _attachment(filename)},
     )

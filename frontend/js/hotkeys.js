@@ -1,4 +1,4 @@
-import { store } from "./store.js";
+import { store, isClassification } from "./store.js";
 
 const MODAL_IDS = [
   "upload-modal",
@@ -52,6 +52,8 @@ export function initHotkeys({
   toggleLeftSidebar,
   toggleRightSidebar,
   applyQuickClassDigit,
+  assignClass,
+  clearLabel,
 }) {
   window.addEventListener("keydown", (event) => {
     if (isTypingTarget(event.target)) return;
@@ -83,6 +85,10 @@ export function initHotkeys({
 
     if (code === "Space") {
       event.preventDefault();
+      if (isClassification()) {
+        if (hasPending?.() && !event.repeat) verifyAll?.();
+        return;
+      }
       if (hasPending?.()) {
         if (!event.repeat) verifyAll?.();
         return;
@@ -98,11 +104,13 @@ export function initHotkeys({
         return;
       }
       if (code === "KeyC" && !event.shiftKey) {
+        if (isClassification()) return;
         event.preventDefault();
         copySelected?.();
         return;
       }
       if (code === "KeyV" && event.shiftKey) {
+        if (isClassification()) return;
         event.preventDefault();
         pastePropagate?.();
         return;
@@ -131,11 +139,13 @@ export function initHotkeys({
     }
 
     if (code === "KeyW") {
+      if (isClassification()) return;
       event.preventDefault();
       setMode("DRAW");
       return;
     }
     if (code === "KeyV") {
+      if (isClassification()) return;
       event.preventDefault();
       setMode("SELECT");
       return;
@@ -155,8 +165,19 @@ export function initHotkeys({
       if (!event.repeat) prev();
       return;
     }
+    if (code === "KeyU") {
+      if (isClassification()) {
+        event.preventDefault();
+        if (!event.repeat) clearLabel?.();
+        return;
+      }
+    }
     if (code === "Delete" || code === "Backspace") {
       event.preventDefault();
+      if (isClassification()) {
+        if (!event.repeat) clearLabel?.();
+        return;
+      }
       if (event.shiftKey) {
         if (!event.repeat && hasPending?.()) deleteImage?.();
         return;
@@ -167,6 +188,10 @@ export function initHotkeys({
     if (/^Digit[1-9]$/.test(code)) {
       event.preventDefault();
       const digit = Number(code.slice(-1));
+      if (isClassification()) {
+        assignClass?.(digit);
+        return;
+      }
       if (store.get("quickClassOpen") && applyQuickClassDigit?.(digit)) return;
       selectClass(digit);
     }
