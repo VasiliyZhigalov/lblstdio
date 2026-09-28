@@ -1,4 +1,5 @@
 import { store, isClassification } from "../store.js";
+import { sortByModelUncertainty } from "../utils/activeLearning.js";
 import { api } from "../api.js";
 import { escapeHtml } from "../utils/dom.js";
 import {
@@ -52,7 +53,10 @@ function filteredImages() {
   const query = (store.get("filmstripQuery") || "").trim().toLowerCase();
   const filter = store.get("filmstripFilter") || "all";
   const gallery = galleryFilterState(store);
-  return (store.get("images") || []).filter((image) => {
+  const images = store.get("images") || [];
+  const ordered =
+    store.get("queueSort") === "uncertainty" ? sortByModelUncertainty(images) : images;
+  return ordered.filter((image) => {
     if (!matchesGalleryFilters(image, gallery)) return false;
     if (query && !(image.file_name || "").toLowerCase().includes(query)) return false;
     if (filter === "review" &&
@@ -154,6 +158,31 @@ function boxCountLabel(image) {
   return `${n} ${word}`;
 }
 
+const SORTS = [
+  { id: "created", label: "По загрузке" },
+  { id: "uncertainty", label: "По неуверенности" },
+];
+
+function modelConfidenceLabel(image) {
+  if (store.get("queueSort") !== "uncertainty") return "";
+  const value = image.min_model_confidence;
+  if (value == null || Number.isNaN(Number(value))) return "";
+  return ` · модель ${Math.round(Number(value) * 100)}%`;
+}
+
+function renderSort() {
+  const root = document.getElementById("filmstrip-sort");
+  if (!root) return;
+  const current = store.get("queueSort") || "created";
+  root.innerHTML = SORTS.map((item) => {
+    const active = item.id === current;
+    return `<button type="button" data-queue-sort="${item.id}"
+      class="px-2 py-0.5 text-[10px] rounded ${
+        active ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+      }">${item.label}</button>`;
+  }).join("");
+}
+
 function renderFilters() {
   const root = document.getElementById("filmstrip-filters");
   const current = store.get("filmstripFilter");
@@ -186,7 +215,7 @@ function cardHtml(image, currentId) {
         <div class="flex items-center justify-between gap-1">
           <span class="text-[10px] ${status.className}" data-status-label>${status.label}</span>
         </div>
-        <div class="text-[10px] text-zinc-500" data-box-count>${boxCountLabel(image)}</div>
+        <div class="text-[10px] text-zinc-500" data-box-count>${boxCountLabel(image)}${modelConfidenceLabel(image)}</div>
       </div>
     </button>`;
 }
@@ -300,7 +329,7 @@ function syncVisibleMeta() {
     const image = virtual.images.find((item) => item.id === id);
     if (!image) return;
     const countEl = card.querySelector("[data-box-count]");
-    if (countEl) countEl.textContent = boxCountLabel(image);
+    if (countEl) countEl.textContent = `${boxCountLabel(image)}${modelConfidenceLabel(image)}`;
     const statusEl = card.querySelector("[data-status-label]");
     if (statusEl) {
       const status = statusMeta(image);
@@ -352,12 +381,17 @@ function onCurrentImageChange() {
 
 export function initFilmstrip({ onOpenImage }) {
   renderFilters();
+  renderSort();
   syncGalleryFilterBanner();
   rebuildList();
 
   document.getElementById("filmstrip-filters").addEventListener("click", (event) => {
     const btn = event.target.closest("[data-film-filter]");
     if (btn) store.set("filmstripFilter", btn.dataset.filmFilter);
+  });
+  document.getElementById("filmstrip-sort")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-queue-sort]");
+    if (btn) store.set("queueSort", btn.dataset.queueSort);
   });
   document.getElementById("filmstrip-search").addEventListener("input", (event) => {
     store.set("filmstripQuery", event.target.value);
@@ -411,6 +445,10 @@ export function initFilmstrip({ onOpenImage }) {
     renderFilters();
     syncGalleryFilterBanner();
     rebuildList();
+  });
+  store.addEventListener("change:queueSort", () => {
+    renderSort();
+    rebuildList({ scrollToCurrent: true });
   });
   store.addEventListener("change:galleryQuery", onGalleryFilterChange);
   store.addEventListener("change:galleryClassFilter", onGalleryFilterChange);

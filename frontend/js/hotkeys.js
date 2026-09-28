@@ -48,6 +48,8 @@ export function initHotkeys({
   hasPending,
   copySelected,
   pastePropagate,
+  undo,
+  redo,
   toggleHide,
   toggleLeftSidebar,
   toggleRightSidebar,
@@ -113,6 +115,18 @@ export function initHotkeys({
         if (isClassification()) return;
         event.preventDefault();
         pastePropagate?.();
+        return;
+      }
+      if (code === "KeyZ") {
+        if (isClassification()) return;
+        event.preventDefault();
+        if (!event.repeat) (event.shiftKey ? redo : undo)?.();
+        return;
+      }
+      if (code === "KeyY" && !event.shiftKey) {
+        if (isClassification()) return;
+        event.preventDefault();
+        if (!event.repeat) redo?.();
         return;
       }
       return;

@@ -29,6 +29,11 @@ class ImageSourceType(str, Enum):
     DATASET_IMPORT = "DATASET_IMPORT"
 
 
+class ImageListSort(str, Enum):
+    CREATED = "created"
+    UNCERTAINTY = "uncertainty"
+
+
 class SplitType(str, Enum):
     TRAIN = "train"
     VALID = "valid"

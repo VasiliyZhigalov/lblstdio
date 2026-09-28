@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from uuid import UUID
 
 from app.domain.entities.image import Image
-from app.domain.enums import ImageStatus, SplitType
+from app.domain.enums import ImageListSort, ImageStatus, SplitType
 
 
 class IImageRepository(ABC):
@@ -28,7 +28,12 @@ class IImageRepository(ABC):
         status: ImageStatus | None = None,
         offset: int = 0,
         limit: int | None = None,
+        sort: ImageListSort | None = None,
     ) -> list[Image]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def min_model_confidence(self, image_ids: Sequence[UUID]) -> dict[UUID, float]:
         raise NotImplementedError
 
     @abstractmethod

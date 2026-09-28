@@ -1,4 +1,5 @@
 import { store, isClassification } from "../store.js";
+import { commitAnnotationChange } from "../annotationEdits.js";
 import { nextClassColor } from "../utils/math.js";
 import { api } from "../api.js";
 import { escapeHtml, refreshIcons } from "../utils/dom.js";
@@ -202,7 +203,8 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
     }
     const selectedId = store.get("selectedBoxId");
     if (selectedId) {
-      const annotations = store.get("annotations").map((box) =>
+      const before = store.get("annotations");
+      const annotations = before.map((box) =>
         box.id === selectedId ? { ...box, class_id: classId } : box
       );
       store.patch({
@@ -211,6 +213,7 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
         hasUnsavedChanges: true,
         saveStatus: "unsaved",
       });
+      commitAnnotationChange(before);
     } else {
       store.set("activeClassId", classId);
     }
@@ -227,12 +230,14 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
       const id = del.dataset.deleteBox;
       if (onDeleteBox) onDeleteBox(id);
       else {
+        const before = store.get("annotations");
         store.patch({
-          annotations: store.get("annotations").filter((box) => box.id !== id),
+          annotations: before.filter((box) => box.id !== id),
           selectedBoxId: store.get("selectedBoxId") === id ? null : store.get("selectedBoxId"),
           hasUnsavedChanges: true,
           saveStatus: "unsaved",
         });
+        commitAnnotationChange(before);
       }
       return;
     }
@@ -289,14 +294,16 @@ export function selectClassByHotkey(digit) {
   if (!cls) return;
   const selectedId = store.get("selectedBoxId");
   if (selectedId) {
+    const before = store.get("annotations");
     store.patch({
-      annotations: store.get("annotations").map((box) =>
+      annotations: before.map((box) =>
         box.id === selectedId ? { ...box, class_id: cls.id } : box
       ),
       activeClassId: cls.id,
       hasUnsavedChanges: true,
       saveStatus: "unsaved",
     });
+    commitAnnotationChange(before);
   } else {
     store.set("activeClassId", cls.id);
   }
@@ -305,10 +312,12 @@ export function selectClassByHotkey(digit) {
 export function deleteSelectedBox() {
   const id = store.get("selectedBoxId");
   if (!id) return;
+  const before = store.get("annotations");
   store.patch({
-    annotations: store.get("annotations").filter((box) => box.id !== id),
+    annotations: before.filter((box) => box.id !== id),
     selectedBoxId: null,
     hasUnsavedChanges: true,
     saveStatus: "unsaved",
   });
+  commitAnnotationChange(before);
 }

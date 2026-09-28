@@ -18,7 +18,7 @@ from app.application.use_cases.images.upload_images import (
     MAX_UPLOAD_ZIP_BYTES,
     UploadImagesUseCase,
 )
-from app.domain.enums import ImageStatus, SplitType
+from app.domain.enums import ImageListSort, ImageStatus, SplitType
 from app.domain.exceptions import DomainValidationException
 from app.infrastructure.storage.local_storage import LocalFileStorage
 from app.infrastructure.db.repositories.image_label_repository import (
@@ -86,7 +86,7 @@ def _label_to_read(label) -> ImageLabelRead:
     )
 
 
-def _image_to_read(image, label=None) -> ImageRead:
+def _image_to_read(image, label=None, min_model_confidence=None) -> ImageRead:
     return ImageRead(
         id=image.id,
         project_id=image.project_id,
@@ -100,6 +100,7 @@ def _image_to_read(image, label=None) -> ImageRead:
         created_at=image.created_at,
         is_background=bool(getattr(image, "is_background", False)),
         label=_label_to_read(label) if label is not None else None,
+        min_model_confidence=min_model_confidence,
     )
 
 
@@ -207,11 +208,18 @@ async def list_images(
     status_filter: str | None = Query(default=None, alias="status"),
     offset: int = Query(default=0, ge=0),
     limit: int | None = Query(default=None, ge=1),
+    sort: str | None = Query(default=None),
     use_case: ListImagesUseCase = Depends(get_list_images_use_case),
     labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
 ) -> list[ImageRead]:
     split_value: SplitType | None = None
     status_value: ImageStatus | None = None
+    sort_value: ImageListSort | None = None
+    if sort is not None:
+        try:
+            sort_value = ImageListSort(sort)
+        except ValueError as exc:
+            raise DomainValidationException(f"unknown sort '{sort}'") from exc
     if split is not None:
         try:
             split_value = SplitType(split)
@@ -228,12 +236,17 @@ async def list_images(
         status=status_value,
         offset=offset,
         limit=limit,
+        sort=sort_value,
     )
+    image_ids = [image.id for image in images]
     by_image = {
-        item.image_id: item
-        for item in await labels.list_by_image_ids([image.id for image in images])
+        item.image_id: item for item in await labels.list_by_image_ids(image_ids)
     }
-    return [_image_to_read(item, by_image.get(item.id)) for item in images]
+    confidences = await use_case.model_confidences(image_ids)
+    return [
+        _image_to_read(item, by_image.get(item.id), confidences.get(item.id))
+        for item in images
+    ]
 
 
 @router.get("/images/{image_id}", response_model=ImageDetailRead)

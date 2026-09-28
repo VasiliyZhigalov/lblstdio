@@ -87,6 +87,7 @@ export const store = new Store({
   classes: [],
   mode: "DRAW", // 'SELECT' | 'DRAW'
   filmstripFilter: "all", // 'all' | 'review' | 'unannotated' | 'auto_verified'
+  queueSort: "created", // 'created' | 'uncertainty'
   zoomLocked: false,
   filmstripQuery: "",
   galleryQuery: "",

@@ -16,6 +16,12 @@ import { initHotkeys } from "./hotkeys.js";
 import { ensureHash, navigate, parseHash, projectPath, replaceHash } from "./router.js";
 import { escapeHtml, refreshIcons, showModal } from "./utils/dom.js";
 import { firstReviewImage } from "./utils/activeLearning.js";
+import {
+  commitAnnotationChange,
+  redoAnnotationChange,
+  resetAnnotationHistory,
+  undoAnnotationChange,
+} from "./annotationEdits.js";
 
 let canvas;
 let celebrateSave = false;
@@ -452,6 +458,7 @@ async function openImage(imageId, expectedProjectId = null) {
       matchDebug: null,
       showMatchDebug: false,
     });
+    resetAnnotationHistory();
     hideQuickClassPopover();
     updateStudioChrome();
     syncAnnotateHash(imageId);
@@ -741,12 +748,14 @@ async function clearAnnotations() {
     toast("Кадр уже сменён — очистка отменена");
     return;
   }
+  const beforeClear = store.get("annotations");
   store.patch({
     annotations: [],
     selectedBoxId: null,
     hasUnsavedChanges: true,
     saveStatus: "unsaved",
   });
+  commitAnnotationChange(beforeClear);
   try {
     await saveCurrent({ force: true, celebrate: true });
     if (store.get("currentImage")?.id === imageId) {
@@ -848,7 +857,8 @@ async function pastePropagateBox() {
     }
 
     const dirtyDuringMatch = serializeBoxes(store.get("annotations")) !== snapshot;
-    const annotations = [...(store.get("annotations") || []), ...createdList];
+    const beforePaste = store.get("annotations");
+    const annotations = [...(beforePaste || []), ...createdList];
     const last = createdList[createdList.length - 1];
     store.patch({
       annotations,
@@ -863,6 +873,7 @@ async function pastePropagateBox() {
         : null,
       showMatchDebug: Boolean(transform),
     });
+    commitAnnotationChange(beforePaste);
     setBoxCount(target.id, annotations.length, annotations);
     canvas?.centerOnBox(last);
     const t = transform;
@@ -912,6 +923,7 @@ async function deleteBoxById(boxId) {
   if (!box) return;
 
   if (box.verification_status === "PENDING_REVIEW") {
+    const before = store.get("annotations");
     try {
       const remaining = await api.deleteAnnotation(imageId, box.id);
       if (store.get("currentImage")?.id !== imageId) {
@@ -925,6 +937,7 @@ async function deleteBoxById(boxId) {
         hasUnsavedChanges: false,
         saveStatus: "saved",
       });
+      commitAnnotationChange(before);
       patchImageStatus(imageId, statusFromAnnotations(remaining));
       setBoxCount(imageId, remaining.length, remaining);
       toast("Аннотация удалена");
@@ -935,13 +948,15 @@ async function deleteBoxById(boxId) {
   }
 
   if (store.get("currentImage")?.id !== imageId) return;
+  const before = store.get("annotations");
   store.patch({
-    annotations: store.get("annotations").filter((item) => item.id !== boxId),
+    annotations: before.filter((item) => item.id !== boxId),
     selectedBoxId: store.get("selectedBoxId") === boxId ? null : store.get("selectedBoxId"),
     hoveredBoxId: store.get("hoveredBoxId") === boxId ? null : store.get("hoveredBoxId"),
     hasUnsavedChanges: true,
     saveStatus: "unsaved",
   });
+  commitAnnotationChange(before);
 }
 
 async function deleteCurrentImage() {
@@ -1106,6 +1121,7 @@ async function clearAllReviewAnnotations() {
           hasUnsavedChanges: false,
           saveStatus: "saved",
         });
+        resetAnnotationHistory();
         setBoxCount(current.id, (detail.annotations || []).length, detail.annotations || []);
       }
     }
@@ -1158,6 +1174,17 @@ async function markCurrentAsBackground() {
   } catch (err) {
     toast(err.message);
   }
+}
+
+function restoreAnnotationHistory(direction) {
+  if (isClassification()) return;
+  const image = store.get("currentImage");
+  if (!image) return;
+  const applied =
+    direction === "redo" ? redoAnnotationChange() : undoAnnotationChange();
+  if (!applied) return;
+  const boxes = store.get("annotations") || [];
+  setBoxCount(image.id, boxes.length, boxes);
 }
 
 function frameHasPending() {
@@ -1275,8 +1302,9 @@ function applyQuickClass(classId) {
     return false;
   }
   const boxId = quickClassBoxId;
+  const before = store.get("annotations");
   store.patch({
-    annotations: (store.get("annotations") || []).map((box) =>
+    annotations: (before || []).map((box) =>
       box.id === boxId ? { ...box, class_id: classId } : box
     ),
     activeClassId: classId,
@@ -1284,6 +1312,7 @@ function applyQuickClass(classId) {
     hasUnsavedChanges: true,
     saveStatus: "unsaved",
   });
+  commitAnnotationChange(before);
   hideQuickClassPopover();
   return true;
 }
@@ -1615,6 +1644,8 @@ function boot() {
     pastePropagate: () => {
       pastePropagateBox().catch(() => {});
     },
+    undo: () => restoreAnnotationHistory("undo"),
+    redo: () => restoreAnnotationHistory("redo"),
     toggleHide: toggleHideAnnotations,
     toggleLeftSidebar,
     toggleRightSidebar,

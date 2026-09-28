@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from uuid import UUID
 
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
@@ -6,7 +7,7 @@ from app.application.ports.repositories.image_repository import IImageRepository
 from app.domain.entities.annotation import Annotation
 from app.domain.entities.image import Image
 from app.domain.entities.image_label import ImageLabel
-from app.domain.enums import ImageStatus, SplitType
+from app.domain.enums import ImageListSort, ImageStatus, SplitType
 from app.domain.exceptions import ResourceNotFoundException
 
 
@@ -45,6 +46,7 @@ class ListImagesUseCase:
         status: ImageStatus | None = None,
         offset: int = 0,
         limit: int | None = None,
+        sort: ImageListSort | None = None,
     ) -> list[Image]:
         return await self._images.list_page(
             project_id,
@@ -52,4 +54,8 @@ class ListImagesUseCase:
             status=status,
             offset=offset,
             limit=limit,
+            sort=sort,
         )
+
+    async def model_confidences(self, image_ids: Sequence[UUID]) -> dict[UUID, float]:
+        return await self._images.min_model_confidence(image_ids)

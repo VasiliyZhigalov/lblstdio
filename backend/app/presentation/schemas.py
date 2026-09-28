@@ -75,6 +75,7 @@ class ImageRead(BaseModel):
     created_at: datetime
     is_background: bool = False
     label: ImageLabelRead | None = None
+    min_model_confidence: float | None = None
 
 
 class BoxPayload(BaseModel):

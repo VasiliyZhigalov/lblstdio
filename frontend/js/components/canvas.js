@@ -1,4 +1,5 @@
 import { store } from "../store.js";
+import { beginAnnotationGesture, endAnnotationGesture } from "../annotationEdits.js";
 import {
   HANDLE_SIZE,
   MAX_ZOOM,
@@ -328,6 +329,7 @@ export class AnnotationCanvas {
     if (selected && !hide) {
       const handle = hitHandle(screen.x, screen.y, this.screenRectForBox(selected));
       if (handle) {
+        beginAnnotationGesture();
         this.activeHandle = handle;
         this.dragBoxId = selected.id;
         return;
@@ -336,6 +338,7 @@ export class AnnotationCanvas {
 
     const hit = hide ? null : this.findBoxAtScreen(screen.x, screen.y);
     if (hit) {
+      beginAnnotationGesture();
       store.set("selectedBoxId", hit.id);
       const { w, h } = this.imgSize();
       const xywh = yoloToXywh(hit, w, h);
@@ -350,6 +353,7 @@ export class AnnotationCanvas {
         this.container.dispatchEvent(new CustomEvent("need-class", { bubbles: true }));
         return;
       }
+      beginAnnotationGesture();
       store.set("selectedBoxId", null);
       this.isDrawing = true;
       this.drawStart = imgPt;
@@ -478,12 +482,14 @@ export class AnnotationCanvas {
         }
       }
       this.scheduleRender();
+      endAnnotationGesture();
       return;
     }
 
     this.activeHandle = null;
     this.isDragging = false;
     this.dragBoxId = null;
+    endAnnotationGesture();
   }
 
   render() {

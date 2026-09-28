@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { firstReviewImage } from "./activeLearning.js";
+import { firstReviewImage, sortByModelUncertainty } from "./activeLearning.js";
 
 test("firstReviewImage returns the first review frame in queue order", () => {
   const images = [
@@ -17,5 +17,19 @@ test("firstReviewImage returns null when the review queue is empty", () => {
   assert.equal(
     firstReviewImage([{ id: "verified", status: "VERIFIED" }]),
     null
+  );
+});
+
+test("sortByModelUncertainty puts the least confident model frames first", () => {
+  const images = [
+    { id: "manual", min_model_confidence: null },
+    { id: "sure", min_model_confidence: 0.91 },
+    { id: "unsure", min_model_confidence: 0.22 },
+    { id: "missing" },
+  ];
+
+  assert.deepEqual(
+    sortByModelUncertainty(images).map((image) => image.id),
+    ["unsure", "sure", "manual", "missing"]
   );
 });
