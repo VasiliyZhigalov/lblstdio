@@ -17,6 +17,7 @@ from app.application.ports.services.model_predictor import Detection
 from app.application.ports.services.stream_runner import IngestJob, StreamStatus
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
+from app.domain.services.image_folder import describe_folder_access_error
 from app.domain.services.stream_capture_rules import (
     TrackStableSample,
     class_is_allowed,
@@ -297,7 +298,18 @@ class OpenCVStreamRunner:
                 self._fail_ready(stream.id, ready_event, f"failed to load model: {exc}")
                 return
 
-        cap = self._open_capture(stream)
+        try:
+            cap = self._open_capture(stream)
+        except OSError as exc:
+            if stream.source_type == StreamSourceType.IMAGE_FOLDER:
+                message = describe_folder_access_error(exc, stream.source_uri)
+            else:
+                message = str(exc)
+            self._fail_ready(stream.id, ready_event, message)
+            return
+        except Exception as exc:
+            self._fail_ready(stream.id, ready_event, str(exc))
+            return
         if not cap.isOpened():
             if stream.source_type == StreamSourceType.RTSP:
                 message = (

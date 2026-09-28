@@ -106,6 +106,27 @@ function answer(pathname, method, options) {
   }
   match = pathname.match(/^\/api\/v1\/projects\/([^/]+)\/classes$/);
   if (method === "GET" && match) return db.projects.get(match[1])?.classes ?? [];
+  match = pathname.match(/^\/api\/v1\/projects\/([^/]+)\/images\/summary$/);
+  if (method === "GET" && match) {
+    const project = db.projects.get(match[1]);
+    if (!project) return { class_counts: {}, images: [] };
+    const class_counts = {};
+    const items = [];
+    for (const image of project.images) {
+      const boxes = project.annotations[image.id] || [];
+      if (image.status === "UNANNOTATED") continue;
+      for (const annotation of boxes) {
+        class_counts[annotation.class_id] = (class_counts[annotation.class_id] || 0) + 1;
+      }
+      items.push({
+        image_id: image.id,
+        box_count: boxes.length,
+        class_ids: [...new Set(boxes.map((box) => box.class_id).filter(Boolean))],
+        annotations: boxes,
+      });
+    }
+    return { class_counts, images: items };
+  }
   match = pathname.match(/^\/api\/v1\/projects\/([^/]+)\/images$/);
   if (method === "GET" && match) return db.projects.get(match[1])?.images ?? [];
   match = pathname.match(/^\/api\/v1\/projects\/([^/]+)\/dataset-versions$/);
@@ -394,6 +415,145 @@ before(async () => {
 afterEach(async () => {
   releaseLeftovers();
   await settle();
+});
+
+test("annotate filmstrip is a left document-flow sidebar", async () => {
+  putProject({
+    id: "proj-layout",
+    name: "Layout",
+    images: [{ id: "lay-1", file_name: "lay.png", annotations: [] }],
+  });
+  await openProjectImage("proj-layout", "lay-1");
+  const sidebar = document.getElementById("studio-left-sidebar");
+  const list = document.getElementById("filmstrip-list");
+  assert.ok(sidebar, "left sidebar exists");
+  assert.ok(list, "filmstrip list exists");
+  assert.equal(sidebar.contains(list), true);
+  assert.equal(sidebar.classList.contains("hidden"), false);
+  assert.equal(sidebar.classList.contains("absolute"), false);
+  assert.equal(document.getElementById("filmstrip-drawer"), null);
+  assert.equal(document.getElementById("tool-draw")?.closest("#studio-left-sidebar"), null);
+
+  document.getElementById("btn-toggle-filmstrip").click();
+  assert.equal(sidebar.classList.contains("hidden"), true);
+  assert.equal(document.getElementById("btn-expand-filmstrip")?.classList.contains("hidden"), false);
+  document.getElementById("btn-expand-filmstrip").click();
+  assert.equal(sidebar.classList.contains("hidden"), false);
+});
+
+test("annotate filmstrip has box-count filter and reset", async () => {
+  putProject({
+    id: "proj-filters",
+    name: "Filters",
+    images: [
+      { id: "f-1", file_name: "a.png", status: "VERIFIED", annotations: [] },
+      { id: "f-2", file_name: "b.png", status: "UNANNOTATED", annotations: [] },
+    ],
+  });
+  await openProjectImage("proj-filters", "f-1");
+  const min = document.getElementById("filmstrip-box-count-min");
+  const max = document.getElementById("filmstrip-box-count-max");
+  const reset = document.getElementById("btn-clear-image-filters");
+  assert.ok(min, "box-count min exists");
+  assert.ok(max, "box-count max exists");
+  assert.ok(reset, "reset filter button exists");
+  assert.equal(document.getElementById("studio-left-sidebar")?.contains(min), true);
+  assert.equal(reset.classList.contains("hidden"), true);
+
+  min.value = "2";
+  min.dispatchEvent(new Event("input", { bubbles: true }));
+  await settle();
+  assert.equal(store.get("galleryBoxCountMin"), 2);
+  assert.equal(reset.classList.contains("hidden"), false);
+
+  reset.click();
+  await settle();
+  assert.equal(store.get("galleryBoxCountMin"), null);
+  assert.equal(store.get("filmstripFilter"), "all");
+  assert.equal(reset.classList.contains("hidden"), true);
+});
+
+test("review bar keeps distinct recheck copy", async () => {
+  const classId = "proj-recheck-class";
+  putProject({
+    id: "proj-recheck",
+    name: "Recheck",
+    images: [
+      {
+        id: "rec-1",
+        file_name: "rec.png",
+        status: "REQUIRES_RECHECK",
+        annotations: [box("rec-box", classId, "PENDING_REVIEW")],
+      },
+    ],
+  });
+  await openProjectImage("proj-recheck", "rec-1");
+  await waitFor(
+    () => !document.getElementById("review-bar")?.classList.contains("hidden"),
+    "review bar"
+  );
+  assert.match(document.getElementById("btn-reject-all").textContent, /Оставить разметку/);
+  assert.match(document.getElementById("review-bar-label").textContent, /сплошн|пунктир|модель/i);
+});
+
+test("draw tool keeps compact classes after mode sync", async () => {
+  const draw = document.getElementById("tool-draw");
+  document.getElementById("tool-select").click();
+  document.getElementById("tool-draw").click();
+  assert.match(draw.className, /w-10|rounded-xl/);
+});
+
+test("quick class popover lists every class and stays inside the canvas", async () => {
+  putProject({
+    id: "proj-many-cls",
+    name: "Many classes",
+    images: [{ id: "many-1", file_name: "many.png", annotations: [] }],
+  });
+  const project = db.projects.get("proj-many-cls");
+  for (let i = 1; i < 20; i += 1) {
+    project.classes.push({
+      id: `${project.project.id}-class-${i}`,
+      name: `class-${i}`,
+      color_hex: "#22C55E",
+      index_id: i,
+    });
+  }
+  await openProjectImage("proj-many-cls", "many-1");
+  document.getElementById("tool-draw").click();
+  drawOnCanvas();
+  const pop = document.getElementById("quick-class-popover");
+  await waitFor(() => !pop.classList.contains("hidden"), "quick class popover");
+  assert.equal(pop.querySelectorAll("[data-quick-class]").length, 20);
+  assert.match(pop.className, /overflow-y-auto/);
+  const container = document.getElementById("canvas-container");
+  const maxH = Number.parseFloat(pop.style.maxHeight);
+  assert.equal(Number.isFinite(maxH), true);
+  assert.equal(maxH <= container.clientHeight - 8, true);
+  const top = Number.parseFloat(pop.style.top);
+  assert.equal(top + maxH <= container.clientHeight, true);
+});
+
+test("selecting a verified box shows a delete control", async () => {
+  const classId = "proj-delete-x-class";
+  putProject({
+    id: "proj-delete-x",
+    name: "Delete X",
+    images: [
+      {
+        id: "del-1",
+        file_name: "del.png",
+        status: "VERIFIED",
+        annotations: [box("del-box", classId, "VERIFIED")],
+      },
+    ],
+  });
+  await openProjectImage("proj-delete-x", "del-1");
+  store.set("selectedBoxId", "del-box");
+  await settle();
+  const actions = document.getElementById("box-float-actions");
+  await waitFor(() => !actions.classList.contains("hidden"), "box float actions");
+  const removeBtn = document.getElementById("btn-reject-box");
+  assert.equal(removeBtn.classList.contains("hidden"), false);
 });
 
 test("stale project responses keep the latest project", async () => {

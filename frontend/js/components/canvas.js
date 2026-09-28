@@ -159,22 +159,23 @@ export class AnnotationCanvas {
     const el = document.getElementById("box-float-actions");
     if (!el) return;
     const selectedId = store.get("selectedBoxId");
-    const hoveredId = store.get("hoveredBoxId");
-    const focusId = selectedId || hoveredId;
-    const box = (store.get("annotations") || []).find((item) => item.id === focusId);
+    const box = (store.get("annotations") || []).find((item) => item.id === selectedId);
     if (
       store.get("hideAnnotations") ||
       store.get("matchingInProgress") ||
       !box ||
-      box.verification_status !== "PENDING_REVIEW" ||
       !this.image
     ) {
       el.classList.add("hidden");
       return;
     }
+    const pending = box.verification_status === "PENDING_REVIEW";
+    document.getElementById("btn-approve-box")?.classList.toggle("hidden", !pending);
+    document.getElementById("btn-delete-image-box")?.classList.toggle("hidden", !pending);
     const rect = this.screenRectForBox(box);
-    const top = Math.max(4, rect.y - 34);
-    const left = Math.max(4, rect.x + rect.w / 2 - 48);
+    const barW = pending ? 48 : 20;
+    const top = Math.max(2, rect.y + rect.h / 2 - 10);
+    const left = Math.max(2, rect.x + rect.w / 2 - barW / 2);
     el.style.top = `${top}px`;
     el.style.left = `${left}px`;
     el.classList.remove("hidden");

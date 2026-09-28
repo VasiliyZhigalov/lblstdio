@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from functools import partial
+from pathlib import Path
 from uuid import UUID
 
 from app.application.ports.repositories.class_repository import IClassRepository
@@ -17,6 +18,10 @@ from app.application.ports.unit_of_work import IUnitOfWork
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
+from app.domain.services.image_folder import (
+    describe_folder_access_error,
+    list_image_files,
+)
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
 
 
@@ -114,6 +119,20 @@ class StartStreamUseCase:
                 raise DomainValidationException(
                     f"video file not found: {stream.source_uri}"
                 ) from exc
+        elif stream.source_type == StreamSourceType.IMAGE_FOLDER:
+            folder = Path(source_uri)
+            try:
+                accessible = folder.is_dir()
+            except OSError as exc:
+                raise DomainValidationException(
+                    describe_folder_access_error(exc, source_uri)
+                ) from exc
+            if not accessible:
+                raise DomainValidationException(f"Папка не найдена: {source_uri}")
+            if not list_image_files(folder):
+                raise DomainValidationException(
+                    "В папке нет изображений jpg, png или webp"
+                )
 
         project_classes = await self._classes.list_by_project(stream.project_id)
         allowed = allowed_class_indices_for(stream.config, project_classes)

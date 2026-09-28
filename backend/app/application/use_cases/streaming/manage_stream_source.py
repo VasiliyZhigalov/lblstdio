@@ -23,7 +23,10 @@ from app.application.use_cases.streaming.control_stream import allowed_class_ind
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
-from app.domain.services.image_folder import list_image_files
+from app.domain.services.image_folder import (
+    describe_folder_access_error,
+    list_image_files,
+)
 from app.domain.services.rtsp_url import validate_rtsp_url
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
 
@@ -118,8 +121,20 @@ class ManageStreamSourceUseCase:
             raise DomainValidationException(f"Папка не найдена: {raw}") from exc
         if allowed_roots is not None:
             _assert_within_roots(resolved, allowed_roots)
-        if not resolved.is_dir():
-            if resolved.exists():
+        try:
+            is_directory = resolved.is_dir()
+        except OSError as exc:
+            raise DomainValidationException(
+                describe_folder_access_error(exc, raw)
+            ) from exc
+        if not is_directory:
+            try:
+                exists = resolved.exists()
+            except OSError as exc:
+                raise DomainValidationException(
+                    describe_folder_access_error(exc, raw)
+                ) from exc
+            if exists:
                 raise DomainValidationException("Укажите путь к папке, а не к файлу")
             raise DomainValidationException(f"Папка не найдена: {raw}")
         try:

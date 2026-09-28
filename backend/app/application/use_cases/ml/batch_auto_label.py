@@ -10,6 +10,7 @@ from uuid import UUID
 import anyio
 from PIL import Image as PILImage
 
+from app.application.ports.job_runner_scopes import AutoLabelScopeFactory
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
 from app.application.ports.repositories.auto_label_job_repository import (
     IAutoLabelJobRepository,
@@ -494,14 +495,14 @@ class AutoLabelJobRunner:
 
     def __init__(
         self,
-        session_factory,
+        scopes: AutoLabelScopeFactory,
         storage: IFileStorage,
         predictor: IModelPredictor,
         *,
         max_concurrent: int = 1,
         classification_predictor: IClassificationPredictor | None = None,
     ) -> None:
-        self._session_factory = session_factory
+        self._scopes = scopes
         self._storage = storage
         self._predictor = predictor
         self._classification_predictor = classification_predictor
@@ -524,22 +525,15 @@ class AutoLabelJobRunner:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def fail_orphaned_jobs(self) -> int:
-        from app.infrastructure.db.repositories.auto_label_job_repository import (
-            SqliteAutoLabelJobRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
-        async with self._session_factory() as session:
-            jobs = SqliteAutoLabelJobRepository(session)
-            uow = SqlAlchemyUnitOfWork(session)
-            orphans = await jobs.list_by_statuses(
+        async with self._scopes() as scope:
+            orphans = await scope.jobs.list_by_statuses(
                 (AutoLabelJobStatus.PENDING, AutoLabelJobStatus.RUNNING)
             )
             for job in orphans:
                 job.mark_failed(_ORPHAN_MESSAGE)
-                await jobs.update(job)
+                await scope.jobs.update(job)
             if orphans:
-                await uow.commit()
+                await scope.uow.commit()
             return len(orphans)
 
     async def _run(self, job_id: UUID) -> None:
@@ -553,60 +547,31 @@ class AutoLabelJobRunner:
             raise
 
     async def _mark_failed(self, job_id: UUID, message: str) -> None:
-        from app.infrastructure.db.repositories.auto_label_job_repository import (
-            SqliteAutoLabelJobRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
-        async with self._session_factory() as session:
-            jobs = SqliteAutoLabelJobRepository(session)
-            fresh = await jobs.get_by_id(job_id)
+        async with self._scopes() as scope:
+            fresh = await scope.jobs.get_by_id(job_id)
             if fresh is None or fresh.status in {
                 AutoLabelJobStatus.COMPLETED,
                 AutoLabelJobStatus.FAILED,
             }:
                 return
             fresh.mark_failed(message)
-            await jobs.update(fresh)
-            await SqlAlchemyUnitOfWork(session).commit()
+            await scope.jobs.update(fresh)
+            await scope.uow.commit()
 
     async def _run_locked(self, job_id: UUID) -> None:
-        from app.infrastructure.db.repositories.annotation_repository import (
-            SqliteAnnotationRepository,
-        )
-        from app.infrastructure.db.repositories.auto_label_job_repository import (
-            SqliteAutoLabelJobRepository,
-        )
-        from app.infrastructure.db.repositories.class_repository import (
-            SqliteClassRepository,
-        )
-        from app.infrastructure.db.repositories.image_repository import (
-            SqliteImageRepository,
-        )
-        from app.infrastructure.db.repositories.image_label_repository import (
-            SqliteImageLabelRepository,
-        )
-        from app.infrastructure.db.repositories.model_version_repository import (
-            SqliteModelVersionRepository,
-        )
-        from app.infrastructure.db.repositories.project_repository import (
-            SqliteProjectRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
         failure: Exception | None = None
-        async with self._session_factory() as session:
+        async with self._scopes() as scope:
             use_case = BatchAutoLabelUseCase(
-                SqliteModelVersionRepository(session),
-                SqliteImageRepository(session),
-                SqliteAnnotationRepository(session),
-                SqliteClassRepository(session),
-                SqliteAutoLabelJobRepository(session),
+                scope.models,
+                scope.images,
+                scope.annotations,
+                scope.classes,
+                scope.jobs,
                 self._storage,
                 self._predictor,
-                SqlAlchemyUnitOfWork(session),
-                projects=SqliteProjectRepository(session),
-                labels=SqliteImageLabelRepository(session),
+                scope.uow,
+                projects=scope.projects,
+                labels=scope.labels,
                 classification_predictor=self._classification_predictor,
             )
             try:
@@ -614,7 +579,7 @@ class AutoLabelJobRunner:
             except Exception as exc:
                 failure = exc
                 try:
-                    await session.rollback()
+                    await scope.uow.rollback()
                 except Exception:
                     pass
         if failure is not None:

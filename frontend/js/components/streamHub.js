@@ -232,16 +232,32 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     const timerIv = document.getElementById("stream-timer-interval");
     const tripEn = document.getElementById("stream-tripwire-enabled");
     const tripDir = document.getElementById("stream-tripwire-direction");
-    if (trackEn) trackEn.checked = cfg.track_stable_enabled ?? true;
+    
+    if (cfg.tripwire_enabled) {
+      if (tripEn) tripEn.checked = true;
+    } else {
+      if (trackEn) trackEn.checked = true;
+    }
+    
     if (trackN) trackN.value = cfg.track_stable_min_frames ?? 12;
     if (trackSize) trackSize.value = cfg.track_stable_max_size_variation ?? 0.35;
     if (trackIv) trackIv.value = cfg.track_stable_interval_seconds ?? 5;
     if (timerIv) timerIv.value = cfg.timer_interval_seconds ?? 5;
+    
     const confMin = document.getElementById("stream-conf-min");
     const confMax = document.getElementById("stream-conf-max");
-    if (confMin) confMin.value = cfg.confidence_min ?? 0.25;
-    if (confMax) confMax.value = cfg.confidence_max ?? 1;
-    if (tripEn) tripEn.checked = Boolean(cfg.tripwire_enabled);
+    const minLabel = document.getElementById("stream-conf-min-label");
+    const maxLabel = document.getElementById("stream-conf-max-label");
+    
+    if (confMin) {
+      confMin.value = cfg.confidence_min ?? 0.25;
+      if (minLabel) minLabel.textContent = Math.round(confMin.value * 100);
+    }
+    if (confMax) {
+      confMax.value = cfg.confidence_max ?? 1;
+      if (maxLabel) maxLabel.textContent = Math.round(confMax.value * 100);
+    }
+    
     if (tripDir) tripDir.value = cfg.tripwire_direction || "ANY";
     if (els.captureMode()) {
       els.captureMode().value = cfg.timer_enabled ? "TIMER" : "AI";
@@ -260,22 +276,20 @@ export function initStreamHub({ toast, navigate, projectPath }) {
   function syncCaptureMode() {
     const timer = els.captureMode()?.value === "TIMER";
     const folder = isImageFolder();
+    
     els.timerSettings()?.classList.toggle("hidden", !timer);
-    document.getElementById("stream-class-filter")?.classList.toggle("hidden", timer);
-    document.getElementById("stream-confidence-band")?.classList.toggle("hidden", timer);
-    document.getElementById("stream-track-stable-settings")?.classList.toggle("hidden", timer || folder);
-    document.getElementById("stream-tripwire-settings")?.classList.toggle("hidden", timer || folder);
+    
+    const aiSettings = document.getElementById("stream-ai-settings");
+    if (aiSettings) aiSettings.classList.toggle("hidden", timer);
+
     document.getElementById("stream-folder-capture-note")?.classList.toggle("hidden", timer || !folder);
-    const help = document.getElementById("stream-capture-help");
-    if (help) {
-      if (timer) {
-        help.textContent = "Таймер сохраняет кадр каждые N секунд без модели. Кадры попадают в неразмеченные.";
-      } else if (folder) {
-        help.textContent = "Для папки кадр сохраняется, если модель нашла выбранный класс. Стабильный трек не применяется.";
-      } else {
-        help.textContent = "Фильтр классов, затем стабильный трек. Линию можно включить отдельно.";
-      }
-    }
+
+    const isStable = document.getElementById("stream-track-stable-enabled")?.checked;
+    const isLine = document.getElementById("stream-tripwire-enabled")?.checked;
+    
+    document.getElementById("stream-trigger-stable-params")?.classList.toggle("hidden", !isStable || folder);
+    document.getElementById("stream-trigger-line-params")?.classList.toggle("hidden", !isLine || folder);
+
     const model = els.modelSelect();
     if (model) {
       model.disabled = timer;
@@ -295,10 +309,13 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     ];
     const s = selected();
     const timerEnabled = els.captureMode()?.value === "TIMER";
+    const triggerRadio = document.querySelector('input[name="stream_trigger"]:checked')?.value;
+    const isStable = triggerRadio === "stable";
+    const isLine = triggerRadio === "line";
+    
     return {
       track_stable_enabled:
-        !isImageFolder() &&
-        Boolean(document.getElementById("stream-track-stable-enabled")?.checked),
+        !isImageFolder() && isStable,
       track_stable_min_frames: Number(
         document.getElementById("stream-track-stable-n")?.value || 12
       ),
@@ -315,8 +332,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
         document.getElementById("stream-timer-interval")?.value || 5
       ),
       tripwire_enabled:
-        !isImageFolder() &&
-        Boolean(document.getElementById("stream-tripwire-enabled")?.checked),
+        !isImageFolder() && isLine,
       tripwire_line: line,
       tripwire_classes: classBoxes.map((el) => el.value),
       tripwire_direction: document.getElementById("stream-tripwire-direction")?.value || "ANY",
@@ -531,7 +547,6 @@ export function initStreamHub({ toast, navigate, projectPath }) {
   });
 
   [
-    "stream-track-stable-enabled",
     "stream-track-stable-n",
     "stream-track-stable-size",
     "stream-track-stable-interval",
@@ -539,7 +554,6 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     "stream-conf-max",
     "stream-timer-interval",
     "stream-capture-mode",
-    "stream-tripwire-enabled",
     "stream-tripwire-direction",
     "stream-model-select",
   ].forEach((id) => {
@@ -549,20 +563,45 @@ export function initStreamHub({ toast, navigate, projectPath }) {
         syncCaptureMode();
         scheduleSaveTriggers();
       });
+    } else if (id === "stream-conf-min" || id === "stream-conf-max") {
+      el?.addEventListener("input", (e) => {
+        const label = document.getElementById(id + "-label");
+        if (label) label.textContent = Math.round(e.target.value * 100);
+        scheduleSaveTriggers();
+      });
+    } else {
+      el?.addEventListener("change", scheduleSaveTriggers);
+      el?.addEventListener("input", scheduleSaveTriggers);
     }
-    el?.addEventListener("change", scheduleSaveTriggers);
-    el?.addEventListener("input", scheduleSaveTriggers);
+  });
+
+  document.querySelectorAll('input[name="stream_trigger"]').forEach(el => {
+    el.addEventListener("change", () => {
+      syncCaptureMode();
+      scheduleSaveTriggers();
+    });
   });
 
   document.getElementById("btn-stream-start")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-stream-start");
+    if (btn?.disabled) return;
     try {
       if (!selectedId) throw new Error("Выберите источник");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Запуск…";
+      }
       await saveTriggers({ quiet: true });
       await api.startStream(selectedId);
       await refresh();
       toast("Стрим запущен");
     } catch (err) {
       toast(err.message);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Запустить";
+      }
     }
   });
 

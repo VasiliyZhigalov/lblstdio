@@ -137,12 +137,17 @@ async function setProjectTab(tab, { skipSave = false } = {}) {
   }
 }
 
+function setCompactToolState(el, active, { color = "text-indigo-400", bg = "bg-indigo-500/10" } = {}) {
+  if (!el) return;
+  el.classList.toggle(color, active);
+  el.classList.toggle(bg, active);
+  el.classList.toggle("text-zinc-400", !active);
+}
+
 function setMode(mode) {
   store.set("mode", mode);
-  const active = "p-2 rounded-lg hover:bg-zinc-800 text-indigo-400 bg-zinc-800/80";
-  const idle = "p-2 rounded-lg hover:bg-zinc-800 text-zinc-400";
-  document.getElementById("tool-select").className = mode === "SELECT" ? active : idle;
-  document.getElementById("tool-draw").className = mode === "DRAW" ? active : idle;
+  setCompactToolState(document.getElementById("tool-select"), mode === "SELECT");
+  setCompactToolState(document.getElementById("tool-draw"), mode === "DRAW");
 }
 
 function updateSaveButton() {
@@ -187,9 +192,12 @@ function updateStudioChrome() {
     const split = image?.split || "train";
     const pinned = split === "test";
     badge.textContent = pinned ? "TEST" : "TRAIN";
-    badge.className = pinned
-      ? "px-1.5 py-0.5 rounded text-[10px] border bg-fuchsia-950 text-fuchsia-300 border-fuchsia-800/50"
-      : "px-1.5 py-0.5 rounded text-[10px] border bg-blue-950 text-blue-400 border-blue-800/50";
+    badge.classList.toggle("bg-fuchsia-950", pinned);
+    badge.classList.toggle("text-fuchsia-300", pinned);
+    badge.classList.toggle("border-fuchsia-800/50", pinned);
+    badge.classList.toggle("bg-blue-950", !pinned);
+    badge.classList.toggle("text-blue-400", !pinned);
+    badge.classList.toggle("border-blue-800/50", !pinned);
     badge.title = pinned
       ? "Тестовый кадр: не участвует в обучении"
       : "Кадр может попасть в train или valid";
@@ -207,7 +215,6 @@ function updateStudioChrome() {
   const totalIdx = document.getElementById("total-idx");
   if (currentIdx) currentIdx.textContent = idx >= 0 ? String(idx + 1) : "0";
   if (totalIdx) totalIdx.textContent = String(images.length);
-  updateActiveLearningGuide();
   updateSaveButton();
   syncHideButtons();
   syncClassifyChrome();
@@ -256,27 +263,6 @@ function syncClsLabelOverlay() {
   const pct = Math.round(Number(label.confidence || 0) * 100);
   el.textContent = `${cls?.name || "класс"} · ${pct}% · на проверке`;
   el.classList.remove("hidden");
-}
-
-function updateActiveLearningGuide() {
-  const step = document.getElementById("active-learning-next-step");
-  const hint = document.getElementById("active-learning-next-hint");
-  if (!step || !hint) return;
-  const images = store.get("images") || [];
-  const pending = images.filter((item) => item.status === "REQUIRES_REVIEW").length;
-  const verified = images.filter((item) => item.status === "VERIFIED").length;
-  if (pending > 0) {
-    step.textContent = `Проверьте ${pending} ${pending === 1 ? "кадр" : "кадров"} с предсказаниями`;
-    hint.textContent = "Подтвердите, исправьте или отклоните разметку перед сборкой датасета.";
-    return;
-  }
-  if (verified < 10) {
-    step.textContent = `Разметьте ещё ${10 - verified} ${10 - verified === 1 ? "кадр" : "кадров"} для первой версии`;
-    hint.textContent = `Сейчас подтверждено: ${verified}. Для стабильного цикла рекомендуется больше 10 кадров.`;
-    return;
-  }
-  step.textContent = "Соберите следующую версию датасета";
-  hint.textContent = `Подтверждено кадров: ${verified}. После сборки можно запустить обучение.`;
 }
 
 function setActiveLearningJobStatus(label = "", visible = false) {
@@ -1240,9 +1226,7 @@ function hideQuickClassPopover() {
 function showQuickClassPopover(boxId, screenX, screenY) {
   const pop = document.getElementById("quick-class-popover");
   if (!pop) return;
-  const classes = [...(store.get("classes") || [])]
-    .sort((a, b) => a.index_id - b.index_id)
-    .slice(0, 9);
+  const classes = [...(store.get("classes") || [])].sort((a, b) => a.index_id - b.index_id);
   if (!classes.length) {
     hideQuickClassPopover();
     return;
@@ -1254,7 +1238,7 @@ function showQuickClassPopover(boxId, screenX, screenY) {
       (cls, index) => `
       <button type="button" data-quick-class="${cls.id}"
         class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-xs hover:bg-zinc-800 text-zinc-200">
-        <span class="font-mono text-zinc-500 w-4">[${index + 1}]</span>
+        <span class="font-mono text-zinc-500 w-4 shrink-0">${index < 9 ? `[${index + 1}]` : ""}</span>
         <span class="w-2.5 h-2.5 rounded-sm shrink-0" style="background:${escapeHtml(cls.color_hex)}"></span>
         <span class="truncate">${escapeHtml(cls.name)}</span>
       </button>`
@@ -1262,11 +1246,20 @@ function showQuickClassPopover(boxId, screenX, screenY) {
     .join("");
 
   const container = document.getElementById("canvas-container");
-  const maxX = (container?.clientWidth || 400) - 160;
-  const maxY = (container?.clientHeight || 400) - 8 - classes.length * 34;
-  pop.style.left = `${Math.max(8, Math.min(screenX + 8, maxX))}px`;
-  pop.style.top = `${Math.max(8, Math.min(screenY + 8, maxY))}px`;
+  const viewW = container?.clientWidth || 400;
+  const viewH = container?.clientHeight || 400;
+  const maxH = Math.max(120, viewH - 16);
+  pop.style.maxHeight = `${maxH}px`;
+  pop.style.left = `${Math.max(8, screenX + 8)}px`;
+  pop.style.top = `${Math.max(8, screenY + 8)}px`;
   pop.classList.remove("hidden");
+
+  const popW = pop.offsetWidth || 180;
+  const popH = Math.min(pop.offsetHeight || maxH, maxH);
+  const left = Math.max(8, Math.min(screenX + 8, viewW - popW - 8));
+  const top = Math.max(8, Math.min(screenY + 8, viewH - popH - 8));
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
 
   pop.querySelectorAll("[data-quick-class]").forEach((btn) => {
     btn.addEventListener("click", (event) => {
@@ -1306,9 +1299,7 @@ function syncHideButtons() {
   const hidden = store.get("hideAnnotations") === true;
   const tool = document.getElementById("tool-toggle-hide");
   const shell = document.getElementById("btn-shell-toggle-hide");
-  const active = "p-2 rounded-lg hover:bg-zinc-800 text-amber-400 bg-zinc-800/80";
-  const idle = "p-2 rounded-lg hover:bg-zinc-800 text-zinc-400";
-  if (tool) tool.className = hidden ? active : idle;
+  setCompactToolState(tool, hidden, { color: "text-amber-400", bg: "bg-zinc-800/80" });
   if (shell) {
     shell.classList.toggle("bg-zinc-800", hidden);
     shell.classList.toggle("text-amber-300", hidden);
@@ -1324,9 +1315,7 @@ function syncZoomLockButton() {
   const btn = document.getElementById("tool-lock-zoom");
   if (!btn) return;
   const locked = Boolean(store.get("zoomLocked"));
-  const active = "p-2 rounded-lg hover:bg-zinc-800 text-indigo-400 bg-zinc-800/80";
-  const idle = "p-2 rounded-lg hover:bg-zinc-800 text-zinc-400";
-  btn.className = locked ? active : idle;
+  setCompactToolState(btn, locked);
   btn.title = locked
     ? "Масштаб зафиксирован между кадрами"
     : "Сохранять масштаб между кадрами";
@@ -1584,23 +1573,6 @@ function boot() {
   });
   document.getElementById("btn-auto-label")?.addEventListener("click", () => {
     autoLabelModal?.open();
-  });
-  document.getElementById("btn-active-learning-next")?.addEventListener("click", () => {
-    const project = store.get("currentProject");
-    if (!project) return;
-    const images = store.get("images") || [];
-    const reviewImage = firstReviewImage(images);
-    if (reviewImage) {
-      store.set("filmstripFilter", "review");
-      navigate(projectPath(project.id, "annotate", reviewImage.id));
-      return;
-    }
-    if (images.filter((item) => item.status === "VERIFIED").length < 10) {
-      const next = images.find((item) => item.status === "UNANNOTATED");
-      navigate(projectPath(project.id, "annotate", next?.id || null));
-      return;
-    }
-    document.getElementById("btn-models-create-dataset-inner")?.click();
   });
   document.getElementById("btn-active-learning-job")?.addEventListener("click", () => {
     trainingDrawer?.open();

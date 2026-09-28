@@ -124,6 +124,19 @@ class ImageDetailRead(ImageRead):
     annotations: list[AnnotationRead] = Field(default_factory=list)
 
 
+class ImageSummaryItem(BaseModel):
+    image_id: UUID
+    box_count: int
+    class_ids: list[UUID]
+    annotations: list[AnnotationRead] = Field(default_factory=list)
+
+
+class ImagesSummaryRead(BaseModel):
+    class_counts: dict[UUID, int] = Field(default_factory=dict)
+    label_counts: dict[UUID, int] = Field(default_factory=dict)
+    images: list[ImageSummaryItem] = Field(default_factory=list)
+
+
 class PropagateBoxRequest(BaseModel):
     source_image_id: UUID
     target_image_id: UUID

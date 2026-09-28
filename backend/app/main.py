@@ -9,6 +9,11 @@ from fastapi.staticfiles import StaticFiles
 from app.application.use_cases.ml.batch_auto_label import AutoLabelJobRunner
 from app.application.use_cases.ml.audit_annotations import AuditAnnotationsRunner
 from app.application.use_cases.ml.train_model import TrainingJobRunner
+from app.infrastructure.db.job_runner_scopes import (
+    audit_runner_scope,
+    auto_label_runner_scope,
+    training_runner_scope,
+)
 from app.infrastructure.db.session import create_session_factory, dispose_engine
 from app.infrastructure.ml.device import UltralyticsDeviceResolver
 from app.infrastructure.ml.ultralytics_predictor import (
@@ -69,21 +74,21 @@ def create_app(
         classification_predictor = UltralyticsClassificationPredictor()
         device_resolver = UltralyticsDeviceResolver()
         app.state.training_runner = TrainingJobRunner(
-            factory,
+            training_runner_scope(factory),
             app.state.storage,
             trainer,
             device_resolver=device_resolver,
             max_concurrent=1,
         )
         app.state.auto_label_runner = AutoLabelJobRunner(
-            factory,
+            auto_label_runner_scope(factory),
             app.state.storage,
             predictor_instance,
             max_concurrent=1,
             classification_predictor=classification_predictor,
         )
         app.state.audit_annotations_runner = AuditAnnotationsRunner(
-            factory,
+            audit_runner_scope(factory),
             app.state.storage,
             predictor_instance,
             max_concurrent=1,

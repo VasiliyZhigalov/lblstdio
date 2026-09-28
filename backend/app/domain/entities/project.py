@@ -47,12 +47,15 @@ class Project:
         name: str,
         description: str | None | object = _UNSET,
     ) -> None:
-        self.name = name.strip()
-        if not self.name:
+        cleaned_name = name.strip()
+        if not cleaned_name:
             raise DomainValidationException("project name must not be empty")
-        if description is not _UNSET:
-            if description is None or not str(description).strip():
-                self.description = None
-            else:
-                self.description = str(description).strip()
+        if description is _UNSET:
+            cleaned_description = self.description
+        elif description is None or not str(description).strip():
+            cleaned_description = None
+        else:
+            cleaned_description = str(description).strip()
+        self.name = cleaned_name
+        self.description = cleaned_description
         self.updated_at = datetime.now(UTC)

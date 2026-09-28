@@ -123,6 +123,16 @@ def test_project_rename() -> None:
         project.rename("  ")
 
 
+def test_failed_rename_preserves_name_and_description() -> None:
+    project = Project.create("Old", "kept")
+    updated_at = project.updated_at
+    with pytest.raises(DomainValidationException, match="name"):
+        project.rename("   ", "replaced")
+    assert project.name == "Old"
+    assert project.description == "kept"
+    assert project.updated_at == updated_at
+
+
 def test_split_validation_edges() -> None:
     with pytest.raises(DomainValidationException, match="negative"):
         assign_splits(-1)

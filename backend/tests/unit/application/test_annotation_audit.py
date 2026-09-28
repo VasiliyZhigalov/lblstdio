@@ -104,8 +104,10 @@ class _FakeStorage:
 class _FakePredictor:
     def __init__(self, mapping: dict[str, list[Detection]]) -> None:
         self.mapping = mapping
+        self.calls: list[tuple[float, float]] = []
 
     def predict(self, weights_path, image_paths, confidence_threshold, iou_threshold=0.7):
+        self.calls.append((confidence_threshold, iou_threshold))
         return {path: list(self.mapping.get(path, [])) for path in image_paths}
 
 
@@ -148,19 +150,20 @@ async def test_suspicious_audit_keeps_labels_and_overlays_model_boxes() -> None:
     abs_path = f"/abs/{image.file_path}"
     annotations = _FakeAnnotations({image.id: [original]})
     images = _FakeImages([image])
+    predictor = _FakePredictor(
+        {
+            abs_path: [
+                Detection(0, 0.9, 0.15, 0.5, 0.2, 0.2),
+            ]
+        }
+    )
     use_case = AuditAnnotationsUseCase(
         _FakeModels(model),
         images,
         annotations,
         _FakeClasses([annotation_class]),
         _FakeStorage(),
-        _FakePredictor(
-            {
-                abs_path: [
-                    Detection(0, 0.9, 0.15, 0.5, 0.2, 0.2),
-                ]
-            }
-        ),
+        predictor,
         _FakeUow(),
     )
 
@@ -184,6 +187,7 @@ async def test_suspicious_audit_keeps_labels_and_overlays_model_boxes() -> None:
     ]
     assert len(overlays) == 1
     assert overlays[0].bbox.x_center == pytest.approx(0.15)
+    assert predictor.calls == [(0.5, 0.5)]
 
 
 class _FakeProjects:
@@ -226,5 +230,62 @@ async def test_audit_rejected_on_classification_project() -> None:
     )
     with pytest.raises(TaskTypeMismatchException):
         await use_case.execute(project.id, model.id, image_ids=[image.id])
+
+
+@pytest.mark.asyncio
+async def test_audit_passes_low_threshold_to_predictor() -> None:
+    project_id = uuid4()
+    class_id = uuid4()
+    image = Image.create(
+        project_id=project_id,
+        file_path="projects/p/images/a.jpg",
+        file_name="a.jpg",
+        width=100,
+        height=80,
+        split=SplitType.TRAIN,
+    )
+    image.status = ImageStatus.VERIFIED
+    annotation = Annotation.create_manual(
+        image.id, class_id, BoundingBox(0.5, 0.5, 0.2, 0.2)
+    )
+    model = ModelVersion.create(
+        project_id=project_id,
+        dataset_version_id=uuid4(),
+        training_job_id=uuid4(),
+        version_number=1,
+        weights_path="projects/p/models/v1/best.pt",
+        map50=0.8,
+    )
+    abs_path = f"/abs/{image.file_path}"
+    predictor = _FakePredictor({abs_path: [Detection(0, 0.02, 0.5, 0.5, 0.2, 0.2)]})
+    use_case = AuditAnnotationsUseCase(
+        _FakeModels(model),
+        _FakeImages([image]),
+        _FakeAnnotations({image.id: [annotation]}),
+        _FakeClasses(
+            [
+                AnnotationClass(
+                    id=class_id,
+                    project_id=project_id,
+                    name="crack",
+                    color_hex="#FF0000",
+                    index_id=0,
+                )
+            ]
+        ),
+        _FakeStorage(),
+        predictor,
+        _FakeUow(),
+    )
+
+    await use_case.execute(
+        project_id,
+        model.id,
+        image_ids=[image.id],
+        confidence_threshold=0.01,
+        iou_threshold=0.01,
+    )
+
+    assert predictor.calls == [(0.01, 0.01)]
 
 

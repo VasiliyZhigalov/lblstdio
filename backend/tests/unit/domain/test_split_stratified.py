@@ -1,6 +1,7 @@
 from random import Random
 from uuid import uuid4
 
+from app.domain.enums import SplitType
 from app.domain.services.class_dir_name import class_dir_name
 from app.domain.services.split import assign_splits_stratified
 from app.domain.value_objects.split_ratios import SplitRatios
@@ -11,6 +12,13 @@ def test_stratified_keeps_each_class_in_train_when_tiny() -> None:
     class_ids = [a, a, b]
     splits = assign_splits_stratified(class_ids, SplitRatios(), rng=Random(0))
     assert len(splits) == 3
+
+
+def test_stratified_singleton_classes_keep_nonempty_valid() -> None:
+    class_ids = [uuid4() for _ in range(4)]
+    splits = assign_splits_stratified(class_ids, SplitRatios(), rng=Random(0))
+    assert splits.count(SplitType.VALID) >= 1
+    assert splits.count(SplitType.TRAIN) >= 1
 
 
 def test_class_dir_name_strips_separators() -> None:

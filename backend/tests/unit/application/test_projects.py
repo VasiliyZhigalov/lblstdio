@@ -69,7 +69,21 @@ class _FakeImages:
         return next((item for item in self.images if item.id == image_id), None)
 
     async def list_by_project(self, project_id):
-        return [item for item in self.images if item.project_id == project_id]
+        return await self.list_page(project_id)
+
+    async def list_page(
+        self, project_id, *, split=None, status=None, offset=0, limit=None
+    ):
+        images = [item for item in self.images if item.project_id == project_id]
+        if split is not None:
+            images = [item for item in images if item.split == split]
+        if status is not None:
+            images = [item for item in images if item.status == status]
+        if offset:
+            images = images[offset:]
+        if limit is not None:
+            images = images[:limit]
+        return images
 
 
 class _FakeAnnotations:
@@ -188,6 +202,12 @@ async def test_get_image_missing() -> None:
 def test_split_ratios_must_sum_to_one() -> None:
     with pytest.raises(DomainValidationException, match="sum"):
         SplitRatios(train=0.5, valid=0.5, test=0.5)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_split_ratios_reject_non_finite(value: float) -> None:
+    with pytest.raises(DomainValidationException, match="finite"):
+        SplitRatios(train=value, valid=0.0, test=0.0)
 
 
 def test_assign_splits_uses_hamilton_and_keeps_ten_image_ratio() -> None:

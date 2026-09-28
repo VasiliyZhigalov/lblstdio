@@ -36,6 +36,7 @@ from app.application.use_cases.labels.save_image_label import (
 )
 from app.application.use_cases.images.delete_image import DeleteImageUseCase
 from app.application.use_cases.images.get_image import GetImageUseCase, ListImagesUseCase
+from app.application.use_cases.images.get_images_summary import GetImagesSummaryUseCase
 from app.application.use_cases.images.set_test_holdout import SetImageTestHoldoutUseCase
 from app.application.use_cases.images.upload_images import UploadImagesUseCase
 from app.application.use_cases.keypoints.propagate_box import PropagateBoxViaKeypointsUseCase
@@ -334,6 +335,14 @@ def get_list_images_use_case(
     images: SqliteImageRepository = Depends(get_image_repo),
 ) -> ListImagesUseCase:
     return ListImagesUseCase(images)
+
+
+def get_images_summary_use_case(
+    images: SqliteImageRepository = Depends(get_image_repo),
+    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
+) -> GetImagesSummaryUseCase:
+    return GetImagesSummaryUseCase(images, annotations, labels)
 
 
 def get_get_image_use_case(

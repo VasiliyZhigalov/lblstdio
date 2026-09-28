@@ -1,3 +1,4 @@
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -121,6 +122,38 @@ async def test_timer_stream_can_start_without_model() -> None:
     assert stream.is_active is True
     assert stream.id in runner.started
     assert runner.weights == [None]
+
+
+@pytest.mark.asyncio
+async def test_start_image_folder_reports_logon_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = tmp_path / "share"
+    folder.mkdir()
+    (folder / "a.jpg").write_bytes(b"x")
+    project_id = uuid4()
+    stream = StreamSource.create(
+        project_id,
+        "Share",
+        StreamSourceType.IMAGE_FOLDER,
+        str(folder),
+        config=StreamTriggerConfig(timer_enabled=True),
+    )
+    original = Path.is_dir
+
+    def fake(self, *args, **kwargs):
+        if Path(self) == folder:
+            raise OSError(1326, "Logon failure", str(self), 1326)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", fake)
+    runner = _Runner()
+    with pytest.raises(DomainValidationException, match="пользователя или пароль"):
+        await StartStreamUseCase(
+            _Streams(stream), _NoModels(), _Classes(), _Storage(), runner, _Uow()
+        ).execute(stream.id)
+    assert runner.started == []
+    assert stream.is_active is False
 
 
 class _SwapRunner:

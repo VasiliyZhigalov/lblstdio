@@ -4,9 +4,7 @@ from uuid import UUID
 
 import anyio
 
-from app.application.ports.repositories.annotation_audit_job_repository import (
-    IAnnotationAuditJobRepository,
-)
+from app.application.ports.job_runner_scopes import AuditScopeFactory
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
 from app.application.ports.repositories.class_repository import IClassRepository
 from app.application.ports.repositories.image_repository import IImageRepository
@@ -135,8 +133,8 @@ class AuditAnnotationsUseCase:
                 self._predictor.predict,
                 weights_path,
                 paths,
-                0.1,
-                0.7,
+                confidence_threshold,
+                iou_threshold,
             )
             for image, path in zip(batch, paths, strict=True):
                 detections = predictions.get(path, [])
@@ -205,13 +203,13 @@ class AuditAnnotationsUseCase:
 class AuditAnnotationsRunner:
     def __init__(
         self,
-        session_factory,
+        scopes: AuditScopeFactory,
         storage: IFileStorage,
         predictor: IModelPredictor,
         *,
         max_concurrent: int = 1,
     ) -> None:
-        self._session_factory = session_factory
+        self._scopes = scopes
         self._storage = storage
         self._predictor = predictor
         self._semaphore = asyncio.Semaphore(max(1, max_concurrent))
@@ -227,29 +225,17 @@ class AuditAnnotationsRunner:
         confidence_threshold: float,
         iou_threshold: float,
     ) -> AnnotationAuditJob:
-        from app.infrastructure.db.repositories.annotation_audit_job_repository import (
-            SqliteAnnotationAuditJobRepository,
-        )
-        from app.infrastructure.db.repositories.project_repository import (
-            SqliteProjectRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
-        async with self._session_factory() as session:
-            project = await SqliteProjectRepository(session).get_by_id(project_id)
+        async with self._scopes() as scope:
+            project = await scope.projects.get_by_id(project_id)
             if project is None:
                 raise ResourceNotFoundException(f"project {project_id} not found")
             require_task(project, ProjectTaskType.DETECTION)
-            jobs = SqliteAnnotationAuditJobRepository(session)
+            jobs = scope.jobs
             active = await jobs.find_active(project_id, model_version_id)
             if active is not None:
                 return active
             if image_ids is None:
-                from app.infrastructure.db.repositories.image_repository import (
-                    SqliteImageRepository,
-                )
-
-                images = await SqliteImageRepository(session).list_by_project(project_id)
+                images = await scope.images.list_by_project(project_id)
                 image_ids = [
                     item.id
                     for item in images
@@ -265,7 +251,7 @@ class AuditAnnotationsRunner:
             )
             job.total_images = len(job.image_ids)
             await jobs.add(job)
-            await SqlAlchemyUnitOfWork(session).commit()
+            await scope.uow.commit()
         running = asyncio.create_task(
             self._run(job.id)
         )
@@ -274,53 +260,29 @@ class AuditAnnotationsRunner:
         return job
 
     async def get(self, task_id: UUID) -> AnnotationAuditJob | None:
-        from app.infrastructure.db.repositories.annotation_audit_job_repository import (
-            SqliteAnnotationAuditJobRepository,
-        )
-
-        async with self._session_factory() as session:
-            return await SqliteAnnotationAuditJobRepository(session).get_by_id(task_id)
+        async with self._scopes() as scope:
+            return await scope.jobs.get_by_id(task_id)
 
     async def _run(self, job_id: UUID) -> None:
         async with self._semaphore:
             try:
-                from app.infrastructure.db.repositories.annotation_repository import (
-                    SqliteAnnotationRepository,
-                )
-                from app.infrastructure.db.repositories.class_repository import (
-                    SqliteClassRepository,
-                )
-                from app.infrastructure.db.repositories.image_repository import (
-                    SqliteImageRepository,
-                )
-                from app.infrastructure.db.repositories.model_version_repository import (
-                    SqliteModelVersionRepository,
-                )
-                from app.infrastructure.db.repositories.project_repository import (
-                    SqliteProjectRepository,
-                )
-                from app.infrastructure.db.repositories.annotation_audit_job_repository import (
-                    SqliteAnnotationAuditJobRepository,
-                )
-                from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
-                async with self._session_factory() as session:
-                    jobs = SqliteAnnotationAuditJobRepository(session)
+                async with self._scopes() as scope:
+                    jobs = scope.jobs
                     job = await jobs.get_by_id(job_id)
                     if job is None:
                         return
                     job.mark_running()
                     await jobs.update(job)
-                    await SqlAlchemyUnitOfWork(session).commit()
+                    await scope.uow.commit()
                     use_case = AuditAnnotationsUseCase(
-                        SqliteModelVersionRepository(session),
-                        SqliteImageRepository(session),
-                        SqliteAnnotationRepository(session),
-                        SqliteClassRepository(session),
+                        scope.models,
+                        scope.images,
+                        scope.annotations,
+                        scope.classes,
                         self._storage,
                         self._predictor,
-                        SqlAlchemyUnitOfWork(session),
-                        projects=SqliteProjectRepository(session),
+                        scope.uow,
+                        projects=scope.projects,
                     )
                     results = await use_case.execute(
                         job.project_id,
@@ -328,16 +290,14 @@ class AuditAnnotationsRunner:
                         image_ids=job.image_ids,
                         confidence_threshold=job.confidence_threshold,
                         iou_threshold=job.iou_threshold,
-                        async_progress=lambda value: self._save_progress(
-                            jobs, session, job, value
-                        ),
+                        async_progress=lambda value: self._save_progress(scope, job, value),
                         batch_size=8,
                     )
                     job.mark_completed(
                         len(results), sum(item.suspicious for item in results)
                     )
                     await jobs.update(job)
-                    await SqlAlchemyUnitOfWork(session).commit()
+                    await scope.uow.commit()
             except asyncio.CancelledError:
                 await asyncio.shield(
                     self._mark_failed(job_id, "cancelled during shutdown")
@@ -347,51 +307,38 @@ class AuditAnnotationsRunner:
                 await self._mark_failed(job_id, str(exc))
 
     async def _mark_failed(self, job_id: UUID, message: str) -> None:
-        from app.infrastructure.db.repositories.annotation_audit_job_repository import (
-            SqliteAnnotationAuditJobRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
-        async with self._session_factory() as session:
-            jobs = SqliteAnnotationAuditJobRepository(session)
-            job = await jobs.get_by_id(job_id)
+        async with self._scopes() as scope:
+            job = await scope.jobs.get_by_id(job_id)
             if job is None or job.status in {
                 AnnotationAuditJobStatus.COMPLETED,
                 AnnotationAuditJobStatus.FAILED,
             }:
                 return
             job.mark_failed(message)
-            await jobs.update(job)
-            await SqlAlchemyUnitOfWork(session).commit()
+            await scope.jobs.update(job)
+            await scope.uow.commit()
 
     async def fail_orphaned_jobs(self) -> int:
-        from app.infrastructure.db.repositories.annotation_audit_job_repository import (
-            SqliteAnnotationAuditJobRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
-        async with self._session_factory() as session:
-            jobs = SqliteAnnotationAuditJobRepository(session)
-            orphaned = await jobs.list_by_statuses(
+        async with self._scopes() as scope:
+            orphaned = await scope.jobs.list_by_statuses(
                 (AnnotationAuditJobStatus.PENDING, AnnotationAuditJobStatus.RUNNING)
             )
             for job in orphaned:
                 job.mark_failed("interrupted by server restart")
-                await jobs.update(job)
+                await scope.jobs.update(job)
             if orphaned:
-                await SqlAlchemyUnitOfWork(session).commit()
+                await scope.uow.commit()
             return len(orphaned)
 
     async def _save_progress(
         self,
-        jobs: IAnnotationAuditJobRepository,
-        session,
+        scope,
         job: AnnotationAuditJob,
         processed: int,
     ) -> None:
         job.processed_images = processed
-        await jobs.update(job)
-        await session.commit()
+        await scope.jobs.update(job)
+        await scope.uow.commit()
 
     async def close(self) -> None:
         for task in tuple(self._running):

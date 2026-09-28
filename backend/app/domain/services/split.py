@@ -21,7 +21,48 @@ def _hamilton(count: int, weights: tuple[float, float, float]) -> list[int]:
     return floors
 
 
-def assign_splits(count: int, ratios: SplitRatios | None = None) -> list[SplitType]:
+def _labels_from_counts(counts: list[int]) -> list[SplitType]:
+    return (
+        [SplitType.TRAIN] * counts[0]
+        + [SplitType.VALID] * counts[1]
+        + [SplitType.TEST] * counts[2]
+    )
+
+
+def _require_nonempty_valid(
+    splits: list[SplitType],
+    *,
+    protected: Sequence[bool] | None = None,
+    class_ids: Sequence[UUID] | None = None,
+) -> list[SplitType]:
+    """Keep at least one valid image, or refuse a split that cannot have one."""
+    if not splits:
+        return splits
+    flags = list(protected) if protected is not None else [False] * len(splits)
+    if any(
+        split == SplitType.VALID and not flagged
+        for split, flagged in zip(splits, flags, strict=True)
+    ):
+        return splits
+    movable = [index for index, flagged in enumerate(flags) if not flagged]
+    if len(movable) < 2:
+        raise DomainValidationException("cannot form a non-empty valid split")
+    trains = [index for index in movable if splits[index] == SplitType.TRAIN]
+    pool = trains or movable
+    donor = pool[-1]
+    if class_ids is not None:
+        counts: dict[UUID, int] = {}
+        for index in pool:
+            counts[class_ids[index]] = counts.get(class_ids[index], 0) + 1
+        duplicates = [index for index in pool if counts[class_ids[index]] > 1]
+        if duplicates:
+            donor = duplicates[-1]
+    updated = list(splits)
+    updated[donor] = SplitType.VALID
+    return updated
+
+
+def _assign_splits_raw(count: int, ratios: SplitRatios | None = None) -> list[SplitType]:
     if count < 0:
         raise DomainValidationException("image count cannot be negative")
     ratios = ratios or SplitRatios()
@@ -33,11 +74,11 @@ def assign_splits(count: int, ratios: SplitRatios | None = None) -> list[SplitTy
                 if counts[donor] > 1:
                     counts[donor] -= 1
                     counts[index] += 1
-    return (
-        [SplitType.TRAIN] * counts[0]
-        + [SplitType.VALID] * counts[1]
-        + [SplitType.TEST] * counts[2]
-    )
+    return _labels_from_counts(counts)
+
+
+def assign_splits(count: int, ratios: SplitRatios | None = None) -> list[SplitType]:
+    return _require_nonempty_valid(_assign_splits_raw(count, ratios))
 
 
 def assign_splits_stratified(
@@ -54,10 +95,10 @@ def assign_splits_stratified(
     result = [SplitType.TRAIN] * len(class_ids)
     for indices in by_class.values():
         rng.shuffle(indices)
-        splits = assign_splits(len(indices), ratios)
+        splits = _assign_splits_raw(len(indices), ratios)
         for index, split in zip(indices, splits, strict=True):
             result[index] = split
-    return result
+    return _require_nonempty_valid(result, class_ids=class_ids)
 
 
 def _train_valid_weights(ratios: SplitRatios | None) -> tuple[float, float]:
@@ -68,7 +109,9 @@ def _train_valid_weights(ratios: SplitRatios | None) -> tuple[float, float]:
     return ratios.train / pool, ratios.valid / pool
 
 
-def assign_train_valid(count: int, ratios: SplitRatios | None = None) -> list[SplitType]:
+def _assign_train_valid_raw(
+    count: int, ratios: SplitRatios | None = None
+) -> list[SplitType]:
     """Split images into train and valid only. Test is never assigned here."""
     if count < 0:
         raise DomainValidationException("image count cannot be negative")
@@ -93,6 +136,10 @@ def assign_train_valid(count: int, ratios: SplitRatios | None = None) -> list[Sp
     return [SplitType.TRAIN] * floors[0] + [SplitType.VALID] * floors[1]
 
 
+def assign_train_valid(count: int, ratios: SplitRatios | None = None) -> list[SplitType]:
+    return _require_nonempty_valid(_assign_train_valid_raw(count, ratios))
+
+
 def assign_train_valid_stratified(
     class_ids: Sequence[UUID],
     ratios: SplitRatios | None = None,
@@ -106,10 +153,10 @@ def assign_train_valid_stratified(
     result = [SplitType.TRAIN] * len(class_ids)
     for indices in by_class.values():
         rng.shuffle(indices)
-        splits = assign_train_valid(len(indices), ratios)
+        splits = _assign_train_valid_raw(len(indices), ratios)
         for index, split in zip(indices, splits, strict=True):
             result[index] = split
-    return result
+    return _require_nonempty_valid(result, class_ids=class_ids)
 
 
 def assign_with_holdout(
@@ -130,14 +177,11 @@ def assign_with_holdout(
         )
     if class_ids is None:
         rng.shuffle(pool_indexes)
-        pool_splits = assign_train_valid(len(pool_indexes), ratios)
+        pool_splits = _assign_train_valid_raw(len(pool_indexes), ratios)
     else:
-        pool_splits = assign_train_valid_stratified(
-            [class_ids[index] for index in pool_indexes],
-            ratios,
-            rng=rng,
-        )
+        pool_class_ids = [class_ids[index] for index in pool_indexes]
+        pool_splits = assign_train_valid_stratified(pool_class_ids, ratios, rng=rng)
     result = [SplitType.TEST] * len(holdout)
     for index, split in zip(pool_indexes, pool_splits, strict=True):
         result[index] = split
-    return result
+    return _require_nonempty_valid(result, protected=holdout, class_ids=class_ids)

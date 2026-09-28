@@ -29,6 +29,7 @@ export function initAutoLabelModal({
 }) {
   const modal = document.getElementById("autolabel-modal");
   let preferredModelId = null;
+  let submitInFlight = false;
 
   function close() {
     showModal(modal, false);
@@ -81,6 +82,7 @@ export function initAutoLabelModal({
   document.getElementById("btn-close-autolabel")?.addEventListener("click", close);
   document.getElementById("btn-cancel-autolabel")?.addEventListener("click", close);
   document.getElementById("btn-submit-autolabel")?.addEventListener("click", async () => {
+    if (submitInFlight) return;
     const project = getProject();
     const modelId = document.getElementById("autolabel-model")?.value;
     const conf = Number(document.getElementById("autolabel-conf")?.value || 0.05);
@@ -98,6 +100,7 @@ export function initAutoLabelModal({
       onError?.("Выберите модель");
       return;
     }
+    submitInFlight = true;
     const progress = document.getElementById("autolabel-progress");
     const progressText = document.getElementById("autolabel-progress-text");
     progress?.classList.remove("hidden");
@@ -155,6 +158,8 @@ export function initAutoLabelModal({
     } catch (err) {
       progress?.classList.add("hidden");
       onError?.(err.message);
+    } finally {
+      submitInFlight = false;
     }
   });
 

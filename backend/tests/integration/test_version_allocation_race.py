@@ -38,6 +38,7 @@ from app.infrastructure.db.repositories.project_repository import SqliteProjectR
 from app.infrastructure.db.repositories.training_job_repository import (
     SqliteTrainingJobRepository,
 )
+from app.infrastructure.db.job_runner_scopes import training_runner_scope
 from app.infrastructure.db.session import create_session_factory, dispose_engine
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 from app.infrastructure.storage.local_storage import LocalFileStorage
@@ -139,17 +140,33 @@ async def test_concurrent_dataset_creates_keep_distinct_readable_trees(
                 height=32,
                 split=SplitType.TRAIN,
             )
+            other = Image.create(
+                project_id=project.id,
+                file_path=f"projects/{project.id}/images/other.png",
+                file_name="other.png",
+                width=32,
+                height=32,
+                split=SplitType.TRAIN,
+            )
             image.status = ImageStatus.VERIFIED
+            other.status = ImageStatus.VERIFIED
             await storage.save(
                 f"projects/{project.id}/images", "frame.png", b"frame-bytes"
+            )
+            await storage.save(
+                f"projects/{project.id}/images", "other.png", b"other-bytes"
             )
             box = Annotation.create_manual(
                 image.id, annotation_class.id, BoundingBox(0.5, 0.5, 0.2, 0.2)
             )
+            other_box = Annotation.create_manual(
+                other.id, annotation_class.id, BoundingBox(0.4, 0.4, 0.2, 0.2)
+            )
             await projects.add(project)
             await classes.add(annotation_class)
-            await images.add_many([image])
+            await images.add_many([image, other])
             await annotations.replace_for_image(image.id, [box])
+            await annotations.replace_for_image(other.id, [other_box])
             await session.commit()
             project_id = project.id
 
@@ -290,7 +307,7 @@ async def test_concurrent_training_completion_keeps_distinct_readable_weights(
         _race_allocator(monkeypatch, SqliteModelVersionRepository)
 
         runner = TrainingJobRunner(
-            factory,
+            training_runner_scope(factory),
             storage,
             _ScriptedTrainer(),
             max_concurrent=2,

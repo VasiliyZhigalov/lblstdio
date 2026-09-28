@@ -33,6 +33,32 @@ def test_image_folder_capture_loops_in_name_order(tmp_path: Path) -> None:
     assert int(third[0, 0, 2]) > int(third[0, 0, 0])
 
 
+def test_image_folder_runner_reports_oserror(monkeypatch, tmp_path: Path) -> None:
+    def boom(_folder):
+        raise OSError(1326, "Logon failure", str(_folder), 1326)
+
+    monkeypatch.setattr(
+        "app.infrastructure.streaming.opencv_stream_runner.ImageFolderCapture",
+        boom,
+    )
+    stream = StreamSource.create(
+        project_id=uuid4(),
+        name="Stills",
+        source_type=StreamSourceType.IMAGE_FOLDER,
+        source_uri=str(tmp_path),
+        config=StreamTriggerConfig(timer_enabled=True, track_stable_enabled=False),
+    )
+    runner = OpenCVStreamRunner()
+    try:
+        runner.start(stream, None)
+        status = runner.wait_until_ready(stream.id, timeout=2.0)
+        assert status.state == "error"
+        assert status.error_message
+        assert "пользователя или пароль" in status.error_message
+    finally:
+        runner.stop(stream.id)
+
+
 def test_image_folder_runner_publishes_preview(tmp_path: Path) -> None:
     _png(tmp_path / "frame.png", (10, 20, 30))
     stream = StreamSource.create(

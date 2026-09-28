@@ -1,4 +1,5 @@
 import io
+import warnings
 
 import numpy as np
 import pytest
@@ -17,6 +18,40 @@ def _png_bytes(array: np.ndarray) -> bytes:
 @pytest.fixture
 def service() -> AlbumentationsAugmentationService:
     return AlbumentationsAugmentationService()
+
+
+def test_generate_samples_is_deterministic_and_warns_nothing(
+    service: AlbumentationsAugmentationService,
+) -> None:
+    from app.domain.entities.dataset_version import AugmentationConfig
+
+    rng = np.random.default_rng(2)
+    image = rng.integers(0, 255, (96, 128, 3), dtype=np.uint8)
+    boxes = [LabeledBox(0.45, 0.4, 0.3, 0.25, class_index=0)]
+    config = AugmentationConfig(
+        multiplier=3,
+        horizontal_flip=True,
+        vertical_flip=True,
+        rotate=True,
+        shear=True,
+        hue_saturation=True,
+        brightness_contrast=True,
+        blur=True,
+        noise=True,
+        grayscale=True,
+        cutout=True,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        warnings.simplefilter("error", DeprecationWarning)
+        warnings.simplefilter("error", FutureWarning)
+        first = service.generate_samples(
+            _png_bytes(image), boxes, config, apply_augmentation=True
+        )
+        second = service.generate_samples(
+            _png_bytes(image), boxes, config, apply_augmentation=True
+        )
+    assert [item.image_bytes for item in first] == [item.image_bytes for item in second]
 
 
 def test_horizontal_flip_keeps_center_box(service: AlbumentationsAugmentationService) -> None:

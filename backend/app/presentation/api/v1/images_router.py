@@ -11,6 +11,7 @@ from starlette.formparsers import MultiPartException
 from app.application.dto import UploadedFile
 from app.application.use_cases.images.delete_image import DeleteImageUseCase
 from app.application.use_cases.images.get_image import GetImageUseCase, ListImagesUseCase
+from app.application.use_cases.images.get_images_summary import GetImagesSummaryUseCase
 from app.application.use_cases.images.set_test_holdout import SetImageTestHoldoutUseCase
 from app.application.use_cases.images.upload_images import (
     MAX_UPLOAD_FILES,
@@ -27,6 +28,7 @@ from app.presentation.dependencies import (
     get_delete_image_use_case,
     get_get_image_use_case,
     get_image_label_repo,
+    get_images_summary_use_case,
     get_list_images_use_case,
     get_set_image_holdout_use_case,
     get_storage,
@@ -38,6 +40,8 @@ from app.presentation.schemas import (
     ImageHoldoutRequest,
     ImageLabelRead,
     ImageRead,
+    ImageSummaryItem,
+    ImagesSummaryRead,
 )
 
 router = APIRouter(tags=["images"])
@@ -173,6 +177,27 @@ async def upload_images(
             except OSError:
                 pass
         staging.cleanup()
+
+
+@router.get("/projects/{project_id}/images/summary", response_model=ImagesSummaryRead)
+async def get_images_summary(
+    project_id: UUID,
+    use_case: GetImagesSummaryUseCase = Depends(get_images_summary_use_case),
+) -> ImagesSummaryRead:
+    summary = await use_case.execute(project_id)
+    return ImagesSummaryRead(
+        class_counts=summary.class_counts,
+        label_counts=summary.label_counts,
+        images=[
+            ImageSummaryItem(
+                image_id=item.image_id,
+                box_count=item.box_count,
+                class_ids=item.class_ids,
+                annotations=[_annotation_to_read(box) for box in item.annotations],
+            )
+            for item in summary.images
+        ],
+    )
 
 
 @router.get("/projects/{project_id}/images", response_model=list[ImageRead])

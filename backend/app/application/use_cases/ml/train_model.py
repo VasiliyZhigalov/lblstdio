@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
+from app.application.ports.job_runner_scopes import TrainingScopeFactory
 from app.application.ports.repositories.dataset_version_repository import (
     IDatasetVersionRepository,
 )
@@ -216,14 +217,14 @@ class TrainingJobRunner:
 
     def __init__(
         self,
-        session_factory,
+        scopes: TrainingScopeFactory,
         storage: IFileStorage,
         trainer: IModelTrainer,
         *,
         device_resolver: ITrainingDeviceResolver | Callable[[str], str] | None = None,
         max_concurrent: int = 1,
     ) -> None:
-        self._session_factory = session_factory
+        self._scopes = scopes
         self._storage = storage
         self._trainer = trainer
         self._device_resolver = device_resolver
@@ -247,22 +248,15 @@ class TrainingJobRunner:
 
     async def fail_orphaned_jobs(self) -> int:
         """Mark QUEUED/RUNNING jobs as FAILED after process restart."""
-        from app.infrastructure.db.repositories.training_job_repository import (
-            SqliteTrainingJobRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
-        async with self._session_factory() as session:
-            jobs = SqliteTrainingJobRepository(session)
-            uow = SqlAlchemyUnitOfWork(session)
-            orphans = await jobs.list_by_statuses(
+        async with self._scopes() as scope:
+            orphans = await scope.jobs.list_by_statuses(
                 (TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING)
             )
             for job in orphans:
                 job.mark_failed(_ORPHAN_MESSAGE)
-                await jobs.update(job)
+                await scope.jobs.update(job)
             if orphans:
-                await uow.commit()
+                await scope.uow.commit()
             return len(orphans)
 
     def _resolve_device(self, requested: str) -> str:
@@ -283,14 +277,8 @@ class TrainingJobRunner:
             raise
 
     async def _mark_failed(self, job_id: UUID, message: str) -> None:
-        from app.infrastructure.db.repositories.training_job_repository import (
-            SqliteTrainingJobRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
-        async with self._session_factory() as session:
-            jobs = SqliteTrainingJobRepository(session)
-            fresh = await jobs.get_by_id(job_id)
+        async with self._scopes() as scope:
+            fresh = await scope.jobs.get_by_id(job_id)
             if fresh is None:
                 return
             if fresh.status in {
@@ -299,23 +287,10 @@ class TrainingJobRunner:
             }:
                 return
             fresh.mark_failed(message)
-            await jobs.update(fresh)
-            await SqlAlchemyUnitOfWork(session).commit()
+            await scope.jobs.update(fresh)
+            await scope.uow.commit()
 
     async def _run_locked(self, job_id: UUID) -> None:
-        from app.infrastructure.db.repositories.dataset_version_repository import (
-            SqliteDatasetVersionRepository,
-        )
-        from app.infrastructure.db.repositories.model_version_repository import (
-            SqliteModelVersionRepository,
-        )
-        from app.infrastructure.db.repositories.project_repository import (
-            SqliteProjectRepository,
-        )
-        from app.infrastructure.db.repositories.training_job_repository import (
-            SqliteTrainingJobRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
         from app.domain.services.slugify import trained_model_name
 
         work_rel: str | None = None
@@ -324,11 +299,11 @@ class TrainingJobRunner:
             await self._mark_failed(job_id, message)
 
         try:
-            async with self._session_factory() as session:
-                jobs = SqliteTrainingJobRepository(session)
-                versions = SqliteDatasetVersionRepository(session)
-                projects_repo = SqliteProjectRepository(session)
-                uow = SqlAlchemyUnitOfWork(session)
+            async with self._scopes() as scope:
+                jobs = scope.jobs
+                versions = scope.datasets
+                projects_repo = scope.projects
+                uow = scope.uow
 
                 job = await jobs.get_by_id(job_id)
                 if job is None:
@@ -388,9 +363,9 @@ class TrainingJobRunner:
                     except queue.Empty:
                         break
                 if batch:
-                    async with self._session_factory() as session:
-                        jobs = SqliteTrainingJobRepository(session)
-                        uow = SqlAlchemyUnitOfWork(session)
+                    async with self._scopes() as scope:
+                        jobs = scope.jobs
+                        uow = scope.uow
                         job = await jobs.get_by_id(job_id)
                         if job is not None:
                             for metrics in batch:
@@ -413,11 +388,11 @@ class TrainingJobRunner:
                 await _fail(f"best.pt missing at {result.best_weights_path}")
                 return
 
-            async with self._session_factory() as session:
-                jobs = SqliteTrainingJobRepository(session)
-                models = SqliteModelVersionRepository(session)
-                projects = SqliteProjectRepository(session)
-                uow = SqlAlchemyUnitOfWork(session)
+            async with self._scopes() as scope:
+                jobs = scope.jobs
+                models = scope.models
+                projects = scope.projects
+                uow = scope.uow
 
                 job = await jobs.get_by_id(job_id)
                 if job is None:
@@ -480,19 +455,19 @@ class TrainingJobRunner:
                         published_for_commit = published
                         break
                     except IntegrityError:
-                        await session.rollback()
+                        await uow.rollback()
                         await cleanup_attempt(self._storage, staging, published)
                         if attempt + 1 >= _VERSION_ALLOC_ATTEMPTS:
                             raise
                         continue
                     except FileExistsError:
-                        await session.rollback()
+                        await uow.rollback()
                         await cleanup_attempt(self._storage, staging, published)
                         if attempt + 1 >= _VERSION_ALLOC_ATTEMPTS:
                             raise
                         continue
                     except Exception:
-                        await session.rollback()
+                        await uow.rollback()
                         await cleanup_attempt(self._storage, staging, published)
                         raise
 
@@ -511,7 +486,7 @@ class TrainingJobRunner:
                     await uow.commit()
                 except Exception:
                     try:
-                        await session.rollback()
+                        await uow.rollback()
                     except Exception:
                         pass
                     await cleanup_attempt(

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.repositories.image_repository import IImageRepository
 from app.domain.entities.image import Image
+from app.domain.enums import ImageStatus, SplitType
 from app.infrastructure.db.mappers import image_to_row, row_to_image
 from app.infrastructure.db.tables import DatasetItemRow, ImageRow
 
@@ -23,11 +24,31 @@ class SqliteImageRepository(IImageRepository):
         return row_to_image(row) if row else None
 
     async def list_by_project(self, project_id: UUID) -> list[Image]:
-        result = await self._session.scalars(
+        return await self.list_page(project_id)
+
+    async def list_page(
+        self,
+        project_id: UUID,
+        *,
+        split: SplitType | None = None,
+        status: ImageStatus | None = None,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> list[Image]:
+        stmt = (
             select(ImageRow)
             .where(ImageRow.project_id == str(project_id))
             .order_by(ImageRow.created_at)
         )
+        if split is not None:
+            stmt = stmt.where(ImageRow.split == split.value)
+        if status is not None:
+            stmt = stmt.where(ImageRow.status == status.value)
+        if offset:
+            stmt = stmt.offset(offset)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        result = await self._session.scalars(stmt)
         return [row_to_image(row) for row in result]
 
     async def update(self, image: Image) -> None:

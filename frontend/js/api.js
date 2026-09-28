@@ -85,7 +85,16 @@ export const api = {
       method: "DELETE",
     }),
 
-  listImages: (projectId) => request(`/projects/${projectId}/images`),
+  listImages: (projectId, query = {}) => {
+    const params = new URLSearchParams();
+    if (query.offset != null) params.set("offset", String(query.offset));
+    if (query.limit != null) params.set("limit", String(query.limit));
+    if (query.split) params.set("split", query.split);
+    if (query.status) params.set("status", query.status);
+    const suffix = params.toString() ? `?${params}` : "";
+    return request(`/projects/${projectId}/images${suffix}`);
+  },
+  getImagesSummary: (projectId) => request(`/projects/${projectId}/images/summary`),
   getImage: (imageId) => request(`/images/${imageId}`),
   imageFileUrl: (imageId) => `${API_BASE}/images/${imageId}/file`,
 

@@ -36,6 +36,10 @@ from app.infrastructure.db.repositories.project_repository import SqliteProjectR
 from app.infrastructure.db.repositories.training_job_repository import (
     SqliteTrainingJobRepository,
 )
+from app.infrastructure.db.job_runner_scopes import (
+    auto_label_runner_scope,
+    training_runner_scope,
+)
 from app.infrastructure.db.session import create_session_factory, dispose_engine
 from app.infrastructure.db.tables import AutoLabelJobRow, TrainingJobRow
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
@@ -133,7 +137,9 @@ async def test_training_commit_failure_marks_job_failed(tmp_path, monkeypatch) -
 
             return _Wrap()
 
-        runner = TrainingJobRunner(watching_factory, storage, _ScriptedTrainer())
+        runner = TrainingJobRunner(
+            training_runner_scope(watching_factory), storage, _ScriptedTrainer()
+        )
         await runner.run_inline(job_id)
 
         async with factory() as session:
@@ -206,7 +212,7 @@ async def test_auto_label_commit_failure_marks_job_failed(tmp_path, monkeypatch)
             monkeypatch, AutoLabelJobRow, AutoLabelJobStatus.COMPLETED.value
         )
         runner = AutoLabelJobRunner(
-            watching_factory,
+            auto_label_runner_scope(watching_factory),
             storage,
             _EmptyPredictor(),
         )

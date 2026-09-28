@@ -46,13 +46,10 @@ class ListImagesUseCase:
         offset: int = 0,
         limit: int | None = None,
     ) -> list[Image]:
-        images = await self._images.list_by_project(project_id)
-        if split is not None:
-            images = [item for item in images if item.split == split]
-        if status is not None:
-            images = [item for item in images if item.status == status]
-        if offset:
-            images = images[offset:]
-        if limit is not None:
-            images = images[:limit]
-        return images
+        return await self._images.list_page(
+            project_id,
+            split=split,
+            status=status,
+            offset=offset,
+            limit=limit,
+        )

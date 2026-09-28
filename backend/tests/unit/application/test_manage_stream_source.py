@@ -150,6 +150,26 @@ async def test_create_image_folder_stores_absolute_path(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_image_folder_reports_logon_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = tmp_path / "share"
+    folder.mkdir()
+    (folder / "a.jpg").write_bytes(b"x")
+    original = Path.is_dir
+
+    def fake(self, *args, **kwargs):
+        if Path(self) == folder:
+            raise OSError(1326, "Logon failure", str(self), 1326)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", fake)
+    uc, project, _, _ = _uc()
+    with pytest.raises(DomainValidationException, match="пользователя или пароль"):
+        await uc.create_image_folder(project.id, "Share", str(folder))
+
+
+@pytest.mark.asyncio
 async def test_create_image_folder_rejects_empty_or_missing(tmp_path: Path) -> None:
     uc, project, _, _ = _uc()
     with pytest.raises(DomainValidationException):

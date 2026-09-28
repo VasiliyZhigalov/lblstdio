@@ -78,6 +78,7 @@ export function initTrainingDrawer({
   let pollTimer = null;
   let lastModelId = null;
   let terminalNotifiedJobId = null;
+  let startInFlight = false;
 
   function close() {
     // Keep polling after close so completion/failure still surfaces via toast/OS notify.
@@ -249,6 +250,7 @@ export function initTrainingDrawer({
   });
   document.getElementById("btn-close-training")?.addEventListener("click", close);
   document.getElementById("btn-start-training")?.addEventListener("click", async () => {
+    if (startInFlight) return;
     const project = getProject();
     const versionId = document.getElementById("train-dataset-version")?.value;
     const baseRaw = document.getElementById("train-base-model")?.value;
@@ -266,6 +268,7 @@ export function initTrainingDrawer({
       onError?.("Выберите исходную модель");
       return;
     }
+    startInFlight = true;
     try {
       const job = await api.startTraining(project.id, {
         dataset_version_id: versionId,
@@ -295,6 +298,8 @@ export function initTrainingDrawer({
       onStarted?.();
     } catch (err) {
       onError?.(err.message);
+    } finally {
+      startInFlight = false;
     }
   });
   document.getElementById("btn-use-model-autolabel")?.addEventListener("click", () => {

@@ -7,6 +7,7 @@ import {
   galleryFilterState,
   hasActiveGalleryFilters,
   matchesGalleryFilters,
+  parseBoxCountBound,
 } from "../utils/imageFilters.js";
 
 const FILTERS = [
@@ -66,17 +67,51 @@ function filteredImages() {
   });
 }
 
+function hasLocalFilmstripFilters() {
+  const filter = store.get("filmstripFilter") || "all";
+  return filter !== "all" || Boolean((store.get("filmstripQuery") || "").trim());
+}
+
+function syncBoxCountInputs() {
+  const minEl = document.getElementById("filmstrip-box-count-min");
+  const maxEl = document.getElementById("filmstrip-box-count-max");
+  const min = store.get("galleryBoxCountMin");
+  const max = store.get("galleryBoxCountMax");
+  if (minEl && document.activeElement !== minEl) {
+    minEl.value = min == null ? "" : String(min);
+  }
+  if (maxEl && document.activeElement !== maxEl) {
+    maxEl.value = max == null ? "" : String(max);
+  }
+}
+
+function syncBoxCountFilterChrome() {
+  const root = document.getElementById("filmstrip-box-count-filter");
+  if (!root) return;
+  const on = store.get("galleryBoxCountMin") != null || store.get("galleryBoxCountMax") != null;
+  root.className = `flex min-w-0 flex-1 items-center gap-1 rounded-md border px-2 py-0.5 ${
+    on
+      ? "border-indigo-500/60 bg-indigo-950/50"
+      : "border-zinc-800 bg-zinc-950"
+  }${isClassification() ? " hidden" : ""}`;
+}
+
 function syncGalleryFilterBanner() {
   const root = document.getElementById("filmstrip-gallery-filter");
   const label = document.getElementById("filmstrip-gallery-filter-label");
-  if (!root || !label) return;
+  const clearBtn = document.getElementById("btn-clear-image-filters");
   const state = galleryFilterState(store);
-  const active = hasActiveGalleryFilters(state);
-  root.classList.toggle("hidden", !active);
-  if (active) {
-    const summary = describeGalleryFilters(state, store.get("classes") || []);
-    label.textContent = summary ? `Фильтр: ${summary}` : "Фильтр с вкладки «Данные»";
+  const galleryActive = hasActiveGalleryFilters(state);
+  if (root && label) {
+    root.classList.toggle("hidden", !galleryActive);
+    if (galleryActive) {
+      const summary = describeGalleryFilters(state, store.get("classes") || []);
+      label.textContent = summary ? `Фильтр: ${summary}` : "Фильтр с вкладки «Данные»";
+    }
   }
+  clearBtn?.classList.toggle("hidden", !galleryActive && !hasLocalFilmstripFilters());
+  syncBoxCountInputs();
+  syncBoxCountFilterChrome();
 }
 
 /** Filtered list for A/D; keeps the current frame reachable if the filter hides it. */
@@ -331,8 +366,21 @@ export function initFilmstrip({ onOpenImage }) {
     const card = event.target.closest("[data-image-id]");
     if (card) onOpenImage(card.dataset.imageId);
   });
+  const onBoxCountInput = (key, event) => {
+    store.set(key, parseBoxCountBound(event.target.value));
+  };
+  document.getElementById("filmstrip-box-count-min")?.addEventListener("input", (event) => {
+    onBoxCountInput("galleryBoxCountMin", event);
+  });
+  document.getElementById("filmstrip-box-count-max")?.addEventListener("input", (event) => {
+    onBoxCountInput("galleryBoxCountMax", event);
+  });
   document.getElementById("btn-clear-image-filters")?.addEventListener("click", () => {
     clearGalleryFilters(store);
+    store.set("filmstripFilter", "all");
+    store.set("filmstripQuery", "");
+    const search = document.getElementById("filmstrip-search");
+    if (search) search.value = "";
   });
 
   const onGalleryFilterChange = () => {
@@ -355,9 +403,13 @@ export function initFilmstrip({ onOpenImage }) {
   store.addEventListener("change:imageClassIds", () => {
     if ((store.get("galleryClassFilter") || []).length) onImagesChange();
   });
-  store.addEventListener("change:filmstripQuery", () => rebuildList());
+  store.addEventListener("change:filmstripQuery", () => {
+    syncGalleryFilterBanner();
+    rebuildList();
+  });
   store.addEventListener("change:filmstripFilter", () => {
     renderFilters();
+    syncGalleryFilterBanner();
     rebuildList();
   });
   store.addEventListener("change:galleryQuery", onGalleryFilterChange);
@@ -368,6 +420,13 @@ export function initFilmstrip({ onOpenImage }) {
   store.addEventListener("change:projectTab", () => {
     if (store.get("projectTab") !== "annotate") return;
     syncGalleryFilterBanner();
+    requestAnimationFrame(() => {
+      virtual.measured = false;
+      paintVisible({ scrollToCurrent: true });
+    });
+  });
+  store.addEventListener("change:leftSidebarCollapsed", () => {
+    if (store.get("leftSidebarCollapsed") || store.get("projectTab") !== "annotate") return;
     requestAnimationFrame(() => {
       virtual.measured = false;
       paintVisible({ scrollToCurrent: true });

@@ -260,6 +260,36 @@
                 <div id="gallery-split-filters" class="flex gap-1"></div>
                 <div id="gallery-status-filters" class="flex flex-wrap gap-1"></div>
                 <div id="gallery-class-filters" class="flex flex-wrap gap-1"></div>
+                <div
+                  id="gallery-box-count-filter"
+                  class="flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-0.5"
+                >
+                  <span class="text-[11px] text-zinc-400 shrink-0">Детекции</span>
+                  <input
+                    id="gallery-box-count-min"
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="от"
+                    class="w-10 bg-transparent text-[11px] text-zinc-200 outline-none"
+                  />
+                  <span class="text-[11px] text-zinc-600">–</span>
+                  <input
+                    id="gallery-box-count-max"
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="до"
+                    class="w-10 bg-transparent text-[11px] text-zinc-200 outline-none"
+                  />
+                </div>
+                <button
+                  id="btn-clear-gallery-filters"
+                  type="button"
+                  class="hidden px-2 py-1 text-[11px] rounded-md border border-zinc-700 hover:bg-zinc-800 text-zinc-300"
+                >
+                  Сбросить фильтр
+                </button>
               </div>
               <button
                 id="btn-gallery-annotate-first"
@@ -312,14 +342,14 @@
           </div>
 
           <!-- TAB 2: ANNOTATE -->
-          <div id="tab-view-annotate" class="hidden h-full flex relative">
+          <div id="tab-view-annotate" class="hidden h-full flex relative bg-[#18181b]">
             <aside
               id="studio-left-sidebar"
-              class="w-[260px] shrink-0 border-r border-zinc-800 bg-zinc-900/40 flex flex-col transition-all duration-200"
+              class="w-[260px] shrink-0 border-r border-zinc-800/80 bg-[#18181b] flex flex-col transition-all duration-200 z-10"
             >
-              <div class="p-3 border-b border-zinc-800 space-y-2">
+              <div class="p-3 border-b border-zinc-800/80 space-y-2">
                 <div class="flex justify-between items-center">
-                  <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Список кадров</span>
+                  <span class="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Список кадров</span>
                   <button
                     id="btn-toggle-filmstrip"
                     class="text-zinc-500 hover:text-zinc-200"
@@ -333,20 +363,58 @@
                   id="filmstrip-search"
                   type="search"
                   placeholder="Поиск по имени файла"
-                  class="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-xs"
+                  class="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs focus:ring-1 focus:ring-indigo-500 outline-none"
                 />
                 <div id="filmstrip-filters" class="flex flex-wrap gap-1"></div>
+                <div class="flex items-center gap-1">
+                  <div
+                    id="filmstrip-box-count-filter"
+                    class="flex min-w-0 flex-1 items-center gap-1 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-0.5"
+                  >
+                    <span class="text-[10px] text-zinc-400 shrink-0">Детекции</span>
+                    <input
+                      id="filmstrip-box-count-min"
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="от"
+                      class="w-10 bg-transparent text-[10px] text-zinc-200 outline-none"
+                    />
+                    <span class="text-[10px] text-zinc-600">–</span>
+                    <input
+                      id="filmstrip-box-count-max"
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="до"
+                      class="w-10 bg-transparent text-[10px] text-zinc-200 outline-none"
+                    />
+                  </div>
+                  <button
+                    id="btn-clear-image-filters"
+                    type="button"
+                    class="hidden shrink-0 px-2 py-1 text-[10px] rounded-md border border-zinc-700 hover:bg-zinc-800 text-zinc-300"
+                  >
+                    Сбросить
+                  </button>
+                </div>
+                <div
+                  id="filmstrip-gallery-filter"
+                  class="hidden rounded-md border border-indigo-500/40 bg-indigo-950/40 px-2 py-1.5"
+                >
+                  <p id="filmstrip-gallery-filter-label" class="text-[10px] text-indigo-100 leading-snug"></p>
+                </div>
               </div>
               <div id="filmstrip-list" class="flex-1 overflow-y-auto scrollbar-thin p-2 space-y-2"></div>
               <div id="filmstrip-empty" class="hidden p-4 text-center text-[11px] text-zinc-500">
                 Нет кадров. Загрузите на вкладке «Данные».
               </div>
-              <div class="shrink-0 border-t border-zinc-800 p-2 space-y-1.5">
+              <div class="shrink-0 border-t border-zinc-800/80 p-2 space-y-1.5">
                 <button
                   id="btn-copy-annotations"
                   type="button"
                   title="Ctrl+C"
-                  class="w-full px-2 py-1.5 text-[11px] rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200"
+                  class="w-full px-2 py-1.5 text-[11px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200"
                 >
                   Копировать (Ctrl+C)
                 </button>
@@ -354,7 +422,7 @@
                   id="btn-paste-annotations"
                   type="button"
                   title="Ctrl+Shift+V"
-                  class="hidden w-full px-2 py-1.5 text-[11px] rounded bg-indigo-600 hover:bg-indigo-500 text-white"
+                  class="hidden w-full px-2 py-1.5 text-[11px] rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white"
                 >
                   Вставить по точкам (Ctrl+Shift+V)
                 </button>
@@ -370,40 +438,40 @@
               <i data-lucide="chevron-right" class="w-4 h-4"></i>
             </button>
 
-            <aside class="w-12 shrink-0 flex flex-col items-center py-3 border-r border-zinc-800 bg-zinc-900/50 space-y-2">
-              <button id="tool-select" class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" title="Выбор (V)">
-                <i data-lucide="mouse-pointer-2" class="w-4 h-4"></i>
+            <aside class="w-14 shrink-0 flex flex-col items-center py-4 border-r border-zinc-800/80 bg-[#18181b] space-y-3">
+              <button id="tool-select" class="w-10 h-10 rounded-xl hover:bg-zinc-800 text-zinc-400 flex items-center justify-center transition-colors" title="Выбор (V)">
+                <i data-lucide="mouse-pointer-2" class="w-5 h-5"></i>
               </button>
-              <button id="tool-draw" class="p-2 rounded-lg hover:bg-zinc-800 text-indigo-400 bg-zinc-800/80" title="Новая рамка (W)">
-                <i data-lucide="square" class="w-4 h-4"></i>
+              <button id="tool-draw" class="w-10 h-10 rounded-xl hover:bg-zinc-800 text-indigo-400 bg-indigo-500/10 flex items-center justify-center transition-colors shadow-sm" title="Новая рамка (W)">
+                <i data-lucide="square" class="w-5 h-5"></i>
               </button>
-              <div class="w-6 h-px bg-zinc-800 my-1"></div>
-              <button id="tool-fit" class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" title="Fit (F)">
-                <i data-lucide="maximize" class="w-4 h-4"></i>
+              <div class="w-6 h-px bg-zinc-800/80 my-1"></div>
+              <button id="tool-fit" class="w-10 h-10 rounded-xl hover:bg-zinc-800 text-zinc-400 flex items-center justify-center transition-colors" title="Fit (F)">
+                <i data-lucide="maximize" class="w-5 h-5"></i>
               </button>
               <button
                 id="tool-lock-zoom"
-                class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400"
+                class="w-10 h-10 rounded-xl hover:bg-zinc-800 text-zinc-400 flex items-center justify-center transition-colors"
                 title="Сохранять масштаб между кадрами"
                 type="button"
               >
-                <i data-lucide="lock" class="w-4 h-4"></i>
+                <i data-lucide="lock" class="w-5 h-5"></i>
               </button>
-              <button id="tool-toggle-hide" class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" title="Скрыть/показать рамки (H)">
-                <i data-lucide="eye" class="w-4 h-4"></i>
+              <button id="tool-toggle-hide" class="w-10 h-10 rounded-xl hover:bg-zinc-800 text-zinc-400 flex items-center justify-center transition-colors" title="Скрыть/показать рамки (H)">
+                <i data-lucide="eye" class="w-5 h-5"></i>
               </button>
-              <div class="relative flex flex-col items-center pt-1">
+              <div class="relative flex flex-col items-center">
                 <button
                   id="tool-opacity"
                   type="button"
-                  class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400"
+                  class="w-10 h-10 rounded-xl hover:bg-zinc-800 text-zinc-400 flex items-center justify-center transition-colors"
                   title="Прозрачность заливки"
                 >
-                  <span class="text-[9px] font-semibold tracking-wide">ОП</span>
+                  <span class="text-[10px] font-bold tracking-wide">ОП</span>
                 </button>
                 <div
                   id="opacity-popover"
-                  class="hidden absolute left-11 top-0 z-30 p-2 rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl"
+                  class="hidden absolute left-14 top-0 z-30 p-3 rounded-xl border border-zinc-700/80 bg-[#18181b] shadow-2xl"
                 >
                   <input
                     id="canvas-opacity-slider"
@@ -412,50 +480,29 @@
                     max="0.5"
                     step="0.05"
                     value="0.2"
-                    class="w-28"
+                    class="w-32"
                     title="Прозрачность заливки"
                   />
                 </div>
               </div>
             </aside>
 
-            <main class="flex-1 flex flex-col min-w-0">
-              <div class="h-9 border-b border-zinc-800/80 bg-zinc-900/40 px-3 flex items-center justify-between text-xs">
-                <div class="flex items-center gap-2 min-w-0">
-                  <span id="image-filename" class="font-mono text-zinc-400 truncate"></span>
+            <!-- Рабочая область -->
+            <main class="flex-1 flex flex-col min-w-0 bg-[#000] relative">
+              <div class="h-10 shrink-0 border-b border-zinc-800/80 bg-[#18181b] px-3 flex items-center justify-between gap-3">
+                <div class="flex items-center gap-2 shrink-0">
                   <span
                     id="badge-split"
-                    class="px-1.5 py-0.5 rounded text-[10px] bg-blue-950 text-blue-400 border border-blue-800/50"
+                    class="px-2 py-0.5 rounded-md text-[10px] font-bold border bg-blue-950 text-blue-400 border-blue-800/50"
                     >TRAIN</span
                   >
                 </div>
-                <div class="flex items-center gap-2">
-                  <button
-                    id="btn-save-annotations"
-                    class="relative px-2.5 py-1 text-xs rounded bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1"
-                  >
-                    <span id="save-unsaved-badge" class="hidden w-1.5 h-1.5 rounded-full bg-sky-400"></span>
-                    <span id="save-btn-label">Сохранить</span>
-                  </button>
-                  <button
-                    id="btn-clear-annotations"
-                    class="px-2 py-1 text-xs rounded text-red-400 hover:bg-red-950/40 border border-red-900/40"
-                  >
-                    Очистить кадр
-                  </button>
-                  <button
-                    id="btn-clear-review-annotations"
-                    type="button"
-                    class="px-2 py-1 text-xs rounded text-amber-300 hover:bg-amber-950/40 border border-amber-800/50"
-                    title="Удалить все аннотации со всех кадров, требующих проверки"
-                  >
-                    Очистить все на проверке
-                  </button>
+                <div class="flex items-center gap-2 shrink-0">
                   <button
                     id="btn-mark-background"
                     type="button"
                     title="Пустой кадр без объектов — negative sample для датасета"
-                    class="px-2 py-1 text-xs rounded text-zinc-200 hover:bg-zinc-800 border border-zinc-700"
+                    class="px-2.5 py-1 text-xs rounded-lg text-zinc-200 hover:bg-zinc-800 border border-zinc-700"
                   >
                     Бэкграунд
                   </button>
@@ -463,9 +510,30 @@
                     id="btn-mark-test"
                     type="button"
                     title="Закрепить кадр как тестовый: модель на нём не учится, после обучения по нему считается качество"
-                    class="px-2 py-1 text-xs rounded text-zinc-200 hover:bg-zinc-800 border border-zinc-700"
+                    class="px-2.5 py-1 text-xs rounded-lg text-zinc-200 hover:bg-zinc-800 border border-zinc-700"
                   >
                     Тест
+                  </button>
+                  <button
+                    id="btn-clear-annotations"
+                    class="px-2.5 py-1 text-xs rounded-lg text-red-400 hover:bg-red-950/40 border border-red-900/40"
+                  >
+                    Очистить кадр
+                  </button>
+                  <button
+                    id="btn-clear-review-annotations"
+                    type="button"
+                    title="Удалить все аннотации со всех кадров, требующих проверки"
+                    class="px-2.5 py-1 text-xs rounded-lg text-amber-300 hover:bg-amber-950/40 border border-amber-800/50"
+                  >
+                    Очистить все на проверке
+                  </button>
+                  <button
+                    id="btn-save-annotations"
+                    class="px-3 py-1 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-2"
+                  >
+                    <span id="save-unsaved-badge" class="hidden w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                    <span id="save-btn-label">Сохранить</span>
                   </button>
                 </div>
               </div>
@@ -474,177 +542,162 @@
                 <canvas id="annotation-canvas"></canvas>
                 <div
                   id="cls-label-overlay"
-                  class="hidden absolute top-3 left-3 z-20 max-w-[70%] rounded-md border border-amber-700/60 bg-zinc-950/85 px-2.5 py-1.5 text-xs text-amber-100"
+                  class="hidden absolute top-3 left-3 z-20 max-w-[70%] rounded-lg border border-amber-500/30 bg-black/80 backdrop-blur px-3 py-2 text-xs font-medium text-amber-200 shadow-xl"
                 ></div>
                 <div
                   id="matching-overlay"
-                  class="hidden absolute inset-0 z-30 flex items-center justify-center bg-zinc-950/40"
+                  class="hidden absolute inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm"
                 >
-                  <div
-                    id="matching-overlay-text"
-                    class="px-4 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-xs text-zinc-200 shadow-xl"
-                  >
-                    Сопоставление ключевых точек...
+                  <div class="px-6 py-3 rounded-xl bg-zinc-900 border border-zinc-700/50 text-sm font-medium text-white shadow-2xl flex items-center gap-3">
+                    <i data-lucide="loader-circle" class="w-5 h-5 animate-spin text-indigo-400"></i>
+                    <span id="matching-overlay-text">Сопоставление ключевых точек...</span>
                   </div>
                 </div>
-                <div id="box-float-actions" class="hidden absolute z-20 flex gap-1 pointer-events-auto">
+                <!-- Плавающие кнопки для выделенного Box'а -->
+                <div id="box-float-actions" class="hidden absolute z-20 flex items-center gap-0.5 pointer-events-auto">
                   <button
                     id="btn-approve-box"
                     type="button"
-                    class="w-7 h-7 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold shadow border border-emerald-400/40"
+                    class="w-5 h-5 flex items-center justify-center rounded bg-emerald-600 hover:bg-emerald-500 text-white shadow"
                     title="Подтвердить аннотацию (Space)"
                   >
-                    ✓
+                    <i data-lucide="check" class="w-3 h-3"></i>
                   </button>
                   <button
                     id="btn-reject-box"
                     type="button"
-                    class="w-7 h-7 rounded bg-red-700 hover:bg-red-600 text-white text-sm font-bold shadow border border-red-400/40"
+                    class="w-5 h-5 flex items-center justify-center rounded bg-red-600 hover:bg-red-500 text-white shadow"
                     title="Удалить аннотацию (Del)"
                   >
-                    ✕
+                     <i data-lucide="x" class="w-3 h-3"></i>
                   </button>
                   <button
                     id="btn-delete-image-box"
                     type="button"
-                    class="w-7 h-7 rounded bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-bold shadow border border-zinc-500/40"
+                    class="w-5 h-5 flex items-center justify-center rounded bg-zinc-800 hover:bg-zinc-700 text-white shadow"
                     title="Удалить изображение (Shift+Del)"
                   >
-                    ⌫
+                    <i data-lucide="image-minus" class="w-3 h-3"></i>
                   </button>
                 </div>
                 <div
                   id="quick-class-popover"
-                  class="hidden absolute z-40 bg-zinc-900 border border-zinc-700 rounded-lg p-1.5 shadow-2xl space-y-1 min-w-[140px]"
+                  class="hidden absolute z-40 bg-zinc-900/95 backdrop-blur border border-zinc-700/80 rounded-xl p-1.5 shadow-2xl space-y-1 min-w-[180px] max-w-[240px] overflow-y-auto scrollbar-thin"
                 ></div>
               </div>
 
-              <footer class="h-12 shrink-0 border-t border-zinc-800 bg-zinc-900/80 px-4 flex items-center justify-between gap-3">
-                <button id="btn-prev" class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 flex items-center gap-1">
-                  <i data-lucide="chevron-left" class="w-4 h-4"></i>
-                  <span>Предыдущий (A)</span>
+              <!-- Нижняя навигация (HITL центрично) -->
+              <footer class="h-16 shrink-0 border-t border-zinc-800/80 bg-[#18181b] px-6 flex items-center justify-between z-20">
+                <button id="btn-prev" class="px-4 py-2.5 text-sm font-medium bg-zinc-800/50 hover:bg-zinc-800 rounded-xl text-zinc-300 flex items-center gap-2 transition-colors">
+                  <i data-lucide="arrow-left" class="w-4 h-4"></i>
+                  <span>A</span>
                 </button>
-                <div class="flex items-center gap-3 min-w-0">
-                  <span class="text-xs text-zinc-400 font-mono whitespace-nowrap"
-                    >Кадр <span id="current-idx">0</span> из <span id="total-idx">0</span></span
-                  >
+                
+                <div class="flex items-center gap-6 min-w-0">
+                  <div class="flex flex-col items-center">
+                      <span class="text-sm font-bold text-zinc-200 tracking-wide font-mono"><span id="current-idx">0</span> <span class="text-zinc-500 font-normal">/</span> <span id="total-idx">0</span></span>
+                  </div>
+                  
                   <div
                     id="review-bar"
-                    class="hidden flex items-center gap-2 px-2 py-1 rounded-md border border-amber-700/50 bg-amber-950/40"
+                    class="hidden flex items-center gap-3 px-4 py-2 rounded-xl border border-amber-500/30 bg-amber-900/20 shadow-inner"
                   >
-                    <span
-                      class="text-[11px] text-amber-200 whitespace-nowrap"
-                      id="review-bar-label"
-                      >На проверке:</span
-                    >
-                    <span id="pending-count" class="text-[11px] text-amber-200 font-mono">0</span>
+                    <div class="flex flex-col min-w-0">
+                        <span
+                          id="review-bar-label"
+                          class="text-[10px] uppercase font-bold text-amber-500/70 tracking-wider"
+                        >На проверке:</span>
+                        <span id="pending-count" class="text-sm font-bold text-amber-400 font-mono leading-none">0</span>
+                    </div>
+                    <div class="w-px h-8 bg-amber-500/20"></div>
                     <button
                       id="btn-approve-all"
                       type="button"
-                      class="px-2 py-1 text-[11px] rounded bg-emerald-600 hover:bg-emerald-500 text-white"
+                      class="px-4 py-2 text-sm font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/20 transition-transform active:scale-95 flex items-center gap-2"
                       title="Подтвердить все (Space)"
                     >
-                      Подтвердить (Space)
+                      <i data-lucide="check-check" class="w-4 h-4"></i>
+                      <span id="btn-approve-all-label">Подтвердить (Space)</span>
                     </button>
                     <button
                       id="btn-reject-all"
                       type="button"
-                      class="px-2 py-1 text-[11px] rounded bg-red-800 hover:bg-red-700 text-white"
+                      class="px-4 py-2 text-sm font-medium rounded-lg bg-red-900/40 hover:bg-red-800/60 text-red-200 transition-colors"
                       title="Удалить аннотации (R)"
                     >
                       Удалить аннотации (R)
                     </button>
-                    <button
-                      id="btn-delete-image"
-                      type="button"
-                      class="px-2 py-1 text-[11px] rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-zinc-600"
-                      title="Удалить изображение (Shift+Del)"
-                    >
-                      Удалить изображение (Shift+Del)
-                    </button>
                   </div>
                 </div>
-                <button id="btn-next" class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 flex items-center gap-1">
-                  <span>Следующий (D)</span>
-                  <i data-lucide="chevron-right" class="w-4 h-4"></i>
-                </button>
+                
+                <div class="flex items-center gap-3">
+                    <button
+                        id="btn-delete-image"
+                        type="button"
+                        class="px-3 py-2 text-xs font-medium rounded-xl text-zinc-400 hover:text-red-400 hover:bg-red-950/20 transition-colors"
+                        title="Удалить изображение (Shift+Del)"
+                    >
+                        <i data-lucide="trash" class="w-4 h-4"></i>
+                    </button>
+                    <button id="btn-next" class="px-4 py-2.5 text-sm font-medium bg-zinc-800/50 hover:bg-zinc-800 rounded-xl text-zinc-300 flex items-center gap-2 transition-colors">
+                    <span>D</span>
+                    <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                    </button>
+                </div>
               </footer>
             </main>
 
+            <!-- Правая панель (Классы и Слои) -->
             <aside
               id="studio-right-sidebar"
-              class="w-72 shrink-0 border-l border-zinc-800 bg-zinc-900/40 flex flex-col transition-all duration-200"
+              class="w-80 shrink-0 border-l border-zinc-800/80 bg-[#18181b] flex flex-col transition-all duration-200 z-10"
             >
-              <div class="p-4 border-b border-zinc-800">
-                <div class="flex items-center justify-between mb-3">
-                  <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">Классы (1–9)</h3>
-                  <div class="flex items-center gap-2">
+              <div class="p-5 border-b border-zinc-800/80 flex flex-col h-1/2">
+                <div class="flex items-center justify-between mb-4">
+                  <h3 class="text-xs font-bold uppercase tracking-widest text-zinc-500">Теги (1–9)</h3>
+                  <div class="flex items-center gap-3">
+                    <button id="btn-add-class" class="text-xs font-medium text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 px-2.5 py-1 rounded-md transition-colors">+ Класс</button>
                     <button
                       id="btn-toggle-right-sidebar"
                       type="button"
-                      class="text-zinc-500 hover:text-zinc-200"
+                      class="text-zinc-500 hover:text-zinc-300"
                       title="Свернуть (])"
                     >
-                      <i data-lucide="panel-right-close" class="w-3.5 h-3.5"></i>
+                      <i data-lucide="panel-right-close" class="w-4 h-4"></i>
                     </button>
-                    <button id="btn-add-class" class="text-xs text-indigo-400 hover:text-indigo-300">+ Новый</button>
                   </div>
                 </div>
-                <form id="add-class-form" class="hidden mb-3 gap-2">
+                <form id="add-class-form" class="hidden mb-4 gap-2">
                   <input
                     id="add-class-input"
                     type="text"
                     maxlength="40"
-                    placeholder="Имя класса"
-                    class="flex-1 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-sm"
+                    placeholder="Название..."
+                    class="flex-1 bg-zinc-900 border border-zinc-700/80 rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-indigo-500 outline-none"
                   />
-                  <button type="submit" class="text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500">OK</button>
+                  <button type="submit" class="text-sm font-medium px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-md">OK</button>
                 </form>
-                <div id="classes-list" class="space-y-1 max-h-56 overflow-y-auto scrollbar-thin"></div>
+                <div id="classes-list" class="flex-1 space-y-0 overflow-y-auto scrollbar-thin pr-1"></div>
               </div>
-              <div class="flex-1 overflow-y-auto p-4 scrollbar-thin">
-                <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-3">Слои кадра</h3>
-                <div id="annotations-list" class="space-y-1.5"></div>
+              
+              <div class="flex-1 overflow-y-auto p-5 scrollbar-thin flex flex-col">
+                <h3 class="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-4">Слои кадра</h3>
+                <div id="annotations-list" class="flex-1 space-y-2"></div>
               </div>
             </aside>
 
             <button
               id="btn-expand-right-sidebar"
               type="button"
-              class="hidden absolute right-0 top-1/2 -translate-y-1/2 z-20 p-1 bg-zinc-900 border border-zinc-800 rounded-l-md text-zinc-400 hover:text-white"
+              class="hidden absolute right-0 top-1/2 -translate-y-1/2 z-20 p-2 bg-zinc-900/90 border border-zinc-700/80 rounded-l-xl text-zinc-400 hover:text-white shadow-2xl backdrop-blur"
               title="Развернуть классы (])"
             >
-              <i data-lucide="chevron-left" class="w-4 h-4"></i>
+              <i data-lucide="chevron-left" class="w-5 h-5"></i>
             </button>
           </div>
 
           <!-- TAB 3: MODELS & DATASETS -->
           <div id="tab-view-models" class="hidden h-full flex flex-col p-6 overflow-y-auto scrollbar-thin gap-8">
-            <section class="rounded-xl border border-indigo-800/60 bg-indigo-950/20 p-4">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <div class="text-[11px] font-semibold uppercase tracking-wider text-indigo-300">Цикл Active Learning</div>
-                  <div id="active-learning-next-step" class="text-sm text-zinc-100 mt-1">Подготовка состояния цикла…</div>
-                  <div id="active-learning-next-hint" class="text-[11px] text-zinc-400 mt-1">
-                    Система подскажет следующий полезный шаг.
-                  </div>
-                </div>
-                <button
-                  id="btn-active-learning-next"
-                  type="button"
-                  class="px-3 py-1.5 text-xs font-medium rounded-md bg-indigo-600 hover:bg-indigo-500 text-white"
-                >
-                  Продолжить
-                </button>
-              </div>
-              <div class="grid grid-cols-5 gap-1 mt-4 text-[10px] text-center">
-                <span class="rounded bg-zinc-800 px-1.5 py-1 text-zinc-300">1 · Собрать</span>
-                <span class="rounded bg-zinc-800 px-1.5 py-1 text-zinc-300">2 · Проверить</span>
-                <span class="rounded bg-zinc-800 px-1.5 py-1 text-zinc-300">3 · Датасет</span>
-                <span class="rounded bg-zinc-800 px-1.5 py-1 text-zinc-300">4 · Обучить</span>
-                <span class="rounded bg-zinc-800 px-1.5 py-1 text-zinc-300">5 · Применить</span>
-              </div>
-            </section>
             <div class="flex justify-between items-start border-b border-zinc-800 pb-4 gap-4">
               <div>
                 <h2 class="text-base font-semibold text-zinc-100">Модели и датасеты</h2>
@@ -738,102 +791,142 @@
                   <span id="stream-fps-label" class="ml-auto text-[11px] font-mono text-zinc-500">FPS: —</span>
                 </div>
               </div>
-              <aside class="overflow-y-auto scrollbar-thin p-3 space-y-3 bg-zinc-900/40">
+              <aside class="overflow-y-auto scrollbar-thin p-3 space-y-4 bg-zinc-900/40 border-l border-zinc-800/80">
+                <!-- 1. ИСТОЧНИК -->
                 <div>
-                  <h3 class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">Источник</h3>
+                  <h3 class="text-[11px] font-bold uppercase tracking-widest text-zinc-500 mb-2">1. Источник</h3>
                   <div id="stream-source-list" class="space-y-1 mb-2"></div>
-                  <div class="space-y-1.5 rounded-lg border border-zinc-800 p-2">
-                    <input id="stream-rtsp-name" type="text" placeholder="Имя камеры" class="w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
-                    <input id="stream-rtsp-url" type="text" placeholder="rtsp://..." class="w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px] font-mono" />
-                    <button id="btn-stream-add-rtsp" type="button" class="w-full px-2 py-1 text-[11px] rounded-md bg-zinc-800 hover:bg-zinc-700">Добавить RTSP</button>
+                  <div class="space-y-2 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-3 shadow-sm">
+                    <input id="stream-rtsp-name" type="text" placeholder="Название камеры" class="w-full bg-zinc-950/50 border border-zinc-700/80 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 outline-none" />
                     <div class="flex gap-2">
-                      <input id="stream-device-index" type="number" min="0" value="0" class="w-14 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
-                      <button id="btn-stream-add-device" type="button" class="flex-1 px-2 py-1 text-[11px] rounded-md border border-zinc-700 hover:bg-zinc-800">Веб-камера</button>
+                        <input id="stream-rtsp-url" type="text" placeholder="rtsp://..." class="flex-1 bg-zinc-950/50 border border-zinc-700/80 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-indigo-500 outline-none" />
+                        <button id="btn-stream-add-rtsp" type="button" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-colors">RTSP</button>
                     </div>
-                    <label class="block">
-                      <span class="text-[10px] text-zinc-500">Загрузить видео</span>
-                      <input id="stream-video-input" type="file" accept=".mp4,.avi,.mov,.mkv,video/*" class="mt-1 block w-full text-[10px] text-zinc-400" />
+                    
+                    <div class="w-full h-px bg-zinc-800/80 my-1"></div>
+                    
+                    <div class="flex gap-2">
+                      <input id="stream-device-index" type="number" min="0" value="0" title="Индекс устройства (0, 1...)" class="w-12 bg-zinc-950/50 border border-zinc-700/80 rounded-lg px-2 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 outline-none text-center" />
+                      <button id="btn-stream-add-device" type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-700/80 bg-zinc-800/50 hover:bg-zinc-800 text-zinc-300 transition-colors">Веб-камера</button>
+                    </div>
+                    
+                    <div class="w-full h-px bg-zinc-800/80 my-1"></div>
+
+                    <label class="block cursor-pointer group">
+                      <div class="px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-700/80 bg-zinc-800/50 group-hover:bg-zinc-800 text-zinc-300 text-center transition-colors">Загрузить видеофайл</div>
+                      <input id="stream-video-input" type="file" accept=".mp4,.avi,.mov,.mkv,video/*" class="hidden" />
                     </label>
-                    <label class="block">
-                      <span class="text-[10px] text-zinc-500">Папка с изображениями</span>
-                      <input id="stream-image-folder-path" type="text" placeholder="C:\path\to\images" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px] font-mono" />
-                    </label>
-                    <button id="btn-stream-add-image-folder" type="button" class="w-full px-2 py-1 text-[11px] rounded-md border border-zinc-700 hover:bg-zinc-800">Добавить папку</button>
-                    <p class="text-[10px] text-zinc-500">Кнопка открывает окно выбора папки на этом компьютере. Либо вставьте путь и нажмите Enter. Берутся jpg, png и webp, включая вложенные каталоги.</p>
-                  </div>
-                </div>
-                <div class="rounded-lg border border-indigo-800/60 bg-indigo-950/20 p-2">
-                  <h3 class="text-[11px] font-semibold uppercase tracking-wider text-indigo-300 mb-1">Как захватывать кадры</h3>
-                  <p class="text-[10px] text-zinc-400 mb-1.5">Выберите простой способ для начала или режим с распознаванием объектов.</p>
-                  <select id="stream-capture-mode" class="w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1.5 text-[11px]">
-                    <option value="TIMER">По таймеру — без нейросети</option>
-                    <option value="AI">По объектам — с нейросетью</option>
-                  </select>
-                  <div id="stream-timer-settings" class="mt-2 rounded border border-emerald-800/60 bg-emerald-950/20 p-2">
-                    <label class="block text-[10px] text-zinc-300">Сохранять один кадр каждые (сек)
-                      <input id="stream-timer-interval" type="number" min="0.5" step="0.5" value="5" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
-                    </label>
-                    <p class="text-[10px] text-emerald-300/80 mt-1">Модель не нужна. Кадры попадут в неразмеченные.</p>
-                  </div>
-                </div>
-                <div>
-                  <h3 class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">Модель для режима с нейросетью</h3>
-                  <p class="text-[10px] text-zinc-500 mb-1">Для таймера это поле не используется.</p>
-                  <select id="stream-model-select" class="w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]"></select>
-                </div>
-                <div>
-                  <h3 class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">Условия захвата</h3>
-                  <p id="stream-capture-help" class="text-[10px] text-zinc-500 mb-2">В режиме с нейросетью ниже можно настроить фильтр классов и способ подтверждения объекта.</p>
-                  <div id="stream-class-filter" class="rounded-md border border-cyan-800/60 bg-cyan-950/20 p-2 mb-2">
-                    <div class="text-[11px] font-medium text-cyan-200">Фильтр классов</div>
-                    <p class="text-[10px] text-zinc-400 mt-1">Кадр сохраняется, только если найден хотя бы один выбранный класс. Пусто — разрешены все.</p>
-                    <div id="stream-tripwire-classes" class="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-1 max-h-24 overflow-y-auto"></div>
-                  </div>
-                  <div id="stream-confidence-band" class="rounded-md border border-amber-800/50 bg-amber-950/20 p-2 mb-2">
-                    <div class="text-[11px] font-medium text-amber-200">Порог уверенности</div>
-                    <p class="text-[10px] text-zinc-400 mt-1">Детекция учитывается, только если уверенность между нижним и верхним порогом.</p>
-                    <div class="mt-1.5 grid grid-cols-2 gap-2">
-                      <label class="block text-[10px] text-zinc-400">Снизу
-                        <input id="stream-conf-min" type="number" min="0" max="1" step="0.05" value="0.25" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
-                      </label>
-                      <label class="block text-[10px] text-zinc-400">Сверху
-                        <input id="stream-conf-max" type="number" min="0" max="1" step="0.05" value="1" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
-                      </label>
+                    <div class="flex gap-2">
+                      <input id="stream-image-folder-path" type="text" placeholder="C:\images" class="flex-1 bg-zinc-950/50 border border-zinc-700/80 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-indigo-500 outline-none" />
+                      <button id="btn-stream-add-image-folder" type="button" class="px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-700/80 bg-zinc-800/50 hover:bg-zinc-800 text-zinc-300 transition-colors">Папка</button>
                     </div>
                   </div>
-                  <div id="stream-track-stable-settings">
-                  <label class="flex items-center gap-2 text-[11px] text-zinc-200 mb-1.5">
-                    <input id="stream-track-stable-enabled" type="checkbox" class="rounded border-zinc-600" checked />
-                    Стабильный трек
-                  </label>
-                  <p class="text-[10px] text-zinc-500 mb-1.5">
-                    Сохраняется лучший кадр стабильного объекта; фильтр класса применяется до захвата.
-                  </p>
-                  <label class="block text-[10px] text-zinc-400 mb-1.5">N кадров подряд
-                    <input id="stream-track-stable-n" type="number" min="2" step="1" value="12" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
-                  </label>
-                  <label class="block text-[10px] text-zinc-400 mb-1.5">Вариация размера (max/min − 1)
-                    <input id="stream-track-stable-size" type="number" min="0" step="0.05" value="0.35" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
-                  </label>
-                  <label class="block text-[10px] text-zinc-400 mb-2">Интервал на трек (сек)
-                    <input id="stream-track-stable-interval" type="number" min="0.5" step="0.5" value="5" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]" />
-                  </label>
-                  </div>
-                  <div id="stream-tripwire-settings">
-                  <label class="flex items-center gap-2 text-[11px] text-zinc-200 mb-1.5">
-                    <input id="stream-tripwire-enabled" type="checkbox" class="rounded border-zinc-600" />
-                    Захват по пересечению линии
-                  </label>
-                  <label class="block text-[10px] text-zinc-400">Направление
-                    <select id="stream-tripwire-direction" class="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px]">
-                      <option value="ANY">Любое</option>
-                      <option value="FORWARD">FORWARD</option>
-                      <option value="BACKWARD">BACKWARD</option>
+                </div>
+
+                <!-- 2. СЦЕНАРИЙ СБОРА -->
+                <div>
+                  <h3 class="text-[11px] font-bold uppercase tracking-widest text-zinc-500 mb-2">2. Логика сбора</h3>
+                  <div class="rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-3 shadow-sm space-y-3">
+                    <select id="stream-capture-mode" class="w-full bg-zinc-950/80 border border-zinc-700/80 rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-200 outline-none focus:ring-1 focus:ring-indigo-500">
+                        <option value="TIMER">Таймлапс (без нейросети)</option>
+                        <option value="AI">Умный сбор (YOLO)</option>
                     </select>
-                  </label>
+
+                    <!-- Настройки Таймера -->
+                    <div id="stream-timer-settings" class="space-y-2 pt-2 border-t border-zinc-800/80">
+                        <label class="flex justify-between items-center text-xs text-zinc-400">
+                            <span>Сохранять каждые (сек)</span>
+                            <input id="stream-timer-interval" type="number" min="0.5" step="0.5" value="5" class="w-16 bg-zinc-950/50 border border-zinc-700/80 rounded-lg px-2 py-1 text-xs text-center outline-none" />
+                        </label>
+                        <p class="text-[10px] text-zinc-500 leading-tight">Просто сохраняет кадры по таймеру. Попадут во вкладку «Данные» как неразмеченные.</p>
+                    </div>
+
+                    <!-- Настройки AI (скрываются, если выбран таймер) -->
+                    <div id="stream-ai-settings" class="hidden space-y-4 pt-2 border-t border-zinc-800/80">
+                        <div class="space-y-1.5">
+                            <label class="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Модель</label>
+                            <select id="stream-model-select" class="w-full bg-zinc-950/50 border border-zinc-700/80 rounded-lg px-2 py-1.5 text-xs text-zinc-300 outline-none focus:ring-1 focus:ring-indigo-500"></select>
+                        </div>
+                        
+                        <div class="space-y-1.5">
+                            <label class="text-[10px] font-bold uppercase tracking-wider text-zinc-500 flex justify-between">
+                                Уверенность
+                                <span class="text-indigo-400 normal-case font-normal"><span id="stream-conf-min-label">25</span>% — <span id="stream-conf-max-label">100</span>%</span>
+                            </label>
+                            <div class="flex gap-2">
+                                <input id="stream-conf-min" type="range" min="0" max="1" step="0.05" value="0.25" class="w-full" title="Мин. уверенность" />
+                                <input id="stream-conf-max" type="range" min="0" max="1" step="0.05" value="1" class="w-full" title="Макс. уверенность" />
+                            </div>
+                            <p class="text-[10px] text-zinc-500 leading-tight">Слабые детекции игнорируются. Занижайте верхний порог (напр. до 80%), чтобы не собирать слишком очевидные для модели кадры.</p>
+                        </div>
+
+                        <div class="space-y-1.5">
+                            <label class="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Фильтр тегов</label>
+                            <div id="stream-tripwire-classes" class="grid grid-cols-2 gap-1.5 max-h-24 overflow-y-auto scrollbar-thin"></div>
+                            <p class="text-[10px] text-zinc-500 leading-tight">Сохранять только если модель нашла выбранные классы. Оставьте пустым, чтобы ловить всё.</p>
+                        </div>
+
+                        <!-- Сценарии (Радиокнопки) -->
+                        <div class="space-y-2 pt-2 border-t border-zinc-800/80">
+                            <label class="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Триггер захвата</label>
+                            
+                            <!-- Стабильный трек -->
+                            <div class="flex items-start gap-2 mt-2">
+                                <div class="mt-0.5">
+                                    <input id="stream-track-stable-enabled" type="radio" name="stream_trigger" value="stable" class="w-3.5 h-3.5 accent-indigo-500 bg-zinc-900 border-zinc-700 cursor-pointer" checked />
+                                </div>
+                                <div class="flex-1">
+                                    <label for="stream-track-stable-enabled" class="cursor-pointer group block">
+                                        <div class="text-xs font-medium text-zinc-300 group-hover:text-zinc-100 transition-colors">Слежение за объектом</div>
+                                        <p class="text-[10px] text-zinc-500 leading-tight mt-0.5">Ждет, пока объект появится в кадре, проследит за ним и сделает один лучший снимок.</p>
+                                    </label>
+                                    
+                                    <div id="stream-trigger-stable-params" class="mt-2 space-y-2 p-2 bg-zinc-950/30 rounded-lg border border-zinc-800/50">
+                                        <label class="flex justify-between items-center text-[10px] text-zinc-400">
+                                            <span>Длительность слежения (кадров)</span>
+                                            <input id="stream-track-stable-n" type="number" min="2" step="1" value="12" class="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-1 text-center outline-none text-zinc-200" />
+                                        </label>
+                                        <label class="flex justify-between items-center text-[10px] text-zinc-400">
+                                            <span title="Допустимое изменение площади объекта. Меньше - ждет полной остановки.">Остановка (допуск размера)</span>
+                                            <input id="stream-track-stable-size" type="number" min="0" step="0.05" value="0.35" class="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-1 text-center outline-none text-zinc-200" />
+                                        </label>
+                                        <label class="flex justify-between items-center text-[10px] text-zinc-400">
+                                            <span title="Не делать фото одного и того же стоящего объекта чаще чем раз в N сек.">Кулдаун (сек)</span>
+                                            <input id="stream-track-stable-interval" type="number" min="0.5" step="0.5" value="5" class="w-12 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-1 text-center outline-none text-zinc-200" />
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Пересечение линии -->
+                            <div class="flex items-start gap-2 mt-3">
+                                <div class="mt-0.5">
+                                    <input id="stream-tripwire-enabled" type="radio" name="stream_trigger" value="line" class="w-3.5 h-3.5 accent-indigo-500 bg-zinc-900 border-zinc-700 cursor-pointer" />
+                                </div>
+                                <div class="flex-1">
+                                    <label for="stream-tripwire-enabled" class="cursor-pointer group block">
+                                        <div class="text-xs font-medium text-zinc-300 group-hover:text-zinc-100 transition-colors">Пересечение линии</div>
+                                        <p class="text-[10px] text-zinc-500 leading-tight mt-0.5">Снимок делается, когда центр объекта пересекает заданную линию. Нарисуйте линию на видео.</p>
+                                    </label>
+                                    
+                                    <div id="stream-trigger-line-params" class="mt-2 p-2 bg-zinc-950/30 rounded-lg border border-zinc-800/50 hidden">
+                                        <label class="flex justify-between items-center text-[10px] text-zinc-400">
+                                            <span>Направление движения</span>
+                                            <select id="stream-tripwire-direction" class="w-20 bg-zinc-900 border border-zinc-700 rounded px-1 py-1 outline-none text-zinc-200">
+                                                <option value="ANY">Любое</option>
+                                                <option value="FORWARD">Вперед</option>
+                                                <option value="BACKWARD">Назад</option>
+                                            </select>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <p id="stream-folder-capture-note" class="hidden text-[10px] text-amber-500/80 leading-tight bg-amber-950/20 p-2 rounded-md border border-amber-900/30 mt-2">При загрузке из папки триггеры игнорируются: фото сохраняется, если модель нашла объект.</p>
+                        </div>
+                    </div>
                   </div>
-                  <p id="stream-folder-capture-note" class="hidden text-[10px] text-zinc-500 mb-2">Для папки с изображениями стабильный трек не используется: кадр сохраняется, если модель нашла выбранный класс.</p>
-                  <button id="btn-stream-save-triggers" type="button" class="mt-2 w-full px-2 py-1.5 text-[11px] rounded-md bg-indigo-700 hover:bg-indigo-600 text-white">Сохранить настройки</button>
+                  <button id="btn-stream-save-triggers" type="button" class="mt-3 w-full px-3 py-2 text-xs font-bold rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/20 transition-transform active:scale-95">Применить настройки</button>
                 </div>
               </aside>
             </div>
