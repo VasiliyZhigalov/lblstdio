@@ -240,3 +240,58 @@ test("stale data hub refresh is discarded after project change", async () => {
   assert.equal(store.get("classCounts")["cls-stale"], undefined);
   assert.equal(store.get("classCounts")["cls-new"], 3);
 });
+
+test("clear selected removes annotations and keeps the images", async () => {
+  seedProject("proj-clear", [
+    {
+      id: "img-1",
+      status: "VERIFIED",
+      file_name: "a.png",
+      width: 10,
+      height: 10,
+      is_background: false,
+    },
+  ]);
+  store.patch({
+    gallerySelectedIds: ["img-1"],
+    boxCounts: { "img-1": 1 },
+    galleryAnnotations: { "img-1": [box] },
+    currentImage: { id: "img-1", status: "VERIFIED", is_background: false },
+    annotations: [box],
+    hasUnsavedChanges: true,
+  });
+  requests.length = 0;
+  held.length = 0;
+  const previousConfirm = window.confirm;
+  window.confirm = () => true;
+  try {
+    document.getElementById("btn-gallery-clear-annotations").click();
+    await settle();
+    const puts = requests.filter(
+      (item) => item.method === "PUT" && item.pathname.endsWith("/annotations")
+    );
+    assert.equal(puts.length, 1);
+    assert.equal(store.get("images").find((item) => item.id === "img-1").status, "UNANNOTATED");
+    assert.equal(store.get("annotations").length, 0);
+    assert.equal(store.get("hasUnsavedChanges"), false);
+    assert.equal(store.get("images").length, 1);
+    held.splice(0).forEach((item) =>
+      item.release({
+        class_counts: {},
+        images: [
+          {
+            image_id: "img-1",
+            box_count: 0,
+            class_ids: [],
+            annotations: [],
+          },
+        ],
+      })
+    );
+    await settle();
+    assert.equal(store.get("boxCounts")["img-1"], 0);
+    assert.deepEqual(store.get("galleryAnnotations")["img-1"], []);
+  } finally {
+    window.confirm = previousConfirm;
+  }
+});

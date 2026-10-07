@@ -367,6 +367,8 @@ function syncSelectionBar() {
       filteredImages().length > 0 && visibleSelected === filteredImages().length;
     selectAllBtn.textContent = allVisibleSelected ? "Снять все" : "Выбрать все";
   }
+  const clearBtn = document.getElementById("btn-gallery-clear-annotations");
+  if (clearBtn) clearBtn.disabled = selected.length === 0;
 }
 
 function renderGallery({ onOpenImage }) {
@@ -532,6 +534,88 @@ async function refreshClassCounts(images, { projectId, isCurrent } = {}) {
   return counts;
 }
 
+function statusAfterClear(image) {
+  if (image.status === "REJECTED") return image.status;
+  if (!isClassification() && image.is_background) return "VERIFIED";
+  return "UNANNOTATED";
+}
+
+let clearInFlight = false;
+
+async function clearSelectedAnnotations({ onError, onCleared }) {
+  if (clearInFlight) return;
+  const ids = [...(store.get("gallerySelectedIds") || [])];
+  if (!ids.length) return;
+  const ok = window.confirm(
+    `Удалить аннотации у выбранных кадров (${ids.length})? Изображения останутся.`
+  );
+  if (!ok) return;
+
+  clearInFlight = true;
+  const classification = isClassification();
+  let cleared = 0;
+  const failed = [];
+  const clearedIds = [];
+  try {
+    await mapPool(ids, 4, async (id) => {
+      try {
+        if (classification) await api.deleteImageLabel(id);
+        else await api.saveAnnotations(id, []);
+        cleared += 1;
+        clearedIds.push(id);
+      } catch (err) {
+        failed.push(err.message || String(err));
+      }
+    });
+
+    const clearedSet = new Set(clearedIds);
+    const images = (store.get("images") || []).map((item) => {
+      if (!clearedSet.has(item.id)) return item;
+      const status = statusAfterClear(item);
+      return classification ? { ...item, status, label: null } : { ...item, status };
+    });
+    const boxCounts = { ...(store.get("boxCounts") || {}) };
+    const imageClassIds = { ...(store.get("imageClassIds") || {}) };
+    const galleryAnnotations = { ...(store.get("galleryAnnotations") || {}) };
+    for (const id of clearedSet) {
+      boxCounts[id] = 0;
+      delete imageClassIds[id];
+      delete galleryAnnotations[id];
+    }
+    const current = store.get("currentImage");
+    const currentCleared = Boolean(current && clearedSet.has(current.id));
+    store.patch({
+      images,
+      boxCounts,
+      imageClassIds,
+      galleryAnnotations,
+      ...(currentCleared
+        ? {
+            currentImage: images.find((item) => item.id === current.id) || current,
+            annotations: [],
+            selectedBoxId: null,
+            hoveredBoxId: null,
+            hasUnsavedChanges: false,
+            saveStatus: "saved",
+          }
+        : {}),
+    });
+
+    if (failed.length) onError?.(`Очищено ${cleared}, ошибок: ${failed.length}`);
+    else onCleared?.(cleared);
+
+    const projectId = store.get("currentProject")?.id;
+    const generation = ++refreshGeneration;
+    await refreshClassCounts(images, {
+      projectId,
+      isCurrent: () =>
+        generation === refreshGeneration && store.get("currentProject")?.id === projectId,
+    });
+  } finally {
+    clearInFlight = false;
+  }
+}
+
 async function deleteSelected({ onError, onDeleted }) {
   const ids = [...(store.get("gallerySelectedIds") || [])];
   if (!ids.length) return;
@@ -590,7 +674,7 @@ async function deleteSelected({ onError, onDeleted }) {
   });
 }
 
-export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }) {
+export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted, onCleared }) {
   renderSplitFilters();
   syncClassBalanceCollapsed();
   syncFilterInputs();
@@ -672,6 +756,10 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
 
   document.getElementById("btn-gallery-clear-selection")?.addEventListener("click", () => {
     setSelectedIds([]);
+  });
+
+  document.getElementById("btn-gallery-clear-annotations")?.addEventListener("click", () => {
+    clearSelectedAnnotations({ onError, onCleared }).catch((err) => onError?.(err.message));
   });
 
   document.getElementById("btn-gallery-delete-selected")?.addEventListener("click", () => {

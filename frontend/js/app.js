@@ -1460,12 +1460,18 @@ function boot() {
   });
   initUploadModal({
     onError: toast,
-    onUploaded: async (uploaded) => {
+    onUploaded: async (result) => {
       const project = store.get("currentProject");
       if (!project) return;
+      const uploaded = result?.images || result || [];
+      const skipped = Number(result?.skipped || 0);
       const images = await api.listImages(project.id);
       store.set("images", images);
-      toast(`Загружено. Всего кадров: ${images.length}`);
+      toast(
+        skipped
+          ? `Загружено ${uploaded.length}, пропущено похожих: ${skipped}. Всего кадров: ${images.length}`
+          : `Загружено. Всего кадров: ${images.length}`
+      );
       dataHub?.refresh?.().catch(() => {});
       if (store.get("projectTab") === "annotate" && !store.get("currentImage") && uploaded?.[0]) {
         await openImage(uploaded[0].id, project.id);
@@ -1528,6 +1534,9 @@ function boot() {
     onError: toast,
     onDeleted: (count) => {
       toast(`Удалено кадров: ${count}`);
+    },
+    onCleared: (count) => {
+      toast(`Удалены аннотации у кадров: ${count}`);
     },
   });
 

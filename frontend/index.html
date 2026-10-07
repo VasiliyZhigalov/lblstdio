@@ -116,7 +116,7 @@
                 class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border border-zinc-700 hover:bg-zinc-800"
                 title="Загрузить фото"
               >
-                <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                <i data-lucide="download" class="w-3.5 h-3.5"></i>
                 <span class="hidden sm:inline">Загрузить фото</span>
               </button>
               <button
@@ -131,7 +131,7 @@
                 id="btn-export-studio"
                 class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700"
               >
-                <i data-lucide="download" class="w-3.5 h-3.5"></i>
+                <i data-lucide="upload" class="w-3.5 h-3.5"></i>
                 <span class="hidden sm:inline">Экспорт YOLO</span>
               </button>
               <button
@@ -321,14 +321,26 @@
               <span class="text-[11px] text-zinc-400"
                 >Выбрано: <span id="gallery-selected-count" class="font-mono text-zinc-200">0</span></span
               >
-              <button
-                id="btn-gallery-delete-selected"
-                type="button"
-                class="ml-auto px-2.5 py-1 text-[11px] rounded-md bg-red-800 hover:bg-red-700 text-white flex items-center gap-1.5"
-              >
-                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                <span>Удалить выбранные</span>
-              </button>
+              <div class="ml-auto flex items-center gap-2">
+                <button
+                  id="btn-gallery-clear-annotations"
+                  type="button"
+                  disabled
+                  class="px-2.5 py-1 text-[11px] rounded-md border border-amber-800/70 hover:bg-amber-950 text-amber-200 disabled:opacity-40 disabled:pointer-events-none flex items-center gap-1.5"
+                  title="Удалить аннотации у выбранных кадров"
+                >
+                  <i data-lucide="eraser" class="w-3.5 h-3.5"></i>
+                  <span>Очистить выделенные</span>
+                </button>
+                <button
+                  id="btn-gallery-delete-selected"
+                  type="button"
+                  class="px-2.5 py-1 text-[11px] rounded-md bg-red-800 hover:bg-red-700 text-white flex items-center gap-1.5"
+                >
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                  <span>Удалить выбранные</span>
+                </button>
+              </div>
             </div>
 
             <div
@@ -965,6 +977,29 @@
           <input id="file-input" type="file" multiple tabindex="-1" class="pointer-events-none absolute h-px w-px opacity-0" />
           <input id="folder-input" type="file" webkitdirectory directory multiple tabindex="-1" class="pointer-events-none absolute h-px w-px opacity-0" />
           <div id="file-count" class="text-xs text-zinc-500"></div>
+          <label class="flex items-start gap-2 text-xs text-zinc-300">
+            <input id="upload-dedup" type="checkbox" checked class="mt-0.5 rounded border-zinc-600 bg-zinc-900" />
+            <span>
+              Отсеивать похожие кадры
+              <span class="block text-[11px] text-zinc-500">По перцептивному хэшу. Удобно для видео и папок со стрима.</span>
+            </span>
+          </label>
+          <div id="upload-similarity-row" class="space-y-1">
+            <div class="flex items-center gap-3 text-xs text-zinc-400">
+              <label for="upload-similarity" class="shrink-0">Похожесть</label>
+              <input
+                id="upload-similarity"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value="0.85"
+                class="flex-1 accent-indigo-500"
+              />
+              <span id="upload-similarity-value" class="w-8 tabular-nums text-zinc-300">0.85</span>
+            </div>
+            <p class="text-[11px] text-zinc-500">Кадры не ниже этого порога пропускаются. Выше — только почти одинаковые.</p>
+          </div>
           <div class="h-2 rounded-full bg-zinc-800 overflow-hidden">
             <div id="upload-progress" class="h-full w-0 bg-indigo-500 transition-[width]"></div>
           </div>

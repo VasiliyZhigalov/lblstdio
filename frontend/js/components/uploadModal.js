@@ -78,6 +78,25 @@ export function initUploadModal({ onUploaded, onError }) {
   const submit = document.getElementById("btn-submit-upload");
   let files = [];
 
+  function dedupControls() {
+    return {
+      dedupInput: document.getElementById("upload-dedup"),
+      similarityInput: document.getElementById("upload-similarity"),
+      similarityValue: document.getElementById("upload-similarity-value"),
+      similarityRow: document.getElementById("upload-similarity-row"),
+    };
+  }
+
+  function syncDedupControls() {
+    const { dedupInput, similarityInput, similarityValue, similarityRow } = dedupControls();
+    const enabled = Boolean(dedupInput?.checked);
+    if (similarityInput) similarityInput.disabled = !enabled;
+    similarityRow?.classList.toggle("opacity-40", !enabled);
+    if (similarityValue && similarityInput) {
+      similarityValue.textContent = Number(similarityInput.value).toFixed(2);
+    }
+  }
+
   function setFiles(list) {
     const accepted = [...list].filter(isAcceptedFile);
     if (accepted.length > MAX_UPLOAD_FILES) {
@@ -96,6 +115,10 @@ export function initUploadModal({ onUploaded, onError }) {
       return;
     }
     progress.style.width = "0%";
+    const { dedupInput, similarityInput } = dedupControls();
+    if (dedupInput) dedupInput.checked = true;
+    if (similarityInput) similarityInput.value = "0.85";
+    syncDedupControls();
     showModal(modal, true);
   }
 
@@ -181,6 +204,14 @@ export function initUploadModal({ onUploaded, onError }) {
   document.getElementById("btn-close-upload").addEventListener("click", close);
   document.getElementById("btn-cancel-upload").addEventListener("click", close);
 
+  modal.addEventListener("change", (event) => {
+    if (event.target?.id === "upload-dedup") syncDedupControls();
+  });
+  modal.addEventListener("input", (event) => {
+    if (event.target?.id === "upload-similarity") syncDedupControls();
+  });
+  syncDedupControls();
+
   submit.addEventListener("click", async () => {
     const project = store.get("currentProject");
     if (!project || !files.length) {
@@ -189,8 +220,12 @@ export function initUploadModal({ onUploaded, onError }) {
     }
     submit.disabled = true;
     try {
+      const { dedupInput, similarityInput } = dedupControls();
       const uploaded = await api.uploadImages(project.id, files, (ratio) => {
         progress.style.width = `${Math.round(ratio * 100)}%`;
+      }, {
+        dedup: Boolean(dedupInput?.checked),
+        similarity: Number(similarityInput?.value ?? 0.85),
       });
       progress.style.width = "100%";
       files = [];

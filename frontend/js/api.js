@@ -203,7 +203,7 @@ export const api = {
       method: "DELETE",
     }),
 
-  uploadImages(projectId, files, onProgress) {
+  uploadImages(projectId, files, onProgress, options = {}) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const form = new FormData();
@@ -216,6 +216,12 @@ export const api = {
           (file.relativePath || file.webkitRelativePath || file.name || "").replace(/\\/g, "/")
         );
       }
+      form.append("dedup", options.dedup === false ? "false" : "true");
+      const similarity = Number(options.similarity);
+      form.append(
+        "similarity",
+        Number.isFinite(similarity) ? String(similarity) : "0.85"
+      );
       xhr.open("POST", `${API_BASE}/projects/${projectId}/images/upload`);
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && onProgress) {
@@ -225,7 +231,9 @@ export const api = {
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
-            resolve(JSON.parse(xhr.responseText));
+            const images = JSON.parse(xhr.responseText);
+            const skipped = Number(xhr.getResponseHeader("X-Skipped-Duplicates") || 0);
+            resolve({ images, skipped });
           } catch (err) {
             reject(err);
           }
