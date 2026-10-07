@@ -20,6 +20,8 @@ def test_cors_allows_localhost_and_rejects_other_origins(client: TestClient) -> 
     allowed = client.get("/health", headers={"Origin": "http://localhost:5173"})
     assert allowed.status_code == 200
     assert allowed.headers.get("access-control-allow-origin") == "http://localhost:5173"
+    exposed = allowed.headers.get("access-control-expose-headers") or ""
+    assert "x-skipped-duplicates" in exposed.lower()
 
     blocked = client.get("/health", headers={"Origin": "https://evil.example"})
     assert blocked.status_code == 200

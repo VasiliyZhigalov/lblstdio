@@ -2,7 +2,7 @@ import tempfile
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import FileResponse, Response
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
@@ -14,6 +14,7 @@ from app.application.use_cases.images.get_image import GetImageUseCase, ListImag
 from app.application.use_cases.images.get_images_summary import GetImagesSummaryUseCase
 from app.application.use_cases.images.set_test_holdout import SetImageTestHoldoutUseCase
 from app.application.use_cases.images.upload_images import (
+    DEFAULT_DEDUP_SIMILARITY,
     MAX_UPLOAD_FILES,
     MAX_UPLOAD_ZIP_BYTES,
     UploadImagesUseCase,
@@ -46,6 +47,29 @@ from app.presentation.schemas import (
 
 router = APIRouter(tags=["images"])
 
+
+def _form_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    token = str(value).strip().lower()
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off", ""}:
+        return False
+    raise DomainValidationException("dedup must be a boolean")
+
+
+def _form_similarity(value: object) -> float:
+    if value is None or value == "":
+        return DEFAULT_DEDUP_SIMILARITY
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise DomainValidationException("similarity must be a number") from exc
+
+
 _UPLOAD_OPENAPI = {
     "requestBody": {
         "required": True,
@@ -64,6 +88,14 @@ _UPLOAD_OPENAPI = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Relative path for each file, same order as files",
+                        },
+                        "dedup": {
+                            "type": "boolean",
+                            "description": "Drop near-duplicate frames by perceptual hash",
+                        },
+                        "similarity": {
+                            "type": "number",
+                            "description": "Skip frames at least this similar (0–1)",
                         },
                     },
                 }
@@ -131,6 +163,7 @@ def _annotation_to_read(annotation) -> AnnotationRead:
 async def upload_images(
     project_id: UUID,
     request: Request,
+    response: Response,
     use_case: UploadImagesUseCase = Depends(get_upload_images_use_case),
 ) -> list[ImageRead]:
     staging = tempfile.TemporaryDirectory()
@@ -169,8 +202,14 @@ async def upload_images(
                     handle.write(chunk)
             await item.close()
             uploaded.append(UploadedFile(filename=filename, body_path=str(dest)))
-        images = await use_case.execute(project_id, uploaded)
-        return [_image_to_read(item) for item in images]
+        result = await use_case.execute(
+            project_id,
+            uploaded,
+            dedup=_form_bool(form.get("dedup")),
+            similarity=_form_similarity(form.get("similarity")),
+        )
+        response.headers["X-Skipped-Duplicates"] = str(result.skipped)
+        return [_image_to_read(item) for item in result.images]
     finally:
         if form is not None:
             try:

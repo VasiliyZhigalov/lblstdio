@@ -25,6 +25,7 @@ _TRAINING_JOB_COLUMNS = (
 
 _IMAGE_COLUMNS = (
     ("is_background", "INTEGER NOT NULL DEFAULT 0"),
+    ("phash", "VARCHAR(16)"),
 )
 
 _MODEL_VERSION_COLUMNS = (

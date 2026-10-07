@@ -121,6 +121,7 @@ def create_app(
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Skipped-Duplicates"],
     )
     register_exception_handlers(app)
     app.include_router(projects_router, prefix="/api/v1")

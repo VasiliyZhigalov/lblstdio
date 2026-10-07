@@ -37,6 +37,10 @@ class IImageRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_phashes(self, project_id: UUID) -> list[int]:
+        raise NotImplementedError
+
+    @abstractmethod
     async def update(self, image: Image) -> None:
         raise NotImplementedError
 

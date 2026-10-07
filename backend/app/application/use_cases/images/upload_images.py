@@ -1,8 +1,9 @@
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from uuid import UUID
 
-from app.application.dto import UploadedFile
+from app.application.dto import UploadedFile, UploadImagesResult
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
 from app.application.ports.repositories.class_repository import IClassRepository
 from app.application.ports.repositories.image_repository import IImageRepository
@@ -20,6 +21,7 @@ from app.domain.exceptions import (
     TaskTypeMismatchException,
 )
 from app.domain.services.class_index import allocate_next_index
+from app.domain.services.perceptual_hash import HashCandidate, select_diverse_hashes
 from app.domain.services.yolo_label_import import (
     expand_upload_bundle,
     pair_images_and_labels,
@@ -33,12 +35,14 @@ _ALLOWED_SIDECAR_EXTENSIONS = {".txt", ".yaml", ".yml", ".zip", ".json"}
 MAX_UPLOAD_FILES = 5000
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_UPLOAD_ZIP_BYTES = 512 * 1024 * 1024
+DEFAULT_DEDUP_SIMILARITY = 0.85
 
 
 def _image_bytes(payload: bytes | Path) -> bytes:
     if isinstance(payload, Path):
         return payload.read_bytes()
     return payload
+
 
 _CLASS_COLORS = (
     "#EF4444",
@@ -77,7 +81,10 @@ class UploadImagesUseCase:
         self,
         project_id: UUID,
         files: list[UploadedFile],
-    ) -> list[Image]:
+        *,
+        dedup: bool = False,
+        similarity: float = DEFAULT_DEDUP_SIMILARITY,
+    ) -> UploadImagesResult:
         project = await self._projects.get_by_id(project_id)
         if project is None:
             raise ResourceNotFoundException(f"project {project_id} not found")
@@ -87,6 +94,8 @@ class UploadImagesUseCase:
             raise DomainValidationException(
                 f"too many files: maximum is {MAX_UPLOAD_FILES}"
             )
+        if not 0.0 <= similarity <= 1.0:
+            raise DomainValidationException("similarity must be in [0, 1]")
 
         with tempfile.TemporaryDirectory() as staging_name:
             staging = Path(staging_name)
@@ -122,7 +131,14 @@ class UploadImagesUseCase:
                 raise TaskTypeMismatchException(
                     "classification projects accept images only"
                 )
-            return await self._persist_bundle(project_id, images_map, labels_map, class_files)
+            return await self._persist_bundle(
+                project_id,
+                images_map,
+                labels_map,
+                class_files,
+                dedup=dedup,
+                similarity=similarity,
+            )
 
     async def _persist_bundle(
         self,
@@ -130,7 +146,10 @@ class UploadImagesUseCase:
         images_map: dict[str, bytes | Path],
         labels_map: dict[str, bytes],
         class_files: dict[str, bytes],
-    ) -> list[Image]:
+        *,
+        dedup: bool,
+        similarity: float,
+    ) -> UploadImagesResult:
         if not images_map:
             raise DomainValidationException("at least one image file is required")
 
@@ -197,16 +216,47 @@ class UploadImagesUseCase:
                 created_classes.append(annotation_class)
                 class_by_name[name] = annotation_class
 
+        prepared: list[tuple[str, bytes, int, int, int]] = []
+        for image_path, payload in images_map.items():
+            content = _image_bytes(payload)
+            width, height = self._metadata.read_size(content)
+            phash = self._metadata.perceptual_hash(content)
+            prepared.append((image_path, content, width, height, phash))
+
+        selected_paths = [item[0] for item in prepared]
+        skipped = 0
+        if dedup:
+            candidates = [
+                HashCandidate(
+                    key=image_path,
+                    phash=phash,
+                    keep_always=image_path in prepared_labels,
+                )
+                for image_path, _content, _width, _height, phash in prepared
+            ]
+            existing_hashes = await self._images.list_phashes(project_id)
+            kept = select_diverse_hashes(candidates, existing_hashes, similarity)
+            selected_paths = [item.key for item in kept]
+            skipped = len(prepared) - len(selected_paths)
+            if not selected_paths:
+                raise DomainValidationException(
+                    "all images were skipped as near-duplicates"
+                )
+
+        by_path = {
+            image_path: (content, width, height, phash)
+            for image_path, content, width, height, phash in prepared
+        }
         created: list[Image] = []
         saved_paths: list[str] = []
         annotations_by_image: dict[UUID, list[Annotation]] = {}
+        created_at = datetime.now(UTC)
         try:
             for created_class in created_classes:
                 await self._classes.add(created_class)
 
-            for image_path, payload in images_map.items():
-                content = _image_bytes(payload)
-                width, height = self._metadata.read_size(content)
+            for offset, image_path in enumerate(selected_paths):
+                content, width, height, phash = by_path[image_path]
                 basename = PurePosixPath(image_path).name
                 relative_dir = f"projects/{project_id}/images"
                 try:
@@ -224,7 +274,9 @@ class UploadImagesUseCase:
                     height=height,
                     split=SplitType.TRAIN,
                     source_type=ImageSourceType.MANUAL_UPLOAD,
+                    phash=phash,
                 )
+                image.created_at = created_at + timedelta(microseconds=offset)
 
                 label_boxes = prepared_labels.get(image_path)
                 if label_boxes is not None:
@@ -260,4 +312,4 @@ class UploadImagesUseCase:
             for path in saved_paths:
                 await self._storage.delete(path)
             raise
-        return created
+        return UploadImagesResult(images=created, skipped=skipped)

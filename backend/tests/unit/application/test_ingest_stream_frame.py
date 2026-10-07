@@ -76,6 +76,9 @@ class _FakeMetadata:
     def read_size(self, data: bytes) -> tuple[int, int]:
         return (640, 480)
 
+    def perceptual_hash(self, data: bytes) -> int:
+        return 0
+
 
 class _FakeUow:
     def __init__(self) -> None:

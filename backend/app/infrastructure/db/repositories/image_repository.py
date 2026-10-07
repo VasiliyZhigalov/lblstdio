@@ -100,6 +100,20 @@ class SqliteImageRepository(IImageRepository):
             scores[UUID(image_id)] = float(confidence)
         return scores
 
+    async def list_phashes(self, project_id: UUID) -> list[int]:
+        result = await self._session.scalars(
+            select(ImageRow.phash).where(
+                ImageRow.project_id == str(project_id),
+                ImageRow.phash.is_not(None),
+            )
+        )
+        hashes: list[int] = []
+        for raw in result:
+            if not raw:
+                continue
+            hashes.append(int(raw, 16))
+        return hashes
+
     async def update(self, image: Image) -> None:
         row = await self._session.get(ImageRow, str(image.id))
         if row is None:
@@ -114,6 +128,9 @@ class SqliteImageRepository(IImageRepository):
         row.is_background = 1 if image.is_background else 0
         row.stream_source_id = (
             str(image.stream_source_id) if image.stream_source_id else None
+        )
+        row.phash = (
+            f"{image.phash:016x}" if image.phash is not None else None
         )
         await self._session.flush()
 

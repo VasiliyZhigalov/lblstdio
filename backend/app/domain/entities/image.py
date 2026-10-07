@@ -25,6 +25,7 @@ class Image:
     created_at: datetime
     stream_source_id: UUID | None = None
     is_background: bool = False
+    phash: int | None = None
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
@@ -44,6 +45,7 @@ class Image:
         source_type: ImageSourceType = ImageSourceType.MANUAL_UPLOAD,
         image_id: UUID | None = None,
         stream_source_id: UUID | None = None,
+        phash: int | None = None,
     ) -> Image:
         return cls(
             id=image_id or uuid4(),
@@ -58,6 +60,7 @@ class Image:
             created_at=datetime.now(UTC),
             stream_source_id=stream_source_id,
             is_background=False,
+            phash=phash,
         )
 
     def recalculate_status(self, annotations: Sequence[Annotation]) -> None:

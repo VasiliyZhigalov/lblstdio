@@ -89,6 +89,18 @@ def row_to_class(row: ClassRow) -> AnnotationClass:
     )
 
 
+def _phash_to_hex(value: int | None) -> str | None:
+    if value is None:
+        return None
+    return f"{value:016x}"
+
+
+def _hex_to_phash(value: str | None) -> int | None:
+    if not value:
+        return None
+    return int(value, 16)
+
+
 def image_to_row(image: Image) -> ImageRow:
     return ImageRow(
         id=str(image.id),
@@ -103,6 +115,7 @@ def image_to_row(image: Image) -> ImageRow:
         created_at=image.created_at,
         stream_source_id=str(image.stream_source_id) if image.stream_source_id else None,
         is_background=1 if image.is_background else 0,
+        phash=_phash_to_hex(image.phash),
     )
 
 
@@ -120,6 +133,7 @@ def row_to_image(row: ImageRow) -> Image:
         created_at=ensure_utc(row.created_at),
         stream_source_id=UUID(row.stream_source_id) if row.stream_source_id else None,
         is_background=bool(getattr(row, "is_background", 0)),
+        phash=_hex_to_phash(getattr(row, "phash", None)),
     )
 
 

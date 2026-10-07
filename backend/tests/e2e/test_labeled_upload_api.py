@@ -199,6 +199,8 @@ class TestLabeledUploadApi:
         body = operation["requestBody"]["content"]["multipart/form-data"]["schema"]
         assert "files" in body["properties"]
         assert "relative_paths" in body["properties"]
+        assert "dedup" in body["properties"]
+        assert "similarity" in body["properties"]
 
     def test_upload_passes_multipart_limits(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -246,3 +248,49 @@ class TestLabeledUploadApi:
         )
         assert response.status_code == 422, response.text
         assert "Too many files" in response.text
+
+    def test_dedup_skips_identical_pngs(self, client: TestClient) -> None:
+        project_id = client.post("/api/v1/projects", json={"name": "Dupes"}).json()["id"]
+        payload = _png((12, 24, 36))
+        response = client.post(
+            f"/api/v1/projects/{project_id}/images/upload",
+            files=[
+                ("files", ("a.png", payload, "image/png")),
+                ("files", ("b.png", payload, "image/png")),
+            ],
+            data={"dedup": "true", "similarity": "0.9"},
+        )
+        assert response.status_code == 201, response.text
+        assert len(response.json()) == 1
+        assert response.headers.get("x-skipped-duplicates") == "1"
+
+    def test_without_dedup_keeps_identical_pngs(self, client: TestClient) -> None:
+        project_id = client.post("/api/v1/projects", json={"name": "Keep"}).json()["id"]
+        payload = _png((12, 24, 36))
+        response = client.post(
+            f"/api/v1/projects/{project_id}/images/upload",
+            files=[
+                ("files", ("a.png", payload, "image/png")),
+                ("files", ("b.png", payload, "image/png")),
+            ],
+        )
+        assert response.status_code == 201, response.text
+        assert len(response.json()) == 2
+        assert response.headers.get("x-skipped-duplicates") == "0"
+
+    def test_dedup_skips_already_uploaded_frame(self, client: TestClient) -> None:
+        project_id = client.post("/api/v1/projects", json={"name": "Again"}).json()["id"]
+        payload = _png((90, 10, 40))
+        first = client.post(
+            f"/api/v1/projects/{project_id}/images/upload",
+            files=[("files", ("a.png", payload, "image/png"))],
+            data={"dedup": "true"},
+        )
+        assert first.status_code == 201, first.text
+        second = client.post(
+            f"/api/v1/projects/{project_id}/images/upload",
+            files=[("files", ("b.png", payload, "image/png"))],
+            data={"dedup": "true", "similarity": "0.9"},
+        )
+        assert second.status_code == 422, second.text
+        assert "near-duplicates" in second.text

@@ -83,6 +83,7 @@ class ImageRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     stream_source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     is_background: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    phash: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     project: Mapped[ProjectRow] = relationship(back_populates="images")
     annotations: Mapped[list["AnnotationRow"]] = relationship(
