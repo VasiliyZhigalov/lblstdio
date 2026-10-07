@@ -288,6 +288,50 @@ async def test_auto_label_skips_invalid_detections_and_completes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_auto_label_infers_images_in_chunks(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.application.use_cases.ml.batch_auto_label._INFERENCE_CHUNK",
+        2,
+        raising=False,
+    )
+    use_case, image, model, annotations, images, _, predictor = _setup()
+    extra = []
+    for name in ("b.jpg", "c.jpg"):
+        item = Image.create(
+            project_id=image.project_id,
+            file_path=f"projects/p/images/{name}",
+            file_name=name,
+            width=100,
+            height=80,
+            split=SplitType.TRAIN,
+        )
+        images.by_id[item.id] = item
+        predictor.mapping[f"/abs/{item.file_path}"] = [
+            Detection(0, 0.7, 0.5, 0.5, 0.2, 0.2)
+        ]
+        extra.append(item)
+
+    job = await use_case.execute(
+        image.project_id,
+        model.id,
+        image_ids=[image.id, extra[0].id, extra[1].id],
+        confidence_threshold=0.5,
+    )
+
+    original_calls = [
+        paths
+        for _weights, paths, _conf, _iou in predictor.calls
+        if paths and not paths[0].endswith(("_flip.jpg", "_stretch.jpg"))
+    ]
+    assert original_calls
+    assert max(len(paths) for paths in original_calls) <= 2
+    assert job.status == AutoLabelJobStatus.COMPLETED
+    assert job.total_images_processed == 3
+    for item in (image, *extra):
+        assert annotations.store[item.id]
+
+
+@pytest.mark.asyncio
 async def test_auto_label_marks_failed_when_persist_raises() -> None:
     use_case, image, model, annotations, images, jobs, predictor = _setup()
 
