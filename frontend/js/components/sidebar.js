@@ -14,8 +14,10 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
   function renderClasses() {
     const classes = [...(store.get("classes") || [])].sort((a, b) => a.index_id - b.index_id);
     const active = store.get("activeClassId");
+    const project = store.get("currentProject");
+    const manageLink = project ? `<a href="#/projects/${project.id}/data?section=classes" class="block text-[10px] text-indigo-300 mt-3 py-1">Настроить классы в Данных →</a>` : "";
     if (!classes.length) {
-      classesList.innerHTML = `<p class="text-[11px] text-zinc-500">Добавьте класс, чтобы начать разметку.</p>`;
+      classesList.innerHTML = `<p class="text-[11px] text-zinc-500">Создайте классы в разделе «Данные → Классы».</p>${manageLink}`;
       return;
     }
     classesList.innerHTML = classes
@@ -34,17 +36,9 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
               <span class="w-2 h-2 rounded-full shrink-0" style="background:${escapeHtml(cls.color_hex)}"></span>
               <span class="truncate" data-class-name="${cls.id}">${escapeHtml(cls.name)}</span>
             </button>
-            <button type="button" data-rename-class="${cls.id}" title="Переименовать"
-              class="px-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/80 opacity-0 group-hover/class:opacity-100">
-              <i data-lucide="pencil" class="w-3 h-3"></i>
-            </button>
-            <button type="button" data-delete-class="${cls.id}" title="Удалить класс"
-              class="px-1 rounded text-zinc-500 hover:text-red-400 hover:bg-red-950/40 opacity-0 group-hover/class:opacity-100">
-              <i data-lucide="trash-2" class="w-3 h-3"></i>
-            </button>
           </div>`;
       })
-      .join("");
+      .join("") + manageLink;
     refreshIcons();
   }
 

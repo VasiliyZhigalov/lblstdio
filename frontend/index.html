@@ -15,6 +15,7 @@
       };
     </script>
     <link rel="stylesheet" href="/css/styles.css" />
+    <link rel="stylesheet" href="/css/projectData.css?v=project-data-20261022d" />
     <script src="/vendor/lucide.min.js"></script>
   </head>
   <body class="bg-zinc-950 text-zinc-100">
@@ -31,13 +32,16 @@
               <div class="text-[11px] text-zinc-500">Projects</div>
             </div>
           </div>
-          <button
-            id="btn-new-project"
-            class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-indigo-600 hover:bg-indigo-500 text-white"
-          >
-            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
-            Новый проект
-          </button>
+          <div class="flex items-center gap-2">
+            <a id="btn-open-stream-center" href="#/streams" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-cyan-800 text-cyan-200 hover:bg-cyan-950/40">
+              <i data-lucide="video" class="w-3.5 h-3.5"></i>
+              Центр сбора
+            </a>
+            <button id="btn-new-project" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-indigo-600 hover:bg-indigo-500 text-white">
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+              Новый проект
+            </button>
+          </div>
         </header>
         <div class="flex-1 overflow-hidden flex flex-col px-6 py-5 gap-4">
           <input
@@ -60,6 +64,23 @@
         </div>
       </section>
 
+      <section id="view-stream-center" class="hidden h-full flex flex-col">
+        <div class="h-full min-h-0 flex">
+          <aside class="w-52 shrink-0 border-r border-zinc-800 bg-zinc-950/80 p-3 flex flex-col gap-5">
+            <a id="btn-stream-center-projects" href="#/projects" class="flex items-center gap-2 px-2 py-1.5 text-xs text-zinc-400 hover:text-white"><i data-lucide="arrow-left" class="w-3.5 h-3.5"></i> Все проекты</a>
+            <div><div class="px-2 mb-2 text-[10px] uppercase tracking-widest text-zinc-600">Центр сбора</div>
+              <nav class="space-y-1">
+                <button data-collection-page="overview" class="collection-nav w-full flex items-center gap-2 rounded-lg bg-indigo-600/15 text-indigo-200 px-2.5 py-2 text-xs"><i data-lucide="activity" class="w-4 h-4"></i>Обзор сборов<span id="collection-nav-count" class="ml-auto rounded-full bg-zinc-800 px-1.5 py-0.5 text-[10px]">—</span></button>
+                <button data-collection-page="cameras" class="collection-nav w-full flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-zinc-400 hover:bg-zinc-900 hover:text-white"><i data-lucide="video" class="w-4 h-4"></i>Камеры и источники<span id="collection-camera-count" class="ml-auto text-[10px] text-zinc-600">—</span></button>
+                <button data-collection-page="models" class="collection-nav w-full flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-zinc-400 hover:bg-zinc-900 hover:text-white"><i data-lucide="brain" class="w-4 h-4"></i>Модели<span id="collection-model-count" class="ml-auto text-[10px] text-zinc-600">—</span></button>
+              </nav>
+            </div>
+            <button id="collection-new-button" class="mt-auto rounded-lg bg-indigo-600 px-3 py-2.5 text-xs font-semibold text-white hover:bg-indigo-500">＋ Новый сбор</button>
+          </aside>
+          <main id="stream-center-content" class="flex-1 min-w-0 min-h-0 overflow-y-auto"></main>
+        </div>
+      </section>
+
       <!-- PROJECT WORKSPACE SHELL -->
       <section id="view-project-shell" class="hidden h-full flex flex-col">
         <header class="h-12 shrink-0 border-b border-zinc-800 bg-zinc-900/90 px-4 flex items-center justify-between z-30">
@@ -71,6 +92,10 @@
               <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
               <span>Проекты</span>
             </button>
+            <a id="btn-open-stream-center-workspace" href="#/streams" class="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-cyan-800/70 text-cyan-200 hover:bg-cyan-950/40">
+              <i data-lucide="video" class="w-3.5 h-3.5"></i>
+              Центр сбора
+            </a>
             <div class="h-4 w-px bg-zinc-800"></div>
             <span id="shell-project-name" class="text-xs font-semibold text-zinc-200 truncate">—</span>
             <nav class="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-800 ml-2 gap-1">
@@ -97,14 +122,6 @@
               >
                 <i data-lucide="layers" class="w-3.5 h-3.5"></i>
                 <span>Модели и Датасеты</span>
-              </button>
-              <button
-                id="tab-btn-stream"
-                data-tab="stream"
-                class="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition text-zinc-400 hover:text-zinc-200"
-              >
-                <i data-lucide="video" class="w-3.5 h-3.5"></i>
-                <span>Стрим и Сбор</span>
               </button>
             </nav>
           </div>
@@ -204,6 +221,7 @@
         <div class="flex-1 min-h-0 relative">
           <!-- TAB 1: DATA -->
           <div id="tab-view-data" class="h-full flex flex-col p-6 overflow-y-auto scrollbar-thin gap-6">
+            <div id="project-data-root"></div>
             <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div class="p-4 rounded-xl border border-zinc-800 bg-zinc-900/50">
                 <div class="text-[11px] text-zinc-500 uppercase tracking-wider">Всего кадров</div>
@@ -788,6 +806,21 @@
 
           <!-- TAB 4: STREAM & HARVEST -->
           <div id="tab-view-stream" class="hidden h-full flex flex-col min-h-0">
+            <div id="legacy-stream-content" class="hidden">
+            <div class="px-4 py-3 border-b border-zinc-800 bg-zinc-950/80">
+              <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                  <h2 class="text-sm font-semibold text-zinc-100">Источники и сбор</h2>
+                  <p id="stream-summary" class="text-xs text-zinc-500 mt-1">Источники могут собирать кадры одновременно в разные проекты.</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <label for="stream-destination-project" class="text-xs text-zinc-400">Новый источник →</label>
+                  <select id="stream-destination-project" class="max-w-56 bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-2 text-xs text-zinc-100"></select>
+                </div>
+              </div>
+              <div id="stream-source-list" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2 max-h-52 overflow-y-auto scrollbar-thin"></div>
+            </div>
+            </div>
             <div class="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_280px] gap-0">
               <div class="flex flex-col min-h-0 border-r border-zinc-800">
                 <div id="stream-player-frame" class="relative flex-1 min-h-0 max-h-[58vh] bg-zinc-950 flex items-center justify-center overflow-hidden">
@@ -807,8 +840,8 @@
               <aside class="overflow-y-auto scrollbar-thin p-3 space-y-4 bg-zinc-900/40 border-l border-zinc-800/80">
                 <!-- 1. ИСТОЧНИК -->
                 <div>
-                  <h3 class="text-[11px] font-bold uppercase tracking-widest text-zinc-500 mb-2">1. Источник</h3>
-                  <div id="stream-source-list" class="space-y-1 mb-2"></div>
+                  <h3 class="text-[11px] font-bold uppercase tracking-widest text-zinc-500 mb-1">Добавить источник</h3>
+                  <p class="text-[10px] text-zinc-500 mb-2">Он попадёт в выбранный выше проект.</p>
                   <div class="space-y-2 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-3 shadow-sm">
                     <input id="stream-rtsp-name" type="text" placeholder="Название камеры" class="w-full bg-zinc-950/50 border border-zinc-700/80 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 outline-none" />
                     <div class="flex gap-2">
@@ -838,7 +871,7 @@
 
                 <!-- 2. СЦЕНАРИЙ СБОРА -->
                 <div>
-                  <h3 class="text-[11px] font-bold uppercase tracking-widest text-zinc-500 mb-2">2. Логика сбора</h3>
+                  <h3 class="text-[11px] font-bold uppercase tracking-widest text-zinc-500 mb-2">Когда сохранять кадры</h3>
                   <div class="rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-3 shadow-sm space-y-3">
                     <select id="stream-capture-mode" class="w-full bg-zinc-950/80 border border-zinc-700/80 rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-200 outline-none focus:ring-1 focus:ring-indigo-500">
                         <option value="TIMER">Таймлапс (без нейросети)</option>
@@ -1385,6 +1418,6 @@
       id="toast"
       class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-full bg-zinc-900 border border-zinc-700 text-xs shadow-xl"
     ></div>
-    <script type="module" src="/js/app.js"></script>
+    <script type="module" src="/js/app.js?v=project-data-20261022e"></script>
   </body>
 </html>

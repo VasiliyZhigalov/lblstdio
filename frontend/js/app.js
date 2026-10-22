@@ -3,17 +3,17 @@ import { API_BASE, api } from "./api.js";
 import { AnnotationCanvas } from "./components/canvas.js";
 import { initProjectsHub, loadProjectsHub } from "./components/projectsHub.js";
 import { getFilmstripImages, initFilmstrip } from "./components/filmstrip.js";
-import { initSidebar, selectClassByHotkey } from "./components/sidebar.js";
+import { initSidebar, selectClassByHotkey } from "./components/sidebar.js?v=project-data-20261022d";
 import { initReviewBar } from "./components/reviewBar.js";
 import { initUploadModal } from "./components/uploadModal.js";
 import { initDatasetVersionModal } from "./components/datasetVersionModal.js";
 import { initTrainingDrawer } from "./components/trainingDrawer.js";
 import { initAutoLabelModal } from "./components/autoLabelModal.js";
-import { initDataHub } from "./components/dataHub.js";
+import { initDataHub } from "./components/projectData.js?v=project-data-20261022d";
 import { initModelsHub } from "./components/modelsHub.js";
-import { initStreamHub } from "./components/streamHub.js";
+import { initStreamHub } from "./components/streamHub.js?v=project-data-20261022d";
 import { initHotkeys } from "./hotkeys.js";
-import { ensureHash, navigate, parseHash, projectPath, replaceHash } from "./router.js";
+import { ensureHash, navigate, parseHash, projectPath, replaceHash } from "./router.js?v=collection-center-20261022c";
 import { escapeHtml, refreshIcons, showModal } from "./utils/dom.js";
 import { firstReviewImage } from "./utils/activeLearning.js";
 import {
@@ -82,6 +82,7 @@ function showShell(visible) {
   store.set("view", visible ? "studio" : "projects");
   document.getElementById("view-projects").classList.toggle("hidden", visible);
   document.getElementById("view-project-shell").classList.toggle("hidden", !visible);
+  document.getElementById("view-stream-center")?.classList.add("hidden");
 }
 
 const TAB_BTN_ACTIVE = "flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition bg-zinc-800 text-white";
@@ -89,25 +90,19 @@ const TAB_BTN_IDLE = "flex items-center gap-1.5 px-3 py-1 text-xs font-medium ro
 
 function syncTabChrome(tab) {
   const classification = isClassification();
-  for (const name of ["data", "annotate", "models", "stream"]) {
+  for (const name of ["data", "annotate", "models"]) {
     const btn = document.getElementById(`tab-btn-${name}`);
     if (btn) {
       btn.className = name === tab ? TAB_BTN_ACTIVE : TAB_BTN_IDLE;
-      if (name === "stream") btn.classList.toggle("hidden", classification);
     }
     const view = document.getElementById(`tab-view-${name}`);
-    if (view) view.classList.toggle("hidden", name !== tab || (name === "stream" && classification));
+    if (view) view.classList.toggle("hidden", name !== tab);
     const actions = document.getElementById(`shell-actions-${name}`);
-    if (actions) actions.classList.toggle("hidden", name !== tab || (name === "stream" && classification));
+    if (actions) actions.classList.toggle("hidden", name !== tab);
   }
 }
 
 async function setProjectTab(tab, { skipSave = false } = {}) {
-  if (isClassification() && tab === "stream") {
-    tab = "data";
-    const project = store.get("currentProject");
-    if (project) replaceHash(projectPath(project.id, "data"));
-  }
   const prev = store.get("projectTab");
   if (prev === "annotate" && tab !== "annotate" && !skipSave) {
     try {
@@ -136,11 +131,7 @@ async function setProjectTab(tab, { skipSave = false } = {}) {
   if (tab === "models") {
     modelsHub?.refresh?.().catch((err) => toast(err.message));
   }
-  if (tab === "stream") {
-    streamHub?.refresh?.().catch((err) => toast(err.message));
-  } else {
-    streamHub?.destroy?.();
-  }
+  streamHub?.destroy?.();
 }
 
 function setCompactToolState(el, active, { color = "text-indigo-400", bg = "bg-indigo-500/10" } = {}) {
@@ -229,7 +220,6 @@ function updateStudioChrome() {
 
 function syncClassifyChrome() {
   const cls = isClassification();
-  document.getElementById("tab-btn-stream")?.classList.toggle("hidden", cls);
   document.getElementById("btn-mark-background")?.classList.toggle("hidden", cls);
   document.getElementById("tool-draw")?.classList.toggle("hidden", cls);
   document.getElementById("tool-select")?.classList.toggle("hidden", cls);
@@ -318,7 +308,7 @@ async function loadProject(projectId, seq = routeSeq) {
   if (seq !== routeSeq) return false;
   const [classes, images, versions] = await Promise.all([
     api.listClasses(projectId),
-    api.listImages(projectId),
+    api.listImages(projectId, parseHash().tab === "annotate" ? {} : { limit: 48 }),
     api.listDatasetVersions(projectId).catch(() => []),
   ]);
   if (seq !== routeSeq) return false;
@@ -621,11 +611,6 @@ async function enterProject(route, seq) {
   if (!ready || seq !== routeSeq) return;
 
   let nextTab = tab || "data";
-  if (isClassification() && nextTab === "stream") {
-    nextTab = "data";
-    replaceHash(projectPath(projectId, "data"));
-  }
-
   showShell(true);
   try {
     await setProjectTab(nextTab, { skipSave: true });
@@ -665,7 +650,7 @@ async function onRoute() {
   const previousProjectId = store.get("currentProject")?.id;
   const previousTab = store.get("projectTab");
 
-  if (route.name === "projects") {
+  if (route.name === "projects" || route.name === "streams") {
     try {
       if (store.get("hasUnsavedChanges")) await saveCurrent({ silent: true });
     } catch {
@@ -679,6 +664,14 @@ async function onRoute() {
     }
     if (seq !== routeSeq) return;
     showShell(false);
+    if (route.name === "streams") {
+      document.getElementById("view-projects").classList.add("hidden");
+      document.getElementById("view-stream-center")?.classList.remove("hidden");
+      store.set("view", "streams");
+      await streamHub?.refresh?.();
+      return;
+    }
+    streamHub?.destroy?.();
     try {
       await loadProjectsHub();
     } catch (err) {
@@ -711,10 +704,6 @@ async function onRoute() {
   if (previousProjectId === route.projectId && store.get("view") === "studio") {
     try {
       let nextTab = route.tab || "data";
-      if (isClassification() && nextTab === "stream") {
-        nextTab = "data";
-        replaceHash(projectPath(route.projectId, "data"));
-      }
       await setProjectTab(nextTab);
     } catch {
       restoreProjectHash(previousProjectId, previousTab, store.get("currentImage")?.id);
@@ -1492,6 +1481,20 @@ function boot() {
     },
   });
 
+  // The gallery keeps only a page in the store. Load complete metadata on demand
+  // for the existing dataset builder, whose gate and split preview need every image.
+  const openDatasetModal = datasetModal.open;
+  datasetModal.open = async () => {
+    const project = store.get("currentProject");
+    if (!project) return;
+    try {
+      const images = await api.listImages(project.id);
+      if (store.get("currentProject")?.id !== project.id) return;
+      store.set("images", images);
+      openDatasetModal();
+    } catch (err) { toast(err.message); }
+  };
+
   autoLabelModal = initAutoLabelModal({
     getProject: () => store.get("currentProject"),
     getImages: () => store.get("images") || [],
@@ -1593,9 +1596,7 @@ function boot() {
     onUploadModel: async (file) => {
       const project = store.get("currentProject");
       if (!project) throw new Error("Сначала откройте проект");
-      const created = await api.uploadModel(project.id, file);
-      toast(`Модель загружена: ${created.display_name || created.name}`);
-      await modelsHub?.refresh?.();
+      await dataHub.previewModel(file);
     },
     onError: toast,
   });
@@ -1630,10 +1631,9 @@ function boot() {
     const project = store.get("currentProject");
     if (project) navigate(projectPath(project.id, "models"));
   });
-  document.getElementById("tab-btn-stream")?.addEventListener("click", () => {
-    const project = store.get("currentProject");
-    if (project) navigate(projectPath(project.id, "stream"));
-  });
+  document.getElementById("btn-open-stream-center")?.addEventListener("click", () => navigate("/streams"));
+  document.getElementById("btn-open-stream-center-workspace")?.addEventListener("click", () => navigate("/streams"));
+  document.getElementById("btn-stream-center-projects")?.addEventListener("click", () => navigate("/projects"));
 
   initHotkeys({
     setMode,

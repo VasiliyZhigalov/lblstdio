@@ -55,6 +55,22 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  deleteUnusedDataClass: (id, classId) => request(`/projects/${id}/data/classes/${classId}`, { method: "DELETE" }),
+  analyzeProjectData: (id) => request(`/projects/${id}/data/analyze`, { method: "POST" }),
+  parseClassDictionary: (id, file) => { const body = new FormData(); body.append("file", file); return request(`/projects/${id}/data/dictionary/preview`, { method: "POST", body }); },
+  queryProjectData: (id, filters) => request(`/projects/${id}/data/query`, { method: "POST", body: JSON.stringify(filters) }),
+  projectDataStatistics: (id) => request(`/projects/${id}/data/statistics`),
+  projectCameras: (id) => request(`/projects/${id}/data/cameras`),
+  linkProjectCamera: (id, camera, linked = true) => request(`/projects/${id}/data/cameras/${camera}`, { method: "PUT", body: JSON.stringify({ linked }) }),
+  projectDataAction: (id, payload) => request(`/projects/${id}/data/actions`, { method: "POST", body: JSON.stringify(payload) }),
+  thumbnailUrl: (id) => `${API_BASE}/images/${id}/thumbnail`,
+  previewDataImport: (id, kind, files) => {
+    const body = new FormData(); body.append("kind", kind);
+    for (const file of files) { body.append("files", file, file.name); body.append("relative_paths", file.webkitRelativePath || file.name); }
+    return request(`/projects/${id}/data/imports/preview`, { method: "POST", body });
+  },
+  listDataImports: (id) => request(`/projects/${id}/data/imports`),
+  dataImportAction: (id, job, action, payload = {}) => request(`/projects/${id}/data/imports/${job}/${action}`, { method: "POST", body: JSON.stringify(payload) }),
   listProjects: () => request("/projects"),
   createProject: (name, description = null, task_type = "DETECTION") =>
     request("/projects", {
@@ -371,6 +387,11 @@ export const api = {
     request(`/projects/${projectId}/streams/device`, {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+  copyStreamToProject: (streamId, projectId, name) =>
+    request(`/streams/${streamId}/copy-to-project/${projectId}`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
     }),
   createImageFolderStream: (projectId, body) =>
     request(`/projects/${projectId}/streams/image-folder`, {
