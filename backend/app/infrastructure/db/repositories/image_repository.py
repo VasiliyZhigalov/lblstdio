@@ -59,7 +59,7 @@ class SqliteImageRepository(IImageRepository):
         limit: int | None = None,
         sort: ImageListSort | None = None,
     ) -> list[Image]:
-        stmt = select(ImageRow).where(ImageRow.project_id == str(project_id))
+        stmt = select(ImageRow).where(ImageRow.project_id == str(project_id), ImageRow.deleted_at.is_(None))
         if split is not None:
             stmt = stmt.where(ImageRow.split == split.value)
         if status is not None:

@@ -26,6 +26,7 @@ from app.presentation.dependencies import (
 from app.presentation.schemas import (
     StreamDeviceCreate,
     StreamImageFolderCreate,
+    StreamCopyRequest,
     StreamRtspCreate,
     StreamSourceRead,
     StreamStatusRead,
@@ -143,6 +144,21 @@ async def create_rtsp_stream(
     use_case: ManageStreamSourceUseCase = Depends(get_manage_stream_source_use_case),
 ) -> StreamSourceRead:
     stream = await use_case.create_rtsp(project_id, payload.name, payload.rtsp_url)
+    return _stream_to_read(stream)
+
+
+@router.post(
+    "/streams/{stream_id}/copy-to-project/{project_id}",
+    response_model=StreamSourceRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def copy_stream_to_project(
+    stream_id: UUID,
+    project_id: UUID,
+    payload: StreamCopyRequest,
+    use_case: ManageStreamSourceUseCase = Depends(get_manage_stream_source_use_case),
+) -> StreamSourceRead:
+    stream = await use_case.duplicate_for_project(stream_id, project_id, payload.name)
     return _stream_to_read(stream)
 
 
@@ -320,11 +336,13 @@ async def stream_live(
 
     async def gen():
         idle = 0
+        last_jpeg: bytes | None = None
         while True:
             status_obj = runner.get_status(stream_id)
             jpeg = runner.latest_jpeg(stream_id)
-            if jpeg:
+            if jpeg and jpeg is not last_jpeg:
                 idle = 0
+                last_jpeg = jpeg
                 yield (
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
@@ -335,7 +353,7 @@ async def stream_live(
                 idle += 1
                 if idle > 300:  # ~21s without frames → end stream
                     break
-            await asyncio.sleep(0.07)
+            await asyncio.sleep(0.1)
 
     return StreamingResponse(
         gen(), media_type="multipart/x-mixed-replace; boundary=frame"

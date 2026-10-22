@@ -31,6 +31,7 @@ from app.presentation.api.v1.matching_router import router as matching_router
 from app.presentation.api.v1.projects_router import router as projects_router
 from app.presentation.api.v1.stream_router import router as stream_router
 from app.presentation.api.v1.training_router import router as training_router
+from app.presentation.api.v1.project_data_router import router as project_data_router
 from app.presentation.exception_handlers import register_exception_handlers
 from app.settings import load_settings
 
@@ -69,6 +70,9 @@ def create_app(
         app.state.storage_root = resolved_storage
         app.state.settings = settings
         app.state.metadata_reader = PillowMetadataReader()
+        from app.infrastructure.db.data_imports import DataImportManager
+        app.state.data_imports = DataImportManager(factory, app.state.storage)
+        await app.state.data_imports.recover()
         trainer = training_trainer or ProcessUltralyticsTrainer()
         predictor_instance = predictor or UltralyticsPredictor()
         classification_predictor = UltralyticsClassificationPredictor()
@@ -102,6 +106,7 @@ def create_app(
         await app.state.audit_annotations_runner.fail_orphaned_jobs()
         app.state.stream_ingest_consumer.start()
         yield
+        await app.state.data_imports.close()
         await app.state.training_runner.close()
         await app.state.auto_label_runner.close()
         await app.state.audit_annotations_runner.close()
@@ -132,6 +137,7 @@ def create_app(
     app.include_router(dataset_versions_router, prefix="/api/v1")
     app.include_router(training_router, prefix="/api/v1")
     app.include_router(stream_router, prefix="/api/v1")
+    app.include_router(project_data_router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

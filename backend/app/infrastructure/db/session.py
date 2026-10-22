@@ -24,11 +24,13 @@ _TRAINING_JOB_COLUMNS = (
 )
 
 _IMAGE_COLUMNS = (
+    ("deleted_at", "DATETIME"),
     ("is_background", "INTEGER NOT NULL DEFAULT 0"),
     ("phash", "VARCHAR(16)"),
 )
 
 _MODEL_VERSION_COLUMNS = (
+    ("class_metadata", "TEXT"),
     ("name", "TEXT NOT NULL DEFAULT ''"),
     ("top1", "FLOAT"),
     ("test_metrics", "TEXT"),
@@ -73,6 +75,9 @@ def _ensure_sqlite_columns(connection) -> None:
     _ensure_table_columns(connection, "auto_label_jobs", _AUTO_LABEL_JOB_COLUMNS)
     _ensure_table_columns(connection, "projects", _PROJECT_COLUMNS)
     _ensure_model_versions_nullable_fks(connection)
+    connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_images_data_page ON images (project_id, deleted_at, created_at, id)")
+    connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_images_data_status ON images (project_id, status)")
+    connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_images_data_source ON images (project_id, stream_source_id)")
 
 
 def _ensure_table_columns(connection, table: str, columns: tuple[tuple[str, str], ...]) -> None:
@@ -118,6 +123,7 @@ def _ensure_model_versions_nullable_fks(connection) -> None:
             recall FLOAT,
             top1 FLOAT,
             test_metrics TEXT,
+            class_metadata TEXT,
             is_active_for_stream INTEGER NOT NULL DEFAULT 0,
             created_at DATETIME NOT NULL,
             PRIMARY KEY (id),
@@ -131,12 +137,12 @@ def _ensure_model_versions_nullable_fks(connection) -> None:
         INSERT INTO model_versions__nullable (
             id, project_id, dataset_version_id, training_job_id, version_number,
             name, weights_path, map50, map50_95, precision, recall,
-            top1, test_metrics, is_active_for_stream, created_at
+            top1, test_metrics, class_metadata, is_active_for_stream, created_at
         )
         SELECT
             id, project_id, dataset_version_id, training_job_id, version_number,
             COALESCE(name, ''), weights_path, map50, map50_95, precision, recall,
-            NULL, NULL, is_active_for_stream, created_at
+            top1, test_metrics, class_metadata, is_active_for_stream, created_at
         FROM model_versions
         """
     )

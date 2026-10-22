@@ -79,7 +79,7 @@ class _Uow:
 
 
 @pytest.mark.asyncio
-async def test_start_deactivates_other_active_stream_in_project() -> None:
+async def test_start_preserves_other_active_stream_in_project() -> None:
     project_id = uuid4()
     model = ModelVersion.create_uploaded(project_id, 1, "w.pt", name="m")
     a = StreamSource.create(
@@ -96,9 +96,9 @@ async def test_start_deactivates_other_active_stream_in_project() -> None:
         streams, _Models(model), _Classes(), _Storage(), runner, _Uow()
     ).execute(b.id)
 
-    assert streams.by_id[a.id].is_active is False
+    assert streams.by_id[a.id].is_active is True
     assert streams.by_id[b.id].is_active is True
-    assert ("stop", a.id) in runner.stopped
+    assert ("stop", a.id) not in runner.stopped
     assert b.id in runner.started
 
 
@@ -157,7 +157,7 @@ async def test_start_image_folder_reports_logon_failure(
 
 
 class _SwapRunner:
-    """Stops the running source on start, matching a runner that preempts the project."""
+    """Independent sources match the production runner's concurrent collection contract."""
 
     def __init__(self, fail_id) -> None:
         self.fail_id = fail_id
@@ -173,9 +173,6 @@ class _SwapRunner:
         self.stopped.append(("stop_project", project_id))
 
     def start(self, stream, weights, *, allowed_class_indices=None) -> None:
-        for sid, is_on in list(self.running.items()):
-            if is_on and sid != stream.id:
-                self.stop(sid)
         self.started.append(stream.id)
         self.running[stream.id] = stream.id != self.fail_id
 

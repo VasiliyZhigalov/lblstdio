@@ -25,6 +25,7 @@ class ModelVersion:
     name: str = ""
     is_active_for_stream: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    class_metadata: dict | None = None
 
     def __post_init__(self) -> None:
         if self.version_number < 1:

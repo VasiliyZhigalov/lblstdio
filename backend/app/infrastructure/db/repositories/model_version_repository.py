@@ -31,6 +31,7 @@ def _to_row(version: ModelVersion) -> ModelVersionRow:
         recall=version.recall,
         top1=version.top1,
         test_metrics=version.test_metrics,
+        class_metadata=version.class_metadata,
         is_active_for_stream=1 if version.is_active_for_stream else 0,
         created_at=version.created_at,
     )
@@ -53,6 +54,7 @@ def _from_row(row: ModelVersionRow) -> ModelVersion:
         recall=row.recall,
         top1=getattr(row, "top1", None),
         test_metrics=getattr(row, "test_metrics", None),
+        class_metadata=getattr(row, "class_metadata", None),
         is_active_for_stream=bool(row.is_active_for_stream),
         created_at=ensure_utc(row.created_at),
     )
@@ -119,6 +121,7 @@ class SqliteModelVersionRepository(IModelVersionRepository):
         row.recall = version.recall
         row.top1 = version.top1
         row.test_metrics = version.test_metrics
+        row.class_metadata = version.class_metadata
         row.is_active_for_stream = 1 if version.is_active_for_stream else 0
         await self._session.flush()
 

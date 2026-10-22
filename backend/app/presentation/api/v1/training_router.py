@@ -80,6 +80,7 @@ def _job_to_read(job) -> TrainingJobRead:
 
 def _model_to_read(model) -> ModelVersionRead:
     return ModelVersionRead(
+        class_metadata=getattr(model, "class_metadata", None),
         id=model.id,
         project_id=model.project_id,
         dataset_version_id=model.dataset_version_id,

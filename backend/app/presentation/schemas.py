@@ -277,6 +277,7 @@ class RenameRequest(BaseModel):
 
 
 class ModelVersionRead(BaseModel):
+    class_metadata: dict | None = None
     id: UUID
     project_id: UUID
     dataset_version_id: UUID | None = None
@@ -375,6 +376,10 @@ class StreamTriggersUpdate(BaseModel):
 class StreamRtspCreate(BaseModel):
     name: str = Field(min_length=1)
     rtsp_url: str = Field(min_length=1)
+
+
+class StreamCopyRequest(BaseModel):
+    name: str = Field(min_length=1)
 
 
 class StreamDeviceCreate(BaseModel):

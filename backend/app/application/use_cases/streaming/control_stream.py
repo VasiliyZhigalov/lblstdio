@@ -67,26 +67,11 @@ class StartStreamUseCase:
             raise ResourceNotFoundException(f"stream source {stream_id} not found")
         launch = await self._prepare_launch(stream)
 
-        previous = await self._streams.get_active_for_project(stream.project_id)
-        replacing = (
-            previous
-            if previous is not None and previous.id != stream.id
-            else None
-        )
-        if previous is not None and previous.id == stream.id:
+        if stream.is_active:
             await asyncio.to_thread(self._runner.stop, stream.id)
 
-        try:
-            await self._start_and_wait(stream, launch)
-        except DomainValidationException as exc:
-            if replacing is not None:
-                await self._restore(replacing, exc)
-            raise
+        await self._start_and_wait(stream, launch)
 
-        if replacing is not None:
-            await asyncio.to_thread(self._runner.stop, replacing.id)
-            replacing.deactivate()
-            await self._streams.update(replacing)
         stream.activate()
         await self._streams.update(stream)
         await self._uow.commit()
@@ -135,6 +120,13 @@ class StartStreamUseCase:
                 )
 
         project_classes = await self._classes.list_by_project(stream.project_id)
+        if stream.model_version_id is not None:
+            mapping = (model.class_metadata or {}).get("class_mapping")
+            if mapping:
+                by_id = {str(c.id): c.index_id for c in project_classes}
+                if any(cid not in by_id for cid in mapping.values()):
+                    raise DomainValidationException("Словарь модели ссылается на удалённые классы проекта")
+                stream.class_index_mapping = {int(i): by_id[cid] for i, cid in mapping.items() if cid in by_id}
         allowed = allowed_class_indices_for(stream.config, project_classes)
         return source_uri, weights_abs, allowed
 
@@ -155,6 +147,7 @@ class StartStreamUseCase:
             config=stream.config,
             captured_frames_count=stream.captured_frames_count,
             created_at=stream.created_at,
+            class_index_mapping=stream.class_index_mapping,
         )
         await asyncio.to_thread(
             partial(
@@ -169,22 +162,6 @@ class StartStreamUseCase:
             await asyncio.to_thread(self._runner.stop, stream.id)
             message = status.error_message or f"stream failed to start ({status.state})"
             raise DomainValidationException(message)
-
-    async def _restore(
-        self, previous: StreamSource, original: DomainValidationException
-    ) -> None:
-        """Bring the previous source back if the failed start stopped it."""
-        try:
-            status = await asyncio.to_thread(self._runner.get_status, previous.id)
-            if status.is_running and status.state == "running":
-                return
-            launch = await self._prepare_launch(previous)
-            await self._start_and_wait(previous, launch)
-        except DomainValidationException as restore_error:
-            raise DomainValidationException(
-                f"{original}; previous stream was not restored: {restore_error}"
-            ) from original
-
 
 class StopStreamUseCase:
     def __init__(

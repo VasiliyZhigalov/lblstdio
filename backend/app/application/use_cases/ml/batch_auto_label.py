@@ -254,7 +254,8 @@ class BatchAutoLabelUseCase:
                     job, model, selected, weights_abs
                 )
             classes = await self._classes.list_by_project(job.project_id)
-            class_by_index = {item.index_id: item for item in classes}
+            from app.domain.services.model_classes import classes_for_model
+            class_by_index = {item.index_id: item for item in classes_for_model(classes, model)}
             total_predictions = 0
             chunk_size = max(1, _INFERENCE_CHUNK)
             for start in range(0, len(selected), chunk_size):
@@ -413,7 +414,8 @@ class BatchAutoLabelUseCase:
             weights_abs,
         )
         model_folders = {str(name) for name in model_names.values()}
-        if model_folders != set(by_folder):
+        imported_mapping = (model.class_metadata or {}).get("class_mapping")
+        if not imported_mapping and model_folders != set(by_folder):
             raise DomainValidationException(
                 f"model classes {sorted(model_folders)} do not match "
                 f"project classes {sorted(by_folder)}"
@@ -465,6 +467,9 @@ class BatchAutoLabelUseCase:
                     continue
                 folder = model_names.get(classification.class_index)
                 cls = by_folder.get(str(folder)) if folder is not None else None
+                if imported_mapping:
+                    target = imported_mapping.get(str(classification.class_index))
+                    cls = next((c for c in classes if str(c.id) == target), None)
                 if cls is None:
                     raise DomainValidationException(
                         f"predicted class_index {classification.class_index} "

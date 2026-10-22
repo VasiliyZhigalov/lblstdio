@@ -21,6 +21,7 @@ class StreamSource:
     config: StreamTriggerConfig
     captured_frames_count: int
     created_at: datetime
+    class_index_mapping: dict[int, int] | None = None
 
     def __post_init__(self) -> None:
         self.name = self.name.strip()

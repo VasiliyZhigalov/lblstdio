@@ -86,6 +86,22 @@ class ManageStreamSourceUseCase:
         await self._uow.commit()
         return stream
 
+    async def duplicate_for_project(
+        self, stream_id: UUID, project_id: UUID, name: str
+    ) -> StreamSource:
+        """Create a project-scoped source using an existing source's private URI."""
+        await self._require_project(project_id)
+        source = await self._require_stream(stream_id)
+        duplicate = StreamSource.create(
+            project_id=project_id,
+            name=name,
+            source_type=source.source_type,
+            source_uri=source.source_uri,
+        )
+        await self._streams.add(duplicate)
+        await self._uow.commit()
+        return duplicate
+
     async def create_device(
         self, project_id: UUID, name: str, device_index: int
     ) -> StreamSource:

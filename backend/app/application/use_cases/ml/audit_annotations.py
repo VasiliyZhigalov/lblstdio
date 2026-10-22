@@ -115,6 +115,8 @@ class AuditAnnotationsUseCase:
             )
 
         classes = await self._classes.list_by_project(project_id)
+        from app.domain.services.model_classes import classes_for_model
+        classes = classes_for_model(classes, model)
         class_indices = {item.id: item.index_id for item in classes}
         class_by_index = {item.index_id: item for item in classes}
         annotations = await self._annotations.list_by_image_ids(

@@ -8,6 +8,35 @@ class Base(DeclarativeBase):
     pass
 
 
+class ImageDataRow(Base):
+    __tablename__ = "image_data"
+    image_id: Mapped[str] = mapped_column(ForeignKey("images.id", ondelete="CASCADE"), primary_key=True)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    brightness: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sharpness: Mapped[float | None] = mapped_column(Float, nullable=True)
+    import_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+
+
+class ProjectCameraRow(Base):
+    __tablename__ = "project_cameras"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    stream_id: Mapped[str] = mapped_column(ForeignKey("stream_sources.id", ondelete="CASCADE"), primary_key=True)
+
+
+class DataImportRow(Base):
+    __tablename__ = "data_imports"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="PREVIEW")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    processed: Mapped[int] = mapped_column(Integer, default=0)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ProjectRow(Base):
     __tablename__ = "projects"
 
@@ -84,6 +113,7 @@ class ImageRow(Base):
     stream_source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     is_background: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     phash: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     project: Mapped[ProjectRow] = relationship(back_populates="images")
     annotations: Mapped[list["AnnotationRow"]] = relationship(
@@ -251,6 +281,7 @@ class TrainingJobRow(Base):
 
 class ModelVersionRow(Base):
     __tablename__ = "model_versions"
+    class_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     __table_args__ = (
         UniqueConstraint(
             "project_id", "version_number", name="uq_model_version_project_number"

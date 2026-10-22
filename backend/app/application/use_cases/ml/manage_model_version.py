@@ -114,6 +114,7 @@ class ExportModelVersionUseCase:
             ),
             "version_number": model.version_number,
             "name": model.name,
+            "class_metadata": model.class_metadata,
             "display_name": model.display_name,
             "weights_path": model.weights_path,
             "map50": model.map50,
@@ -214,6 +215,8 @@ class UploadModelVersionUseCase:
         data: bytes | None = None,
         source_path: Path | None = None,
         name: str | None = None,
+        activate: bool = True,
+        class_metadata: dict | None = None,
     ) -> ModelVersion:
         project = await self._projects.get_by_id(project_id)
         if project is None:
@@ -257,7 +260,11 @@ class UploadModelVersionUseCase:
                     weights_path=weights_rel,
                     name=display_name,
                 )
-                await self._models.deactivate_stream_models(project_id)
+                candidate.is_active_for_stream = activate
+                if class_metadata:
+                    candidate.class_metadata = class_metadata
+                if activate:
+                    await self._models.deactivate_stream_models(project_id)
                 await self._models.add(candidate)
                 await self._uow.commit()
                 model = candidate

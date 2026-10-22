@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 _VIDEO_FAIL_LIMIT = 30
 _VIDEO_FAIL_SLEEP_S = 0.05
 _IMAGE_FOLDER_FRAME_INTERVAL_S = 0.5
+_STREAM_MAX_PROCESS_FPS = 8.0
+_STREAM_PREVIEW_MAX_WIDTH = 960
 _INGEST_QUEUE_MAXSIZE = 64
 _RECONNECT_DELAY_INITIAL_S = 1.0
 _RECONNECT_DELAY_MAX_S = 30.0
@@ -53,7 +55,7 @@ class OpenCVStreamRunner:
         self._ready: dict[UUID, threading.Event] = {}
         self._latest_jpeg: dict[UUID, bytes] = {}
         self._status: dict[UUID, StreamStatus] = {}
-        self._project_streams: dict[UUID, UUID] = {}
+        self._project_streams: dict[UUID, set[UUID]] = {}
         self._live_config: dict[UUID, StreamTriggerConfig] = {}
         self._allowed_classes: dict[UUID, frozenset[int] | None] = {}
         self._ingest_acks: dict[UUID, list[tuple[bool, float]]] = {}
@@ -81,7 +83,7 @@ class OpenCVStreamRunner:
                 state="starting",
                 captured_count=stream.captured_frames_count,
             )
-            self._project_streams[stream.project_id] = stream.id
+            self._project_streams.setdefault(stream.project_id, set()).add(stream.id)
             thread = threading.Thread(
                 target=self._run,
                 args=(stream, weights_abs_path, stop_event, ready_event),
@@ -141,14 +143,15 @@ class OpenCVStreamRunner:
                     last_capture_at=status.last_capture_at,
                     error_message=status.error_message,
                 )
-            for project_id, sid in list(self._project_streams.items()):
-                if sid == stream_id:
+            for project_id, stream_ids in list(self._project_streams.items()):
+                stream_ids.discard(stream_id)
+                if not stream_ids:
                     self._project_streams.pop(project_id, None)
 
     def stop_project(self, project_id: UUID) -> None:
         with self._lock:
-            stream_id = self._project_streams.get(project_id)
-        if stream_id is not None:
+            stream_ids = tuple(self._project_streams.get(project_id, ()))
+        for stream_id in stream_ids:
             self.stop(stream_id)
 
     def stop_all(self) -> None:
@@ -345,6 +348,7 @@ class OpenCVStreamRunner:
 
         try:
             while not stop_event.is_set():
+                frame_started_at = time.monotonic()
                 for success, captured_at in self._pop_ingest_acks(stream.id):
                     ingest_in_flight = False
                     if success:
@@ -409,6 +413,11 @@ class OpenCVStreamRunner:
                     detections, track_meta, box_xyxy = self._parse_results(
                         results, w, h
                     )
+                    if stream.class_index_mapping is not None:
+                        from dataclasses import replace
+                        mapping = stream.class_index_mapping
+                        detections = [replace(d, class_index=mapping[d.class_index]) for d in detections if d.class_index in mapping]
+                        track_meta = {tid: (sample[0], mapping[sample[1]], sample[2], sample[3]) for tid, sample in track_meta.items() if sample[1] in mapping}
                     detections, track_meta = self._apply_confidence_band(
                         detections, track_meta, config
                     )
@@ -531,7 +540,16 @@ class OpenCVStreamRunner:
 
                 overlay = frame.copy()
                 self._draw_overlay(overlay, track_meta, box_xyxy, config, w, h)
-                ok_enc, buf = cv2.imencode(".jpg", overlay)
+                if w > _STREAM_PREVIEW_MAX_WIDTH:
+                    preview_height = max(1, int(h * _STREAM_PREVIEW_MAX_WIDTH / w))
+                    overlay = cv2.resize(
+                        overlay,
+                        (_STREAM_PREVIEW_MAX_WIDTH, preview_height),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                ok_enc, buf = cv2.imencode(
+                    ".jpg", overlay, [cv2.IMWRITE_JPEG_QUALITY, 80]
+                )
                 if ok_enc:
                     with self._lock:
                         self._latest_jpeg[stream.id] = buf.tobytes()
@@ -554,6 +572,12 @@ class OpenCVStreamRunner:
 
                 if stream.source_type == StreamSourceType.IMAGE_FOLDER:
                     if stop_event.wait(_IMAGE_FOLDER_FRAME_INTERVAL_S):
+                        break
+                else:
+                    frame_delay = (1.0 / _STREAM_MAX_PROCESS_FPS) - (
+                        time.monotonic() - frame_started_at
+                    )
+                    if frame_delay > 0 and stop_event.wait(frame_delay):
                         break
         except Exception as exc:
             logger.exception("stream runner crashed")
@@ -689,7 +713,7 @@ class FakeStreamRunner:
     def __init__(self) -> None:
         self.ingest_queue: queue.Queue[IngestJob] = queue.Queue(maxsize=_INGEST_QUEUE_MAXSIZE)
         self._running: dict[UUID, StreamSource] = {}
-        self._project: dict[UUID, UUID] = {}
+        self._project: dict[UUID, set[UUID]] = {}
         self._jpeg: dict[UUID, bytes] = {}
         self._status: dict[UUID, StreamStatus] = {}
         self._live_config: dict[UUID, StreamTriggerConfig] = {}
@@ -714,7 +738,7 @@ class FakeStreamRunner:
             )
             return
         self._running[stream.id] = stream
-        self._project[stream.project_id] = stream.id
+        self._project.setdefault(stream.project_id, set()).add(stream.id)
         self._jpeg[stream.id] = b"\xff\xd8\xff\xd9"
         self._live_config[stream.id] = stream.config
         self._allowed[stream.id] = allowed_class_indices
@@ -744,9 +768,10 @@ class FakeStreamRunner:
         self._live_config.pop(stream_id, None)
         self._allowed.pop(stream_id, None)
         self._jpeg.pop(stream_id, None)
-        for pid, sid in list(self._project.items()):
-            if sid == stream_id:
-                self._project.pop(pid, None)
+        for project_id, stream_ids in list(self._project.items()):
+            stream_ids.discard(stream_id)
+            if not stream_ids:
+                self._project.pop(project_id, None)
         prev = self._status.get(stream_id)
         self._status[stream_id] = StreamStatus(
             is_running=False,
@@ -758,9 +783,8 @@ class FakeStreamRunner:
         )
 
     def stop_project(self, project_id: UUID) -> None:
-        sid = self._project.get(project_id)
-        if sid:
-            self.stop(sid)
+        for stream_id in tuple(self._project.get(project_id, ())):
+            self.stop(stream_id)
 
     def stop_all(self) -> None:
         for sid in list(self._running.keys()):

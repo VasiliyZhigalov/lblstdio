@@ -72,7 +72,7 @@ class _FakeImages:
         return await self.list_page(project_id)
 
     async def list_page(
-        self, project_id, *, split=None, status=None, offset=0, limit=None
+        self, project_id, *, split=None, status=None, offset=0, limit=None, sort=None
     ):
         images = [item for item in self.images if item.project_id == project_id]
         if split is not None:
