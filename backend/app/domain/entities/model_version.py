@@ -52,7 +52,7 @@ class ModelVersion:
         test_metrics: dict[str, Any] | None = None,
         name: str | None = None,
         model_id: UUID | None = None,
-        is_active_for_stream: bool = True,
+        is_active_for_stream: bool = False,
     ) -> ModelVersion:
         return cls(
             id=model_id or uuid4(),

@@ -116,14 +116,8 @@ class CreateDatasetVersionUseCase:
                 for box in by_image.get(item.id, [])
             )
         ]
-        if pending_images:
-            raise UnverifiedDataException(
-                f"cannot create dataset version: {len(pending_images)} frame(s) "
-                "contain unverified annotations"
-            )
-
         verified_images = [
-            item for item in all_images if item.can_be_included_in_dataset()
+            item for item in all_images if item.can_be_included_in_dataset() and item.id not in {p.id for p in pending_images}
         ]
         if len(verified_images) < self._min_verified:
             raise InsufficientVerifiedDataException(
@@ -328,12 +322,6 @@ class CreateDatasetVersionUseCase:
                 == VerificationStatus.PENDING_REVIEW
             )
         ]
-        if pending_images:
-            raise UnverifiedDataException(
-                f"cannot create dataset version: {len(pending_images)} frame(s) "
-                "contain unverified annotations"
-            )
-
         verified_pairs: list[tuple] = []
         for image in all_images:
             if not image.can_be_included_in_dataset():

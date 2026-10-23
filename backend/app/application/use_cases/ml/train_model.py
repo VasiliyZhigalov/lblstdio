@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import queue
 import shutil
+from datetime import timezone
 from collections.abc import Callable
 from pathlib import Path
 from uuid import UUID
@@ -97,6 +98,8 @@ class TrainModelUseCase:
         base_weights: str | None = None,
         base_model_version_id: UUID | None = None,
         patience: int = 20,
+        schedule_mode: str = "night",
+        not_before=None,
     ) -> TrainingJob:
         project = await self._projects.get_by_id(project_id)
         if project is None:
@@ -137,6 +140,9 @@ class TrainModelUseCase:
             base_weights=resolved_weights,
             patience=patience,
         )
+        if schedule_mode not in {"night", "now"}: raise DomainValidationException("Неизвестный режим расписания")
+        job.schedule_mode = schedule_mode
+        job.not_before = not_before.astimezone(timezone.utc) if not_before is not None and not_before.tzinfo is not None else not_before
         await self._jobs.add(job)
         await self._uow.commit()
 
@@ -230,6 +236,7 @@ class TrainingJobRunner:
         self._device_resolver = device_resolver
         self._sem = asyncio.Semaphore(max(1, max_concurrent))
         self._tasks: set[asyncio.Task] = set()
+        self.admission = None
 
     def schedule(self, job_id: UUID) -> None:
         task = asyncio.create_task(self._run(job_id))
@@ -250,13 +257,15 @@ class TrainingJobRunner:
         """Mark QUEUED/RUNNING jobs as FAILED after process restart."""
         async with self._scopes() as scope:
             orphans = await scope.jobs.list_by_statuses(
-                (TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING)
+                (TrainingJobStatus.RUNNING,)
             )
             for job in orphans:
                 job.mark_failed(_ORPHAN_MESSAGE)
                 await scope.jobs.update(job)
             if orphans:
                 await scope.uow.commit()
+            queued = await scope.jobs.list_by_statuses((TrainingJobStatus.QUEUED,))
+            for job in sorted(queued, key=lambda j: j.created_at): self.schedule(job.id)
             return len(orphans)
 
     def _resolve_device(self, requested: str) -> str:
@@ -268,13 +277,18 @@ class TrainingJobRunner:
 
     async def _run(self, job_id: UUID) -> None:
         try:
-            async with self._sem:
-                await self._run_locked(job_id)
+            if self.admission:
+                async with self.admission(job_id):
+                    async with self._sem: await self._run_locked(job_id)
+            else:
+                async with self._sem: await self._run_locked(job_id)
         except asyncio.CancelledError:
             await asyncio.shield(
                 self._mark_failed(job_id, "cancelled during shutdown")
             )
             raise
+        except Exception as exc:
+            await self._mark_failed(job_id, str(exc))
 
     async def _mark_failed(self, job_id: UUID, message: str) -> None:
         async with self._scopes() as scope:
@@ -286,6 +300,7 @@ class TrainingJobRunner:
                 TrainingJobStatus.FAILED,
             }:
                 return
+            if fresh.status == TrainingJobStatus.QUEUED and message == "cancelled during shutdown": return
             fresh.mark_failed(message)
             await scope.jobs.update(fresh)
             await scope.uow.commit()
@@ -308,7 +323,7 @@ class TrainingJobRunner:
                 job = await jobs.get_by_id(job_id)
                 if job is None:
                     return
-                if job.status in {TrainingJobStatus.COMPLETED, TrainingJobStatus.FAILED}:
+                if job.status != TrainingJobStatus.QUEUED:
                     return
 
                 work_rel = f"projects/{job.project_id}/models/_train_{job.id}"
@@ -433,7 +448,6 @@ class TrainingJobRunner:
                         published = published_root
                         weights_rel = f"{published_root}/best.pt"
 
-                        await models.deactivate_stream_models(project_id)
                         project = await projects.get_by_id(project_id)
                         project_name = project.name if project is not None else "model"
                         candidate = ModelVersion.create(
@@ -449,6 +463,7 @@ class TrainingJobRunner:
                             top1=result.top1,
                             test_metrics=result.test_metrics,
                             name=trained_model_name(project_name, version_number),
+                            is_active_for_stream=False,
                         )
                         await models.add(candidate)
                         model = candidate

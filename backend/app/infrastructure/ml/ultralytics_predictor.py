@@ -31,6 +31,10 @@ class UltralyticsPredictor(IModelPredictor):
     def __init__(self) -> None:
         self._models: dict[str, object] = {}
 
+    def release(self) -> None:
+        """Drop model references before handing GPU memory to training."""
+        self._models.clear()
+
     def predict(
         self,
         weights_path: str,
@@ -87,6 +91,10 @@ def _yolo_class_names(model) -> dict[int, str]:
 class UltralyticsClassificationPredictor(IClassificationPredictor):
     def __init__(self) -> None:
         self._models: dict[str, object] = {}
+
+    def release(self) -> None:
+        """Drop model references before handing GPU memory to training."""
+        self._models.clear()
 
     def class_names(self, weights_path: str) -> dict[int, str]:
         return _yolo_class_names(_cached_model(self._models, weights_path))

@@ -1,465 +1,112 @@
-import { api } from "../api.js";
-import { isClassification } from "../store.js";
-import { escapeHtml, formatRelative, refreshIcons, showModal } from "../utils/dom.js";
 
-function pct(value) {
-  if (value == null || Number.isNaN(Number(value))) return null;
-  return Number(value) * 100;
-}
-
-function formatPct(value) {
-  const n = pct(value);
-  return n == null ? "—" : `${n.toFixed(1)}%`;
-}
-
-function weightsLabel(path) {
-  if (!path) return "yolov8n";
-  const base = String(path).split(/[/\\]/).pop() || path;
-  return base;
-}
-
-function formatTestLine(model, classification) {
-  const metrics = model.test_metrics;
-  if (!metrics) return "Тест: —";
-  if (classification && metrics.top1 != null) return `Тест Top-1 ${formatPct(metrics.top1)}`;
-  if (metrics.map50 != null) {
-    return `Тест mAP@50 ${formatPct(metrics.map50)} · P ${formatPct(metrics.precision)} · R ${formatPct(metrics.recall)}`;
+import {api} from '../api.js';
+import {store} from '../store.js';
+import {escapeHtml as esc} from '../utils/dom.js';
+const pct=n=>n==null?'—':`${(Number(n)*100).toFixed(1)}%`;
+const num=n=>Number(n||0).toLocaleString('ru-RU');
+const date=n=>n?new Date(n).toLocaleString('ru-RU'):'—';
+const button=(text,action='',id='',kind='')=>`<button class="${kind}" data-ml="${action}" data-id="${esc(id)}">${text}</button>`;
+const select=(items,id)=>`<select id="${id}">${items.map(([v,n])=>`<option value="${esc(v)}">${esc(n)}</option>`).join('')}</select>`;
+const field=(label,body,note='')=>`<label class="field"><span>${label}</span>${body}${note?`<small>${note}</small>`:''}</label>`;
+const metric=(title,value,note='')=>`<div class="metric"><span>${title}</span><strong>${value}</strong><small>${note}</small></div>`;
+const download=blob=>{const url=URL.createObjectURL(blob.blob||blob);const a=document.createElement('a');a.href=url;a.download=blob.filename||'export.zip';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+export function initModelsHub({getProject,onTrain,onTrainDataset,onCreateDataset,onUploadModel,onError,onChanged}){
+ const root=document.getElementById('tab-view-models');if(!root)return{refresh:async()=>{}};
+ root.className='hidden h-full overflow-y-auto';
+ let models=[],versions=[],jobs=[],streams=[],statistics={},policy={},tab='models',seq=0,dialog=null,busy=false,query='',activeOnly=false,timer=null,autoJob=null;
+ let currentPid=null;
+ const pid=()=>getProject?.()?.id;
+ const checked=selector=>dialog?.querySelector(selector)?.checked;
+ function close(){dialog?.remove();dialog=null;}
+ function modal(title,body,actions=''){
+  close();dialog=document.createElement('div');dialog.className='mlab';dialog.innerHTML=`<div class="modal-backdrop"><section class="drawer" role="dialog" aria-modal="true" aria-label="${esc(title)}">${button('×','close','','close quiet')}<div class="eyebrow">${esc(getProject()?.name||'')} / Модели и датасеты</div><h1>${title}</h1>${body}<div class="footer">${button('Закрыть','close')}${actions}</div></section></div>`;document.body.append(dialog);dialog.querySelector('button').focus();dialog.addEventListener('click',e=>{if(e.target.classList.contains('modal-backdrop'))close();});
+ }
+ const title=(name,description,actions='')=>`<div class="heading"><div><div class="eyebrow">${esc(getProject()?.name||'')} / Модели и датасеты</div><h1>${name}</h1><p class="muted">${description}</p></div><div class="actions">${actions}</div></div>`;
+ function render(){
+  if(!pid())return;
+  root.innerHTML=`<div class="mlab"><div class="layout"><aside><div class="project"><small>Проект</small>${esc(getProject()?.name||'')}</div>${[['models','Модели'],['datasets','Датасеты'],['auto','Авторазметка'],['queue','Очередь обучения'],['schedule','Расписание GPU']].map(([id,label])=>`<button class="nav full ${tab===id?'active':''}" data-ml-tab="${id}">${label}</button>`).join('')}<div class="aside-note">Сбор: ${esc(policy.collection_start||'07:00')}–${esc(policy.collection_end||'18:00')}<br>Обучение: ${esc(policy.training_start||'18:00')}–${esc(policy.training_end||'07:00')}<br><small>${esc(policy.timezone||'Время сервера')}</small></div></aside><main class="main">${({models:renderModels,datasets:renderDatasets,auto:renderAuto,queue:renderQueue,schedule:renderSchedule}[tab]||renderModels)()}</main></div></div>`;
+ }
+ function renderModels(){
+  const shown=models.filter(m=>(!activeOnly||m.is_active_for_stream)&&`${m.name} ${m.version_number}`.toLowerCase().includes(query.toLowerCase()));
+  return title('Модели','Активность выбирается вручную. Только активные модели доступны в центре сбора.',button('↑ Импорт модели','upload')+button('+ Обучить модель','train','','primary'))+`<div class="metrics">${metric('Моделей',models.length)}${metric('Активны для источников',models.filter(m=>m.is_active_for_stream).length)}${metric('Ожидают обучения',jobs.filter(j=>j.status==='QUEUED').length,'Общая очередь GPU между проектами')}${metric('Выполняется',jobs.filter(j=>j.status==='RUNNING').length)}</div><div class="notice">Новая модель остаётся неактивной до ручного включения. Уже работающие источники сохраняют выбранную версию при её отключении.</div><div class="toolbar"><input id="ml-search" value="${esc(query)}" placeholder="Имя или версия модели"><label class="check"><input id="ml-active-only" type="checkbox" ${activeOnly?'checked':''}>Только активные</label>${button('Сравнить выбранные','compare')}</div><div class="table-wrap"><table><thead><tr><th></th><th>Модель</th><th>Датасет</th><th>Validation</th><th>Test</th><th>Для источников</th><th></th></tr></thead><tbody>${shown.map(m=>`<tr><td><input type="checkbox" aria-label="Сравнить ${esc(m.name)}" data-ml-compare="${m.id}"></td><td><strong>${esc(m.display_name||m.name||'Модель')} · v${m.version_number}</strong><small>${date(m.created_at)}</small></td><td>${esc(versions.find(v=>v.id===m.dataset_version_id)?.name|| (m.dataset_version_id?'Версия удалена':'Импорт'))}</td><td>${m.top1!=null?'Top-1 '+pct(m.top1):'mAP50–95 '+pct(m.map50_95)}</td><td>${m.test_metrics?(m.test_metrics.top1!=null?'Top-1 '+pct(m.test_metrics.top1):'mAP50–95 '+pct(m.test_metrics.map50_95)):'Не оценена'}</td><td><button role="switch" aria-label="Активность ${esc(m.name)}" aria-checked="${!!m.is_active_for_stream}" class="toggle ${m.is_active_for_stream?'on':''}" data-ml="active" data-id="${m.id}"></button></td><td><div class="actions">${button('Метрики','metrics',m.id)}${button('▷ Источник','run',m.id)}${button('⋯','manage',m.id)}</div></td></tr>`).join('')||'<tr><td colspan="7" class="empty">Моделей пока нет. Импортируйте веса или поставьте обучение в очередь.</td></tr>'}</tbody></table></div>`;
+ }
+ function renderDatasets(){const counts=Object.fromEntries((statistics.statuses||[]).map(r=>[r.name,r.count]));return title('Датасеты','Неизменяемые версии готовых данных для обучения.',button('+ Создать версию','dataset','','primary'))+`<div class="metrics">${metric('Готовы к версии',num((counts.VERIFIED||0)+(counts.AUTO_VERIFIED||0)))}${metric('В разметке',num(counts.IN_PROGRESS),'Не блокируют создание')}${metric('Без разметки',num(counts.UNANNOTATED))}${metric('Версий',versions.length)}</div><div class="notice green">Версия формируется из подтверждённых кадров, включая подтверждённый фон. Неподтверждённые кадры, черновики и корзина исключаются. Разметка продолжается независимо.</div><div class="panel">${versions.map(v=>`<section class="dataset-row"><div class="row between"><h3>v${v.version_number} · ${esc(v.name||'Без названия')}</h3><span class="badge ${v.status==='READY'?'':'amber'}">${esc(v.status)}</span></div><p class="muted small">${date(v.created_at)} · ${num(v.train_count)} train · ${num(v.valid_count)} validation · ${num(v.test_count)} test</p><div class="split" title="Train / Validation / Test">${[v.train_count,v.valid_count,v.test_count].map(n=>`<i style="width:${100*Number(n||0)/Math.max(1,Number(v.train_count||0)+Number(v.valid_count||0)+Number(v.test_count||0))}%"></i>`).join('')}</div><div class="actions">${button('Состав','dataset-info',v.id)}${button('Скачать','export-dataset',v.id)}${button('Обучить','train',v.id,'primary')}${button('Переименовать','rename-dataset',v.id)}</div></section>`).join('')||'<div class="empty">Версий пока нет. Создайте снимок готовых кадров.</div>'}</div>`;}
+ function renderQueue(){return title('Очередь обучения','Задания сохраняются на сервере. По умолчанию запуск в ночном окне.',button('+ Добавить обучение','train','','primary'))+`<div class="notice">Окно: ${esc(policy.training_start||'18:00')}–${esc(policy.training_end||'07:00')} (${esc(policy.timezone||'время сервера')}). На GPU выполняется одно ML-задание. Если обучение закончится после начала сбора, источники дождутся освобождения GPU.</div><div class="table-wrap"><table><thead><tr><th>Создано</th><th>Датасет / параметры</th><th>Запуск</th><th>Состояние</th><th></th></tr></thead><tbody>${jobs.map(j=>`<tr><td>${date(j.created_at)}</td><td><strong>${esc(versions.find(v=>v.id===j.dataset_version_id)?.name||'Версия удалена')}</strong><small>${j.epochs} эпох · ${j.imgsz}px · batch ${j.batch_size}</small></td><td>${j.schedule_mode==='night'?'Ночное окно':'При освобождении GPU'}<small>${j.not_before?'Не раньше '+date(j.not_before):''}</small></td><td>${({QUEUED:'В очереди',RUNNING:'Обучается',COMPLETED:'Готово',FAILED:'Завершено с ошибкой'})[j.status]||esc(j.status)}<small>${j.status==='RUNNING'?`${j.current_epoch}/${j.epochs} · ${j.progress_percent}%`:esc(j.error_message||'')}</small></td><td>${j.status==='QUEUED'?button('Отменить','cancel',j.id):j.model_version_id?button('К модели','metrics',j.model_version_id):''}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">Очередь пуста</td></tr>'}</tbody></table></div>`;}
+ function renderSchedule(){return title('Расписание GPU','Единые настройки для всех проектов.')+`<section class="panel"><h2>Сбор данных</h2><div class="equal">${field('Начало',`<input id="ml-collection-start" type="time" value="${esc(policy.collection_start||'07:00')}">`)}${field('Конец',`<input id="ml-collection-end" type="time" value="${esc(policy.collection_end||'18:00')}">`)}</div><h2>Запуск отложенных обучений</h2><div class="equal">${field('Начало',`<input id="ml-training-start" type="time" value="${esc(policy.training_start||'18:00')}">`)}${field('Конец',`<input id="ml-training-end" type="time" value="${esc(policy.training_end||'07:00')}">`)}</div><div class="notice">Часовой пояс сервера: ${esc(policy.timezone||'—')}. Вне окна сбора источники приостановлены и возобновляются автоматически. Обучение, начатое ночью, завершается без прерывания; сбор ждёт освобождения GPU. Изменение расписания применяется ко всем проектам.</div>${policy.error?`<p class="warn">${esc(policy.error)}</p>`:''}${button('Сохранить расписание','save-schedule','','primary')}</section>`;}
+ function renderAuto(){return title('Авторазметка','Создайте предложения и отправьте кадры разметчикам.')+`<div class="two"><section class="panel"><div class="step">01 / Выбор модели и кадров</div>${field('Модель',select(models.map(m=>[m.id,m.display_name||m.name]),'ml-auto-model'))}${field('Кадры',select([['unannotated','Все неразмеченные'],['ids','Выбрать изображения']],'ml-auto-target'))}<label class="field hidden" id="ml-ids-field"><span>Выбранные кадры</span><input id="ml-auto-ids" readonly placeholder="Выберите изображения ниже">${button("Выбрать изображения","pick-images","targets")}</label><div class="notice">Завершённые кадры и кадры, занятые разметчиками, не должны изменяться. Предложения не заменяют подтверждение человеком.</div><div class="step">02 / Параметры</div><div class="row">${[[25,'Больше находок'],[45,'Сбалансированно'],[70,'Только уверенные']].map(([n,t])=>`<button class="preset ${n===45?'active':''}" data-ml-preset="${n}"><strong>${t}</strong><small>Порог ${n}%</small></button>`).join('')}</div>${field('Минимальная уверенность · <b id="ml-conf-value">45%</b>','<input type="range" id="ml-auto-conf" min="1" max="95" value="45">','Выше порог — меньше находок и больше возможных пропусков.')}<details><summary>Дополнительные параметры</summary>${field('Пересечение дублей · NMS IoU','<input id="ml-auto-iou" type="number" min="0.01" max="0.95" step="0.05" value="0.70">','Ниже значение — сильнее удаляются пересекающиеся рамки.')}${field('Проверка согласованности на преобразованиях','<input id="ml-auto-consistency" type="number" min="0.01" max="0.99" step="0.01" value="0.80">','Совпадение рамок на преобразованных изображениях для автоматической проверки.')}</details><label class="check"><input type="checkbox" id="ml-send-queue" checked><div>Отправить результат в очередь разметчикам<small>Кадры без находок останутся неразмеченными.</small></div></label>${button('Запустить авторазметку','auto-start','','primary')}</section><div class="stack"><section class="panel"><h2>Статус запуска</h2><div id="ml-auto-progress" class="muted">${autoJob?`${esc(autoJob.status)} · ${autoJob.total_images_processed||0} кадров · ${autoJob.total_predictions_generated||0} объектов`:'Запусков в этой сессии пока нет'}</div></section><section class="panel"><h2>Предпросмотр перед запуском</h2><p class="muted">Выберите кадр из проекта. Предпросмотр не сохраняет разметку.</p>${field('Кадр проекта','<input id="ml-preview-id" readonly placeholder="Выберите изображение">')}${button('Выбрать кадр','pick-images','preview')}${button('Показать предсказания','preview')}<div id="ml-preview"></div></section></div></div>`;}
+ async function refresh(){
+  const id=pid(),token=++seq;if(!id)return;
+  if(currentPid!==id){currentPid=id;tab='models';close();autoJob=null;}
+  try{
+   const result=await Promise.all([api.listModels(id),api.listDatasetVersions(id),api.trainingQueue(id),api.projectDataStatistics(id),api.computeSchedule(),api.listStreams(id)]);
+   if(token!==seq||pid()!==id)return;
+   [models,versions,jobs,statistics,policy,streams]=result;models=models||[];versions=versions||[];jobs=jobs||[];statistics=statistics||{};policy=policy||{};streams=streams||[];
+   render();
+   let desired;try{desired=JSON.parse(sessionStorage.getItem('lblstdio:open-model')||'null');}catch{}
+   if(desired?.project===id){sessionStorage.removeItem('lblstdio:open-model');if(desired.model)await showMetrics(desired.model);else{tab='queue';render();}}
+  }catch(err){onError?.(err.message);}
+ }
+ async function showMetrics(id){
+  const project=pid(),m=models.find(m=>m.id===id);if(!m)throw Error('Модель не найдена');
+  const detail=await api.modelDetails(project,id);if(pid()!==project)return;
+  const t=detail.test_metrics,v=m.top1!=null,me=t||m,source=t?'Test · независимая оценка':'Validation · независимой оценки нет';
+  const classRows=t?.per_class||[];
+  const history=detail.training?.metrics_history||[];
+  const points=history.map((x,i)=>`${30+i*500/Math.max(1,history.length-1)},${130-110*Number(x.map50_95??x.top1??0)}`).join(' ');
+  modal(`${esc(m.name)} · v${m.version_number}`,`<p class="muted">${source} · ${esc(detail.dataset?.name||'Импорт / исходный датасет недоступен')}</p><div class="metrics">${metric(v?'Top-1':'mAP50–95',pct(v?me.top1:me.map50_95))}${metric('Precision',pct(me.precision))}${metric('Recall',pct(me.recall))}${metric('Инференс',t?.speed_ms?.inference!=null?Number(t.speed_ms.inference).toFixed(1)+' мс':'Нет данных')}</div><div class="notice">${t?'Результат на Test.':'Показаны метрики Validation. Сравнение с Test отсутствует.'} Нельзя напрямую сравнивать модели на разных наборах. Время инференса не равно скорости обработки видеопотока.</div><h2>Качество по классам</h2>${classRows.length?`<div class="table-wrap"><table><tr><th>Класс</th><th>Precision</th><th>Recall</th><th>mAP50–95</th></tr>${classRows.map(c=>`<tr><td>${esc(c.name)}</td><td>${pct(c.precision)}</td><td>${pct(c.recall)}</td><td>${pct(c.map50_95)}</td></tr>`).join('')}</table></div>`:'<p class="muted">Для этой модели метрики по классам не сохранены. Новые обучения сохраняют их после оценки на Test.</p>'}<h2 style="margin-top:20px">История обучения · Validation</h2>${history.length?`<svg class="chart" viewBox="0 0 560 150"><path d="M30 10V130H540" stroke="#40516e" fill="none"/><polyline points="${points}" stroke="#b8beff" stroke-width="2" fill="none"/></svg><p class="small muted">${history.length} эпох · ${v?'Top-1':'mAP50–95'} · значения от 0 до 1</p>`:'<p class="muted">История отсутствует у импортированной модели.</p>'}<dl class="definition"><dt>Размер входа</dt><dd>${detail.training?.imgsz||t?.evaluation?.imgsz||'—'}</dd><dt>Устройство оценки</dt><dd>${esc(t?.evaluation?.device||'Не сохранено')}</dd><dt>Кадров Test</dt><dd>${detail.dataset?.test_count??'—'}</dd><dt>Эпохи</dt><dd>${detail.training?.current_epoch??'—'}</dd></dl>`,button('▷ Источник','run',id,'primary'));
+ }
+ async function runModel(id){const m=models.find(m=>m.id===id);if(!m)throw Error('Модель не найдена');modal('Запустить на источнике',`${m.is_active_for_stream?'':'<div class="notice">Модель неактивна. Включите её в списке моделей перед запуском.</div>'}${field('Источник проекта',select(streams.map(s=>[s.id,s.name]),'ml-run-source'))}<div class="row">${button('+ RTSP','new-rtsp')}${button('+ Папка','new-folder')}${button('+ Видеофайл','new-video')}</div><p class="muted">Для веб-камеры и настройки линии используйте центр сбора. Здесь можно сразу назначить модель существующему источнику.</p>${field('Уверенность','<input id="ml-run-conf" type="number" min="0.01" max="0.95" value="0.45" step="0.05">')}<label class="check"><input id="ml-run-collect" type="checkbox"><div>Собирать кадры по таймеру<small>Выключено — только просмотр предсказаний. Включено — кадр не чаще раза в 5 секунд.</small></div></label><div class="notice">Расписание сбора: ${esc(policy.collection_start)}–${esc(policy.collection_end)}. Вне окна источник будет ожидать. Версия модели фиксируется для сессии.</div>`,m.is_active_for_stream?button('▷ Запустить','run-start',id,'primary'):'');}
+ async function act(action,id){
+  const actionProject=pid();
+  if(action==='close'){close();return;}
+  if(action==='train'){id?onTrainDataset?.(id):onTrain?.();return;}
+  if(action==='dataset'){onCreateDataset?.();return;}
+  if(action==='upload'){const input=document.createElement('input');input.type='file';input.accept='.pt,.onnx';input.onchange=()=>{if(input.files[0])Promise.resolve(onUploadModel?.(input.files[0])).catch(e=>onError?.(e.message));};input.click();return;}
+  if(action==='active'){const m=models.find(m=>m.id===id);await api.setModelActive(pid(),id,!m.is_active_for_stream);await refresh();return;}
+  if(action==='metrics'){await showMetrics(id);return;}
+  if(action==='run'){await runModel(id);return;}
+  if(action==='cancel'){await api.cancelQueuedTraining(id);await refresh();return;}
+  if(action==='export-dataset'){download(await api.exportDatasetVersion(id));return;}
+  if(action==='dataset-info'){const v=versions.find(v=>v.id===id);modal('Состав версии',`<h2>${esc(v.name)}</h2><dl class="definition">${Object.entries(v).filter(([k])=>k.endsWith('_count')).map(([k,n])=>`<dt>${esc(k)}</dt><dd>${num(n)}</dd>`).join('')}</dl><p class="muted">Версия фиксирует данные. Новая разметка входит в следующую версию.</p>`);return;}
+  if(action==='manage'){const m=models.find(m=>m.id===id);modal('Управление моделью',field('Название',`<input id="ml-rename" value="${esc(m.name)}">`),button('Скачать веса','export-model',id)+button('Сохранить имя','rename-model',id,'primary'));return;}
+  if(action==='export-model'){download(await api.exportModel(pid(),id));return;}
+  if(action==='rename-model'){await api.renameModel(pid(),id,dialog.querySelector('#ml-rename').value);close();await refresh();return;}
+  if(action==='rename-dataset'){const v=versions.find(v=>v.id===id);modal('Название датасета',field('Название',`<input id="ml-rename" value="${esc(v.name)}">`),button('Сохранить','save-dataset-name',id,'primary'));return;}
+  if(action==='save-dataset-name'){await api.renameDatasetVersion(id,dialog.querySelector('#ml-rename').value);close();await refresh();return;}
+  if(action==='compare'){
+   const selected=[...root.querySelectorAll('[data-ml-compare]:checked')].map(e=>models.find(m=>m.id===e.dataset.mlCompare));if(selected.length<2)throw Error('Выберите минимум две модели');
+   const comparable=selected.every(m=>m.dataset_version_id&&m.dataset_version_id===selected[0].dataset_version_id&&m.test_metrics);
+   modal('Сравнение моделей',`<div class="notice">${comparable?'Результаты на Test одной версии данных. Сверьте размер входа и устройство.':'Наборы или условия оценки могут различаться. Эти значения не дают прямого рейтинга моделей.'}</div><div class="table-wrap"><table><tr><th>Модель</th><th>Test mAP50–95</th><th>Top-1</th><th>Precision</th><th>Recall</th></tr>${selected.map(m=>`<tr><td>${esc(m.name)}</td><td>${pct(m.test_metrics?.map50_95)}</td><td>${pct(m.test_metrics?.top1)}</td><td>${pct(m.test_metrics?.precision)}</td><td>${pct(m.test_metrics?.recall)}</td></tr>`).join('')}</table></div>`);return;
   }
-  if (metrics.top1 != null) return `Тест Top-1 ${formatPct(metrics.top1)}`;
-  return "Тест: —";
-}
-
-function metricBar(map50) {
-  const n = pct(map50);
-  if (n == null) return "";
-  const width = Math.max(0, Math.min(100, n));
-  return `
-    <div class="h-1 rounded-full bg-zinc-950 border border-zinc-800 overflow-hidden mt-0.5">
-      <div class="h-full bg-emerald-500 rounded-full" style="width:${width}%"></div>
-    </div>`;
-}
-
-function statusBadge(status) {
-  const value = String(status || "").toUpperCase();
-  if (value === "READY") {
-    return "bg-emerald-950 text-emerald-400 border-emerald-800/50";
+  if(action==='save-schedule'){const body={};for(const kind of ['collection','training'])for(const side of ['start','end'])body[`${kind}_${side}`]=root.querySelector(`#ml-${kind}-${side}`).value;policy=await api.saveComputeSchedule(body);render();onError?.('Расписание сохранено');return;}
+  if(action==='pick-images'){
+   const result=await api.queryProjectData(actionProject,{status:'UNANNOTATED',limit:48,offset:0});if(pid()!==actionProject)return;
+   modal('Выберите изображения',`<p class="muted">Неразмеченные кадры · показано ${result.items.length} из ${result.total}. Полные фильтры доступны в «Данных».</p><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">${result.items.map(image=>id==='preview'?`<button data-ml="pick-preview" data-id="${image.id}" style="display:block;padding:4px"><img src="${api.thumbnailUrl(image.id)}" style="width:100%;aspect-ratio:4/3;object-fit:cover" loading="lazy"><small>${esc(image.file_name)}</small></button>`:`<label style="position:relative"><img src="${api.thumbnailUrl(image.id)}" style="width:100%;aspect-ratio:4/3;object-fit:cover" loading="lazy"><input type="checkbox" data-ml-pick-id="${image.id}" style="position:absolute;top:6px;left:6px"><small>${esc(image.file_name)}</small></label>`).join('')}</div>`,id==='preview'?'':button('Использовать выбранные','pick-targets','','primary'));return;
   }
-  if (value === "BUILDING" || value === "PENDING" || value === "PREPARING") {
-    return "bg-amber-950 text-amber-400 border-amber-800/50";
+  if(action==='pick-preview'){root.querySelector('#ml-preview-id').value=id;close();return;}
+  if(action==='pick-targets'){const ids=[...dialog.querySelectorAll('[data-ml-pick-id]:checked')].map(e=>e.dataset.mlPickId);if(!ids.length)throw Error('Выберите хотя бы один кадр');root.querySelector('#ml-auto-ids').value=ids.join(',');close();return;}
+  if(action==='auto-start'){
+   const model=root.querySelector('#ml-auto-model').value;if(!model)throw Error('Выберите модель');
+   const all=root.querySelector('#ml-auto-target').value==='unannotated';const ids=root.querySelector('#ml-auto-ids').value.split(/[\s,]+/).filter(Boolean);
+   if(!all&&!ids.length)throw Error('Укажите ID кадров');
+   autoJob=await api.autoLabel(pid(),model,{all_unannotated:all,image_ids:all?[]:ids,confidence_threshold:Number(root.querySelector('#ml-auto-conf').value)/100,iou_threshold:Number(root.querySelector('#ml-auto-iou').value),consistency_iou_threshold:Number(root.querySelector('#ml-auto-consistency').value),enqueue_for_annotation:root.querySelector('#ml-send-queue').checked});if(pid()!==actionProject)return;render();pollAuto(autoJob.id,actionProject);return;
   }
-  if (value === "FAILED" || value === "ERROR") {
-    return "bg-red-950 text-red-400 border-red-800/50";
+  if(action==='preview'){
+   const model=root.querySelector('#ml-auto-model').value,image=root.querySelector('#ml-preview-id').value.trim();if(!model||!image)throw Error('Выберите модель и ID изображения');
+   const result=await api.previewModel(pid(),model,{image_id:image,confidence_threshold:Number(root.querySelector('#ml-auto-conf').value)/100,iou_threshold:Number(root.querySelector('#ml-auto-iou').value)});
+   if(pid()!==actionProject)return;
+   root.querySelector('#ml-preview').innerHTML=`<div style="position:relative;margin-top:15px"><img src="${api.imageFileUrl(image)}" style="width:100%">${result.boxes.map(b=>`<div class="preview-box" style="left:${(b.x_center-b.width/2)*100}%;top:${(b.y_center-b.height/2)*100}%;width:${b.width*100}%;height:${b.height*100}%"><span>${esc(b.name)} ${pct(b.confidence)}</span></div>`).join('')}</div><p class="muted small">${result.label?esc(result.label.name)+" · "+pct(result.label.confidence):result.boxes.length+" объектов"} · разметка не сохранена</p>`;return;
   }
-  return "bg-zinc-900 text-zinc-400 border-zinc-700";
-}
-
-function datasetRootFromYaml(yamlPath) {
-  if (!yamlPath) return "—";
-  const normalized = String(yamlPath).replace(/\\/g, "/");
-  const idx = normalized.lastIndexOf("/");
-  return idx >= 0 ? normalized.slice(0, idx) : normalized;
-}
-
-function actionBtn(attrs, label, icon, extraClass = "") {
-  return `
-    <button type="button" ${attrs}
-      class="px-2 py-1 text-[10px] rounded-md border border-zinc-700 hover:bg-zinc-800 text-zinc-200 flex items-center justify-center gap-1 ${extraClass}">
-      <i data-lucide="${icon}" class="w-3 h-3"></i>
-      ${label}
-    </button>`;
-}
-
-function downloadBlob({ blob, filename }) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename || "download.zip";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function renderDatasets(versions, handlers) {
-  const grid = document.getElementById("datasets-list-grid");
-  const empty = document.getElementById("datasets-empty");
-  const countLabel = document.getElementById("datasets-count-label");
-  if (!grid || !empty) return;
-
-  if (countLabel) countLabel.textContent = `${versions.length} версий`;
-
-  const has = versions.length > 0;
-  empty.classList.toggle("hidden", has);
-  grid.classList.toggle("hidden", !has);
-
-  if (!has) {
-    grid.innerHTML = "";
-    refreshIcons(empty);
-    return;
-  }
-
-  grid.innerHTML = versions
-    .map((version) => {
-      const ready = String(version.status || "").toUpperCase() === "READY";
-      const root = datasetRootFromYaml(version.yaml_path);
-      const aug = version.augmentation || {};
-      const augBits = [
-        `${aug.resize_width || 640}×${aug.resize_height || 640}`,
-        aug.horizontal_flip ? "hflip" : null,
-        aug.vertical_flip ? "vflip" : null,
-        aug.rotate ? "rot" : null,
-        aug.shear ? "shear" : null,
-        aug.hue_saturation ? "hsv" : null,
-        aug.brightness_contrast ? "bc" : null,
-        aug.blur ? "blur" : null,
-        aug.noise ? "noise" : null,
-        aug.grayscale ? "gray" : null,
-        aug.cutout ? "cutout" : null,
-        aug.multiplier ? `×${aug.multiplier}` : null,
-      ].filter(Boolean);
-      return `
-        <article class="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 space-y-2">
-          <div class="flex items-center justify-between gap-2 min-w-0">
-            <div class="flex items-center gap-1.5 min-w-0">
-              <h3 class="text-xs font-semibold text-zinc-100 truncate">${escapeHtml(version.name || `v${version.version_number}`)}</h3>
-              <span class="px-1 py-0.5 text-[9px] rounded border shrink-0 ${statusBadge(version.status)}">${escapeHtml(version.status || "—")}</span>
-              <span class="text-[9px] font-mono text-zinc-500 shrink-0">v${version.version_number}</span>
-            </div>
-            <span class="text-[9px] text-zinc-500 whitespace-nowrap shrink-0">${escapeHtml(formatRelative(version.created_at))}</span>
-          </div>
-
-          <div class="flex items-center gap-2 text-[10px] font-mono text-zinc-300">
-            <span title="Train images / files">T ${version.train_count ?? 0}/${version.train_file_count ?? 0}</span>
-            <span class="text-zinc-700">·</span>
-            <span title="Valid">V ${version.valid_count ?? 0}/${version.valid_file_count ?? 0}</span>
-            <span class="text-zinc-700">·</span>
-            <span title="Test">Te ${version.test_count ?? 0}/${version.test_file_count ?? 0}</span>
-            ${
-              augBits.length
-                ? `<span class="text-zinc-600 truncate">· ${escapeHtml(augBits.join(" "))}</span>`
-                : ""
-            }
-          </div>
-
-          <div class="rounded border border-zinc-800 bg-zinc-950 px-2 py-1 font-mono text-[10px] text-emerald-300/90 truncate select-text" title="${escapeHtml(root)}">
-            ${escapeHtml(root)}
-          </div>
-
-          <div class="grid grid-cols-2 gap-1.5">
-            ${actionBtn(`data-rename-dataset="${version.id}" data-name="${escapeHtml(version.name || "")}"`, "Переименовать", "pencil")}
-            ${actionBtn(
-              `data-export-dataset="${version.id}" ${ready ? "" : "disabled"}`,
-              "Выгрузить",
-              "download",
-              ready ? "" : "opacity-40 cursor-not-allowed"
-            )}
-            ${actionBtn(`data-delete-dataset="${version.id}" data-name="${escapeHtml(version.name || "")}"`, "Удалить", "trash-2", "text-red-300 border-red-900/50 hover:bg-red-950/40")}
-            <button type="button" data-train-dataset="${version.id}" ${ready ? "" : "disabled"}
-              class="px-2 py-1 text-[10px] rounded-md flex items-center justify-center gap-1 ${
-                ready
-                  ? "bg-violet-700 hover:bg-violet-600 text-white"
-                  : "bg-zinc-800 text-zinc-500 cursor-not-allowed"
-              }">
-              <i data-lucide="brain" class="w-3 h-3"></i>
-              ${ready ? "Обучить" : "Не READY"}
-            </button>
-          </div>
-        </article>`;
-    })
-    .join("");
-
-  grid.querySelectorAll("[data-train-dataset]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (btn.disabled) return;
-      handlers.onTrainDataset?.(btn.dataset.trainDataset);
-    });
-  });
-  grid.querySelectorAll("[data-rename-dataset]").forEach((btn) => {
-    btn.addEventListener("click", () =>
-      handlers.onRenameDataset?.(btn.dataset.renameDataset, btn.dataset.name || "")
-    );
-  });
-  grid.querySelectorAll("[data-export-dataset]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (btn.disabled) return;
-      handlers.onExportDataset?.(btn.dataset.exportDataset);
-    });
-  });
-  grid.querySelectorAll("[data-delete-dataset]").forEach((btn) => {
-    btn.addEventListener("click", () =>
-      handlers.onDeleteDataset?.(btn.dataset.deleteDataset, btn.dataset.name || "")
-    );
-  });
-  refreshIcons(grid);
-}
-
-function renderModels(models, handlers) {
-  const grid = document.getElementById("models-list-grid");
-  const empty = document.getElementById("models-empty");
-  const countLabel = document.getElementById("models-count-label");
-  if (!grid || !empty) return;
-
-  if (countLabel) countLabel.textContent = `${models.length} моделей`;
-
-  const has = models.length > 0;
-  empty.classList.toggle("hidden", has);
-  grid.classList.toggle("hidden", !has);
-  if (!has) {
-    grid.innerHTML = "";
-    refreshIcons(empty);
-    return;
-  }
-
-  grid.innerHTML = models
-    .map((model) => {
-      const classification = isClassification();
-      const metricLabel = classification ? "Top-1" : "mAP@50";
-      const metricValue = classification ? formatPct(model.top1) : formatPct(model.map50);
-      const metricBarValue = classification ? model.top1 : model.map50;
-      return `
-        <article class="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 space-y-2">
-          <div class="flex items-center justify-between gap-2 min-w-0">
-            <div class="min-w-0">
-              <h3 class="text-xs font-semibold text-zinc-100 truncate">${escapeHtml(model.display_name || model.name || `Model v${model.version_number}`)}</h3>
-              <p class="text-[10px] text-zinc-500 truncate">${escapeHtml(weightsLabel(model.weights_path))}</p>
-            </div>
-            <span class="text-[9px] text-zinc-500 whitespace-nowrap shrink-0">${escapeHtml(formatRelative(model.created_at))}</span>
-          </div>
-          <div>
-            <div class="flex justify-between text-[10px]">
-              <span class="text-zinc-400">${metricLabel}</span>
-              <span class="font-mono text-emerald-400">${metricValue}</span>
-            </div>
-            ${metricBar(metricBarValue)}
-          </div>
-          <p class="text-[10px] font-mono text-fuchsia-300">${escapeHtml(formatTestLine(model, classification))}</p>
-          ${
-            classification
-              ? ""
-              : `<div class="flex items-center gap-2 text-[10px] font-mono text-zinc-400">
-            <span>50-95 ${formatPct(model.map50_95)}</span>
-            <span class="text-zinc-700">·</span>
-            <span>P ${formatPct(model.precision)}</span>
-            <span class="text-zinc-700">·</span>
-            <span>R ${formatPct(model.recall)}</span>
-          </div>`
-          }
-          <div class="grid grid-cols-2 gap-1.5">
-            ${actionBtn(`data-rename-model="${model.id}" data-name="${escapeHtml(model.name || "")}"`, "Переименовать", "pencil")}
-            ${actionBtn(`data-export-model="${model.id}"`, "Выгрузить", "download")}
-            ${actionBtn(`data-delete-model="${model.id}" data-name="${escapeHtml(model.display_name || model.name || "")}"`, "Удалить", "trash-2", "text-red-300 border-red-900/50 hover:bg-red-950/40")}
-            <button type="button" data-use-model="${model.id}"
-              class="px-2 py-1 text-[10px] rounded-md bg-amber-700 hover:bg-amber-600 text-white flex items-center justify-center gap-1">
-              <i data-lucide="sparkles" class="w-3 h-3"></i>
-              Авторазметка
-            </button>
-            ${
-              classification
-                ? ""
-                : `<button type="button" data-audit-model="${model.id}"
-              class="px-2 py-1 text-[10px] rounded-md border border-red-800/60 text-red-300 hover:bg-red-950/40 flex items-center justify-center gap-1">
-              <i data-lucide="shield-alert" class="w-3 h-3"></i>
-              Аудит разметки
-            </button>`
-            }
-          </div>
-        </article>`;
-    })
-    .join("");
-
-  grid.querySelectorAll("[data-use-model]").forEach((btn) => {
-    btn.addEventListener("click", () => handlers.onUseModel?.(btn.dataset.useModel));
-  });
-  grid.querySelectorAll("[data-audit-model]").forEach((btn) => {
-    btn.addEventListener("click", () => handlers.onAuditModel?.(btn.dataset.auditModel));
-  });
-  grid.querySelectorAll("[data-rename-model]").forEach((btn) => {
-    btn.addEventListener("click", () =>
-      handlers.onRenameModel?.(btn.dataset.renameModel, btn.dataset.name || "")
-    );
-  });
-  grid.querySelectorAll("[data-export-model]").forEach((btn) => {
-    btn.addEventListener("click", () => handlers.onExportModel?.(btn.dataset.exportModel));
-  });
-  grid.querySelectorAll("[data-delete-model]").forEach((btn) => {
-    btn.addEventListener("click", () =>
-      handlers.onDeleteModel?.(btn.dataset.deleteModel, btn.dataset.name || "")
-    );
-  });
-  refreshIcons(grid);
-}
-
-export function initModelsHub({
-  getProject,
-  onTrain,
-  onTrainDataset,
-  onAutoLabel,
-  onUseModel,
-  onAuditModel,
-  onCreateDataset,
-  onUploadModel,
-  onError,
-  onChanged,
-}) {
-  const openCreate = () => onCreateDataset?.();
-  document.getElementById("btn-models-train")?.addEventListener("click", () => onTrain?.());
-  document.getElementById("btn-models-autolabel")?.addEventListener("click", () => onAutoLabel?.());
-  document.getElementById("btn-models-create-dataset")?.addEventListener("click", openCreate);
-  document.getElementById("btn-models-create-dataset-inner")?.addEventListener("click", openCreate);
-
-  const uploadInput = document.getElementById("model-upload-input");
-  document.getElementById("btn-models-upload")?.addEventListener("click", () => {
-    uploadInput?.click();
-  });
-  uploadInput?.addEventListener("change", async () => {
-    const file = uploadInput.files?.[0];
-    uploadInput.value = "";
-    if (!file) return;
-    try {
-      await onUploadModel?.(file);
-    } catch (err) {
-      onError?.(err.message || String(err));
-    }
-  });
-
-  const renameModal = document.getElementById("rename-asset-modal");
-  const renameForm = document.getElementById("rename-asset-form");
-  const renameInput = document.getElementById("rename-asset-input");
-  const renameTitle = document.getElementById("rename-asset-title");
-  const deleteModal = document.getElementById("delete-asset-modal");
-  const deleteTitle = document.getElementById("delete-asset-title");
-  const deleteText = document.getElementById("delete-asset-text");
-
-  let pendingRename = null;
-  let pendingDelete = null;
-  let hub = null;
-
-  function closeRename() {
-    pendingRename = null;
-    showModal(renameModal, false);
-  }
-
-  function closeDelete() {
-    pendingDelete = null;
-    showModal(deleteModal, false);
-  }
-
-  async function refresh() {
-    const project = getProject?.();
-    if (!project) {
-      renderDatasets([], {});
-      renderModels([], {});
-      return;
-    }
-    try {
-      const [versions, models] = await Promise.all([
-        api.listDatasetVersions(project.id),
-        api.listModels(project.id),
-      ]);
-      const sortedVersions = [...(versions || [])].sort(
-        (a, b) => (b.version_number || 0) - (a.version_number || 0)
-      );
-      const handlers = {
-        onTrainDataset,
-        onUseModel,
-        onAuditModel,
-        onRenameDataset: (id, name) => {
-          pendingRename = { kind: "dataset", id };
-          renameTitle.textContent = "Переименовать датасет";
-          renameInput.value = name || "";
-          showModal(renameModal, true);
-          renameInput.focus();
-          renameInput.select();
-        },
-        onExportDataset: async (id) => {
-          try {
-            downloadBlob(await api.exportDatasetVersion(id));
-          } catch (err) {
-            onError?.(err.message);
-          }
-        },
-        onDeleteDataset: (id, name) => {
-          pendingDelete = { kind: "dataset", id };
-          deleteTitle.textContent = "Удалить датасет?";
-          deleteText.textContent =
-            `Удалить «${name || id}»? Связанные модели останутся. Это действие нельзя отменить.`;
-          showModal(deleteModal, true);
-        },
-        onRenameModel: (id, name) => {
-          pendingRename = { kind: "model", id };
-          renameTitle.textContent = "Переименовать модель";
-          renameInput.value = name || "";
-          showModal(renameModal, true);
-          renameInput.focus();
-          renameInput.select();
-        },
-        onExportModel: async (id) => {
-          const projectId = getProject?.()?.id;
-          if (!projectId) return;
-          try {
-            downloadBlob(await api.exportModel(projectId, id));
-          } catch (err) {
-            onError?.(err.message);
-          }
-        },
-        onDeleteModel: (id, name) => {
-          pendingDelete = { kind: "model", id };
-          deleteTitle.textContent = "Удалить модель?";
-          deleteText.textContent =
-            `Удалить «${name || id}» и её веса? Это действие нельзя отменить.`;
-          showModal(deleteModal, true);
-        },
-      };
-      renderDatasets(sortedVersions, handlers);
-      renderModels(models || [], handlers);
-      refreshIcons(document.getElementById("tab-view-models"));
-    } catch (err) {
-      onError?.(err.message);
-      renderDatasets([], {});
-      renderModels([], {});
-    }
-  }
-
-  document.getElementById("btn-cancel-rename-asset")?.addEventListener("click", closeRename);
-  document.getElementById("btn-cancel-delete-asset")?.addEventListener("click", closeDelete);
-
-  renameForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!pendingRename) return;
-    const name = renameInput.value.trim();
-    if (!name) return;
-    const project = getProject?.();
-    try {
-      if (pendingRename.kind === "dataset") {
-        await api.renameDatasetVersion(pendingRename.id, name);
-      } else if (project) {
-        await api.renameModel(project.id, pendingRename.id, name);
-      }
-      closeRename();
-      await refresh();
-      onChanged?.();
-    } catch (err) {
-      onError?.(err.message);
-    }
-  });
-
-  document.getElementById("btn-confirm-delete-asset")?.addEventListener("click", async () => {
-    if (!pendingDelete) return;
-    const project = getProject?.();
-    try {
-      if (pendingDelete.kind === "dataset") {
-        await api.deleteDatasetVersion(pendingDelete.id);
-      } else if (project) {
-        await api.deleteModel(project.id, pendingDelete.id);
-      }
-      closeDelete();
-      await refresh();
-      onChanged?.();
-    } catch (err) {
-      onError?.(err.message);
-    }
-  });
-
-  hub = { refresh };
-  return hub;
+  if(['new-rtsp','new-folder','new-video'].includes(action)){modal('Новый источник',field('Название','<input id="ml-source-name" placeholder="Камера / видео / папка">')+field(action==='new-rtsp'?'Адрес RTSP':action==='new-folder'?'Папка на сервере':'Видеофайл',action==='new-video'?'<input type="file" id="ml-source-value" accept="video/*">':'<input id="ml-source-value">'),button('Добавить источник',`create-${action.slice(4)}`,'','primary'));return;}
+  if(action.startsWith('create-')){const name=dialog.querySelector('#ml-source-name').value,value=dialog.querySelector('#ml-source-value');if(action==='create-video'){if(!value.files[0])throw Error('Выберите видео');await api.uploadStreamVideo(pid(),value.files[0],name);}else if(action==='create-folder')await api.createImageFolderStream(pid(),{name,folder_path:value.value});else await api.createRtspStream(pid(),{name,rtsp_url:value.value});streams=await api.listStreams(pid());close();onError?.('Источник добавлен. Выберите модель и откройте «Источник» ещё раз.');return;}
+  if(action==='run-start'){const sid=dialog.querySelector('#ml-run-source').value;if(!sid)throw Error('Выберите или добавьте источник');const stream=streams.find(s=>s.id===sid);await api.putStreamTriggers(sid,{model_version_id:id,config:{...stream.config,confidence_min:Number(dialog.querySelector('#ml-run-conf').value),timer_enabled:checked('#ml-run-collect'),timer_interval_seconds:5,track_stable_enabled:false,tripwire_enabled:false}});await api.startStream(sid);close();location.hash='#/streams';onError?.('Источник включён с учётом расписания.');return;}
+ }
+ async function pollAuto(id,project){clearTimeout(timer);try{autoJob=await api.getAutoLabelJob(id);if(pid()!==project)return;if(tab==='auto'){const el=root.querySelector('#ml-auto-progress');if(el)el.textContent=`${autoJob.status} · ${autoJob.total_images_processed||0} кадров · ${autoJob.total_predictions_generated||0} объектов`;}if(['PENDING','RUNNING'].includes(autoJob.status))timer=setTimeout(()=>pollAuto(id,project),2000);else onError?.(autoJob.status==='FAILED'?autoJob.error_message:'Авторазметка завершена');}catch(e){onError?.(e.message);}}
+ document.addEventListener('click',e=>{const nav=e.target.closest('[data-ml-tab]');if(nav&&root.contains(nav)){tab=nav.dataset.mlTab;render();return;}const preset=e.target.closest('[data-ml-preset]');if(preset){root.querySelector('#ml-auto-conf').value=preset.dataset.mlPreset;root.querySelector('#ml-conf-value').textContent=preset.dataset.mlPreset+'%';root.querySelectorAll('[data-ml-preset]').forEach(b=>b.classList.toggle('active',b===preset));return;}const target=e.target.closest('[data-ml]');if(!target||(!root.contains(target)&&!dialog?.contains(target))||busy)return;busy=true;target.disabled=true;act(target.dataset.ml,target.dataset.id).catch(e=>onError?.(e.message)).finally(()=>{busy=false;target.disabled=false;});});
+ root.addEventListener('input',e=>{if(e.target.id==='ml-search'){query=e.target.value;const start=e.target.selectionStart;render();const input=root.querySelector('#ml-search');input.focus();input.setSelectionRange(start,start);}if(e.target.id==='ml-auto-conf')root.querySelector('#ml-conf-value').textContent=e.target.value+'%';});
+ root.addEventListener('change',e=>{if(e.target.id==='ml-active-only'){activeOnly=e.target.checked;render();}if(e.target.id==='ml-auto-target')root.querySelector('#ml-ids-field').classList.toggle('hidden',e.target.value!=='ids');});
+ window.addEventListener('training-result-open',()=>{if(store.get('projectTab')==='models')refresh();});
+ document.addEventListener('keydown',e=>{if(e.key==='Escape')close();});
+ const poll=setInterval(()=>{if(store.get('projectTab')==='models'&&['queue','models'].includes(tab)&&!dialog&&!busy&&!root.contains(document.activeElement)&&!root.querySelector('[data-ml-compare]:checked'))refresh();},15000);poll.unref?.();
+ return {refresh,showMetrics};
 }

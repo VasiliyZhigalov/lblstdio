@@ -188,7 +188,7 @@ class TestDatasetVersionsApi:
 
         response = client.post(f"/api/v1/projects/{project_id}/dataset-versions")
         assert response.status_code == 400, response.text
-        assert "unverified" in response.json()["detail"].lower()
+        assert "need at least" in response.json()["detail"].lower()
 
 
 def test_dataset_version_rename_export_delete(client: TestClient) -> None:

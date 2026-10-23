@@ -60,6 +60,8 @@ def _job_to_read(job) -> TrainingJobRead:
         status=job.status.value,
         epochs=job.epochs,
         patience=job.patience,
+        schedule_mode=job.schedule_mode,
+        not_before=job.not_before,
         batch_size=job.batch_size,
         imgsz=job.imgsz,
         device=job.device,
@@ -137,6 +139,8 @@ async def start_training(
     job = await use_case.execute(
         project_id,
         payload.dataset_version_id,
+        schedule_mode=payload.schedule_mode,
+        not_before=payload.not_before,
         epochs=payload.epochs,
         batch_size=payload.batch_size,
         imgsz=payload.imgsz,
@@ -258,6 +262,7 @@ async def auto_label(
         confidence_threshold=payload.confidence_threshold,
         iou_threshold=payload.iou_threshold,
         consistency_iou_threshold=payload.consistency_iou_threshold,
+        enqueue_for_annotation=payload.enqueue_for_annotation,
     )
     return _auto_to_read(job)
 

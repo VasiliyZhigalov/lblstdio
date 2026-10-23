@@ -8,6 +8,19 @@ class Base(DeclarativeBase):
     pass
 
 
+class AnnotationTaskRow(Base):
+    __tablename__ = "annotation_tasks"
+    image_id: Mapped[str] = mapped_column(ForeignKey("images.id", ondelete="CASCADE"), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    state: Mapped[str] = mapped_column(String(16), default="QUEUED", index=True)
+    owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ImageDataRow(Base):
     __tablename__ = "image_data"
     image_id: Mapped[str] = mapped_column(ForeignKey("images.id", ondelete="CASCADE"), primary_key=True)
@@ -250,6 +263,12 @@ class DatasetItemRow(Base):
     dataset_version: Mapped[DatasetVersionRow] = relationship(back_populates="items")
 
 
+class ComputePolicyRow(Base):
+    __tablename__ = "compute_policy"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    settings: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
 class TrainingJobRow(Base):
     __tablename__ = "training_jobs"
 
@@ -267,6 +286,8 @@ class TrainingJobRow(Base):
     imgsz: Mapped[int] = mapped_column(Integer, nullable=False, default=640)
     device: Mapped[str] = mapped_column(String(32), nullable=False, default="auto")
     base_weights: Mapped[str] = mapped_column(String(255), nullable=False, default="yolov8n.pt")
+    schedule_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="night")
+    not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     patience: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     metrics_history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     test_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -321,6 +342,7 @@ class AutoLabelJobRow(Base):
         index=True,
     )
     model_version_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    enqueue_for_annotation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False)
     iou_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
     consistency_iou_threshold: Mapped[float] = mapped_column(

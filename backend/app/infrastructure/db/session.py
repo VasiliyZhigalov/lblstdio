@@ -18,6 +18,8 @@ _DATASET_VERSION_COLUMNS = (
 )
 
 _TRAINING_JOB_COLUMNS = (
+    ("schedule_mode", "TEXT NOT NULL DEFAULT 'night'"),
+    ("not_before", "DATETIME"),
     ("patience", "INTEGER NOT NULL DEFAULT 20"),
     ("stopped_early", "INTEGER NOT NULL DEFAULT 0"),
     ("test_metrics", "TEXT"),
@@ -42,6 +44,7 @@ _PROJECT_COLUMNS = (
 
 _AUTO_LABEL_JOB_COLUMNS = (
     ("iou_threshold", "FLOAT NOT NULL DEFAULT 0.7"),
+    ("enqueue_for_annotation", "INTEGER NOT NULL DEFAULT 0"),
     ("consistency_iou_threshold", "FLOAT NOT NULL DEFAULT 0.8"),
 )
 
@@ -78,6 +81,9 @@ def _ensure_sqlite_columns(connection) -> None:
     connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_images_data_page ON images (project_id, deleted_at, created_at, id)")
     connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_images_data_status ON images (project_id, status)")
     connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_images_data_source ON images (project_id, stream_source_id)")
+    connection.exec_driver_sql("UPDATE images SET status='REQUIRES_REVIEW' WHERE status='REQUIRES_RECHECK'")
+    connection.exec_driver_sql("UPDATE annotation_tasks SET state='QUEUED', reason=NULL WHERE state='ISSUE'")
+    connection.exec_driver_sql("UPDATE images SET status='IN_PROGRESS' WHERE id IN (SELECT image_id FROM annotation_tasks WHERE state != 'DONE') AND status != 'IN_PROGRESS'")
 
 
 def _ensure_table_columns(connection, table: str, columns: tuple[tuple[str, str], ...]) -> None:

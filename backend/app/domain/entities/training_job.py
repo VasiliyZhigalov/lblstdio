@@ -20,6 +20,8 @@ class TrainingJob:
     imgsz: int
     device: str
     base_weights: str
+    schedule_mode: str = "night"
+    not_before: datetime | None = None
     patience: int = 20
     metrics_history: list[dict[str, Any]] = field(default_factory=list)
     test_metrics: dict[str, Any] | None = None

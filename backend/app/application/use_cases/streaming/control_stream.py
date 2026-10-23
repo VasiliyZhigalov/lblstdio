@@ -158,6 +158,7 @@ class StartStreamUseCase:
             )
         )
         status = await asyncio.to_thread(self._runner.wait_until_ready, stream.id, 45.0)
+        if status.state in {"scheduled", "waiting_gpu"}: return
         if status.state != "running" or not status.is_running:
             await asyncio.to_thread(self._runner.stop, stream.id)
             message = status.error_message or f"stream failed to start ({status.state})"

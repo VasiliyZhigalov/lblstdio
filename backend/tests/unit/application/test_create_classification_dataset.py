@@ -16,7 +16,7 @@ from app.domain.entities.image import Image
 from app.domain.entities.image_label import ImageLabel
 from app.domain.entities.project import Project
 from app.domain.enums import ImageStatus, ProjectTaskType, SplitType
-from app.domain.exceptions import DomainValidationException, UnverifiedDataException
+from app.domain.exceptions import InsufficientVerifiedDataException, DomainValidationException, UnverifiedDataException
 from app.infrastructure.storage.zip_packer import ZipArchivePacker
 from tests.unit.application.test_create_dataset_version import (
     _FakeAnnotations,
@@ -171,7 +171,7 @@ async def test_classification_dataset_blocks_pending_review() -> None:
         min_verified_images=1,
         labels=_FakeLabels({image.id: label}),
     )
-    with pytest.raises(UnverifiedDataException):
+    with pytest.raises(InsufficientVerifiedDataException):
         await use_case.execute(project.id)
 
 

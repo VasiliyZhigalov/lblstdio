@@ -215,7 +215,7 @@ class UploadModelVersionUseCase:
         data: bytes | None = None,
         source_path: Path | None = None,
         name: str | None = None,
-        activate: bool = True,
+        activate: bool = False,
         class_metadata: dict | None = None,
     ) -> ModelVersion:
         project = await self._projects.get_by_id(project_id)
@@ -263,8 +263,6 @@ class UploadModelVersionUseCase:
                 candidate.is_active_for_stream = activate
                 if class_metadata:
                     candidate.class_metadata = class_metadata
-                if activate:
-                    await self._models.deactivate_stream_models(project_id)
                 await self._models.add(candidate)
                 await self._uow.commit()
                 model = candidate

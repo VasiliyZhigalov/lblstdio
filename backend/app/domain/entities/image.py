@@ -76,14 +76,7 @@ class Image:
             for item in active
         ):
             self.is_background = False
-            confirmed = any(
-                item.verification_status
-                in (VerificationStatus.VERIFIED, VerificationStatus.AUTO_VERIFIED)
-                for item in active
-            )
-            self.status = (
-                ImageStatus.REQUIRES_RECHECK if confirmed else ImageStatus.REQUIRES_REVIEW
-            )
+            self.status = ImageStatus.REQUIRES_REVIEW
         elif not active:
             self.status = (
                 ImageStatus.VERIFIED if self.is_background else ImageStatus.UNANNOTATED

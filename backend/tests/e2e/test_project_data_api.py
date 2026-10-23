@@ -141,6 +141,7 @@ def test_model_import_preserves_head_mapping_and_current_active_model(client, mo
     pid = project(client)
     old = client.post(f"/api/v1/projects/{pid}/models/upload", files={"file": ("old.pt", b"old weights")})
     assert old.status_code == 201, old.text
+    assert client.put(f"/api/v1/projects/{pid}/models/{old.json()['id']}/active", json={"active": True}).status_code == 200
     a = client.post(f"/api/v1/projects/{pid}/classes", json={"name": "A", "color_hex": "#123456"}).json()
     b = client.post(f"/api/v1/projects/{pid}/classes", json={"name": "B", "color_hex": "#654321"}).json()
     def inspect(path, task):

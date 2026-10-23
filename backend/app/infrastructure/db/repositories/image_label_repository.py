@@ -34,6 +34,8 @@ class SqliteImageLabelRepository(IImageLabelRepository):
         return [row_to_label(row) for row in result]
 
     async def upsert(self, label: ImageLabel) -> None:
+        from app.infrastructure.db.annotation_queue import protect_background_write
+        await protect_background_write(self._session, label.image_id)
         await self._session.execute(
             delete(ImageLabelRow).where(ImageLabelRow.image_id == str(label.image_id))
         )
@@ -41,6 +43,8 @@ class SqliteImageLabelRepository(IImageLabelRepository):
         await self._session.flush()
 
     async def delete_by_image_id(self, image_id: UUID) -> None:
+        from app.infrastructure.db.annotation_queue import protect_background_write
+        await protect_background_write(self._session, image_id)
         await self._session.execute(
             delete(ImageLabelRow).where(ImageLabelRow.image_id == str(image_id))
         )

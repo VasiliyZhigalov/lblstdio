@@ -31,8 +31,9 @@ const virtual = {
 };
 
 function statusMeta(image) {
+  if (image.status === "IN_PROGRESS") return { label: "Черновик · в разметке", className: "text-indigo-300" };
   if (image.status === "REQUIRES_RECHECK") {
-    return { label: "Подозрительное", className: "text-red-400" };
+    return { label: "На проверку", className: "text-red-400" };
   }
   if (image.status === "REQUIRES_REVIEW") {
     return { label: "На проверке", className: "text-amber-400" };
@@ -130,26 +131,10 @@ export function getFilmstripImages() {
 }
 
 function boxCountLabel(image) {
-  if (isClassification()) {
-    const label = image.label;
-    if (!label) return "без класса";
-    const cls = (store.get("classes") || []).find((item) => item.id === label.class_id);
-    const name = cls?.name || "класс";
-    if (label.verification_status === "PENDING_REVIEW") {
-      return `${name} ${Math.round(Number(label.confidence || 0) * 100)}%`;
-    }
-    return name;
-  }
   const counts = store.get("boxCounts") || {};
-  const known = Object.hasOwn(counts, image.id);
-  if (image.is_background && image.status === "VERIFIED") {
-    return "бэкграунд";
-  }
-  if (!known) {
-    if (image.status === "UNANNOTATED") return "0 боксов";
-    return "размечен";
-  }
-  const n = counts[image.id];
+  const current = store.get("currentImage");
+  const n = current?.id === image.id ? (store.get("annotations") || []).length : counts[image.id] ?? image.annotation_count;
+  if (n == null) return "— боксов";
   const mod10 = n % 10;
   const mod100 = n % 100;
   let word = "боксов";
@@ -197,7 +182,6 @@ function renderFilters() {
 
 function cardHtml(image, currentId) {
   const active = image.id === currentId;
-  const status = statusMeta(image);
   return `
     <button type="button" data-image-id="${image.id}" data-film-card
       class="w-full text-left rounded-lg overflow-hidden border transition ${
@@ -209,14 +193,7 @@ function cardHtml(image, currentId) {
         <img src="${api.imageFileUrl(image.id)}" alt="${escapeHtml(image.file_name)}"
           class="w-full h-full object-cover" loading="lazy" decoding="async" />
       </div>
-      <div class="p-2 space-y-1">
-        <div class="text-[11px] font-mono truncate ${active ? "text-white" : "text-zinc-300"}">${escapeHtml(image.file_name)}</div>
-        <div class="text-[10px] text-zinc-500">${image.width}×${image.height}</div>
-        <div class="flex items-center justify-between gap-1">
-          <span class="text-[10px] ${status.className}" data-status-label>${status.label}</span>
-        </div>
-        <div class="text-[10px] text-zinc-500" data-box-count>${boxCountLabel(image)}${modelConfidenceLabel(image)}</div>
-      </div>
+      <div class="p-2 text-[11px] text-zinc-400" data-box-count>${boxCountLabel(image)}</div>
     </button>`;
 }
 
@@ -329,7 +306,7 @@ function syncVisibleMeta() {
     const image = virtual.images.find((item) => item.id === id);
     if (!image) return;
     const countEl = card.querySelector("[data-box-count]");
-    if (countEl) countEl.textContent = `${boxCountLabel(image)}${modelConfidenceLabel(image)}`;
+    if (countEl) countEl.textContent = boxCountLabel(image);
     const statusEl = card.querySelector("[data-status-label]");
     if (statusEl) {
       const status = statusMeta(image);

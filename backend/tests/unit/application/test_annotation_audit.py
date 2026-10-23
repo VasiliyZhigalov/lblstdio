@@ -177,7 +177,7 @@ async def test_suspicious_audit_keeps_labels_and_overlays_model_boxes() -> None:
 
     stored = annotations.store[image.id]
     assert results[0].suspicious is True
-    assert images.by_id[image.id].status == ImageStatus.REQUIRES_RECHECK
+    assert images.by_id[image.id].status == ImageStatus.REQUIRES_REVIEW
     assert original in stored or any(item.id == original.id for item in stored)
     overlays = [
         item

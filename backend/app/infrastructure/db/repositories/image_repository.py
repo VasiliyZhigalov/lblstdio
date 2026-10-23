@@ -8,7 +8,7 @@ from app.application.ports.repositories.image_repository import IImageRepository
 from app.domain.entities.image import Image
 from app.domain.enums import ImageListSort, ImageStatus, SourceType, SplitType
 from app.infrastructure.db.mappers import image_to_row, row_to_image
-from app.infrastructure.db.tables import AnnotationRow, DatasetItemRow, ImageLabelRow, ImageRow
+from app.infrastructure.db.tables import AnnotationRow, DatasetItemRow, ImageLabelRow, ImageRow, AnnotationTaskRow
 
 
 def _model_confidence_expr():
@@ -118,6 +118,9 @@ class SqliteImageRepository(IImageRepository):
         row = await self._session.get(ImageRow, str(image.id))
         if row is None:
             return
+        task = await self._session.get(AnnotationTaskRow, str(image.id))
+        if task is not None and task.state != "DONE":
+            image.status = ImageStatus.IN_PROGRESS
         row.file_path = image.file_path
         row.file_name = image.file_name
         row.width = image.width

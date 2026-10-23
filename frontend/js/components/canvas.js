@@ -163,7 +163,6 @@ export class AnnotationCanvas {
     const box = (store.get("annotations") || []).find((item) => item.id === selectedId);
     if (
       store.get("hideAnnotations") ||
-      store.get("matchingInProgress") ||
       !box ||
       !this.image
     ) {
@@ -227,18 +226,10 @@ export class AnnotationCanvas {
   }
 
   setCursor(value) {
-    if (store.get("matchingInProgress")) {
-      this.container.style.cursor = "wait";
-      return;
-    }
     this.container.style.cursor = value;
   }
 
   updateHoverCursor(event) {
-    if (store.get("matchingInProgress")) {
-      this.setCursor("wait");
-      return;
-    }
     if (this.isPanning) {
       this.setCursor("grabbing");
       return;
@@ -303,11 +294,11 @@ export class AnnotationCanvas {
   }
 
   shouldPan(event) {
-    return event.button === 1 || (event.button === 0 && store.get("spaceHeld"));
+    return event.button === 1 || (event.button === 0 && event.altKey);
   }
 
   onMouseDown(event) {
-    if (!this.image || store.get("matchingInProgress")) return;
+    if (!this.image) return;
     if (this.shouldPan(event)) {
       event.preventDefault();
       this.isPanning = true;
@@ -316,6 +307,7 @@ export class AnnotationCanvas {
       this.setCursor("grabbing");
       return;
     }
+    if (store.get("annotationReadonly")) return;
     if (event.button !== 0) return;
     if (store.get("currentProject")?.task_type === "CLASSIFICATION") return;
 
@@ -373,6 +365,11 @@ export class AnnotationCanvas {
         y: this.panStart.panY + (screen.y - this.panStart.y),
       };
       this.scheduleRender();
+      return;
+    }
+    if (store.get("annotationReadonly")) {
+      this.isDrawing = false; this.isDragging = false; this.activeHandle = null;
+      this.draft = null; this.dragBoxId = null;
       return;
     }
 
@@ -559,108 +556,7 @@ export class AnnotationCanvas {
       ctx.restore();
     }
 
-    this.drawMatchDebug(ctx);
     this.syncFloatActions();
-  }
-
-  drawMatchDebug(ctx) {
-    const debug = store.get("matchDebug");
-    if (!debug?.transform || !store.get("showMatchDebug")) return;
-    const t = debug.transform;
-    const arrows = debug.arrows || [];
-
-    const toScreen = (ix, iy) => ({
-      x: ix * this.zoom + this.pan.x,
-      y: iy * this.zoom + this.pan.y,
-    });
-
-    ctx.save();
-    // Per-box arrows: identity place → transformed place
-    for (const arrow of arrows) {
-      const from = toScreen(arrow.from_x, arrow.from_y);
-      const to = toScreen(arrow.to_x, arrow.to_y);
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
-      const len = Math.hypot(dx, dy);
-
-      ctx.beginPath();
-      ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = "rgba(250, 204, 21, 0.85)";
-      ctx.lineWidth = 1.5;
-      ctx.moveTo(from.x, from.y);
-      ctx.lineTo(to.x, to.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // start = yellow dot (before), end = cyan arrow (after)
-      ctx.fillStyle = "#facc15";
-      ctx.beginPath();
-      ctx.arc(from.x, from.y, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-
-      if (len > 4) {
-        const angle = Math.atan2(dy, dx);
-        ctx.fillStyle = "#22d3ee";
-        ctx.beginPath();
-        ctx.moveTo(to.x, to.y);
-        ctx.lineTo(to.x - 10 * Math.cos(angle - 0.4), to.y - 10 * Math.sin(angle - 0.4));
-        ctx.lineTo(to.x - 10 * Math.cos(angle + 0.4), to.y - 10 * Math.sin(angle + 0.4));
-        ctx.closePath();
-        ctx.fill();
-      }
-    }
-
-    // Global image-center vector (tx, ty) in image pixels
-    const { w: imgW, h: imgH } = this.imgSize();
-    const origin = toScreen(imgW / 2, imgH / 2);
-    const tip = toScreen(imgW / 2 + t.tx, imgH / 2 + t.ty);
-    ctx.strokeStyle = "#f97316";
-    ctx.fillStyle = "#f97316";
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(origin.x, origin.y);
-    ctx.lineTo(tip.x, tip.y);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(origin.x, origin.y, 4, 0, Math.PI * 2);
-    ctx.fill();
-    const glen = Math.hypot(tip.x - origin.x, tip.y - origin.y);
-    if (glen > 4) {
-      const angle = Math.atan2(tip.y - origin.y, tip.x - origin.x);
-      ctx.beginPath();
-      ctx.moveTo(tip.x, tip.y);
-      ctx.lineTo(tip.x - 12 * Math.cos(angle - 0.4), tip.y - 12 * Math.sin(angle - 0.4));
-      ctx.lineTo(tip.x - 12 * Math.cos(angle + 0.4), tip.y - 12 * Math.sin(angle + 0.4));
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    // HUD
-    const lines = [
-      "MATCH DEBUG",
-      `Δx=${t.tx.toFixed(1)}px  Δy=${t.ty.toFixed(1)}px`,
-      `rot=${t.rotation_deg.toFixed(2)}°  scale=${t.scale.toFixed(4)}`,
-      `conf=${(t.match_score * 100).toFixed(1)}%`,
-      Math.hypot(t.tx, t.ty) < 2
-        ? "⚠ вектор ≈ 0 (кадры почти совпали)"
-        : `‖Δ‖=${Math.hypot(t.tx, t.ty).toFixed(1)}px`,
-    ];
-    ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
-    const pad = 8;
-    const lineH = 16;
-    const boxW = Math.max(...lines.map((line) => ctx.measureText(line).width)) + pad * 2;
-    const boxH = lines.length * lineH + pad * 2;
-    ctx.fillStyle = "rgba(9, 9, 11, 0.82)";
-    ctx.strokeStyle = "rgba(249, 115, 22, 0.7)";
-    ctx.lineWidth = 1;
-    ctx.fillRect(10, 10, boxW, boxH);
-    ctx.strokeRect(10, 10, boxW, boxH);
-    ctx.fillStyle = "#fdba74";
-    lines.forEach((line, index) => {
-      ctx.fillStyle = index === 0 ? "#fb923c" : line.startsWith("⚠") ? "#fbbf24" : "#e4e4e7";
-      ctx.fillText(line, 10 + pad, 10 + pad + (index + 1) * lineH - 4);
-    });
-    ctx.restore();
   }
 
   drawRecheckHint(ctx) {

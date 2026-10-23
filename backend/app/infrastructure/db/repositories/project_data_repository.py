@@ -140,6 +140,9 @@ class SqliteProjectDataRepository:
             if len(ids) > 5000: raise DomainValidationException("Не более 5000 изображений за операцию")
             q = q.where(I.id.in_(ids))
         action = payload["action"]
+        if action != "tag":
+            from app.infrastructure.db.tables import AnnotationTaskRow
+            q = q.where(~select(AnnotationTaskRow.image_id).where(AnnotationTaskRow.image_id == I.id, AnnotationTaskRow.state == "WORKING", AnnotationTaskRow.lease_until > datetime.now(timezone.utc)).exists())
         targets = q.with_only_columns(I.id)
         count = await self.session.scalar(select(func.count()).select_from(targets.subquery()))
         if action == "tag":

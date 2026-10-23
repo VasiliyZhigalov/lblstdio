@@ -1,0 +1,32 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import fs from "node:fs";
+import { Window } from "happy-dom";
+
+test("model workspace toggles activity, saves schedule, and sends auto-label parameters",async()=>{
+ const win=new Window({url:"http://127.0.0.1:8000/#/projects/p/models"});
+ win.document.write(fs.readFileSync(new URL("../../index.html",import.meta.url),"utf8"));
+ for(const [name,value] of Object.entries({window:win,document:win.document,HTMLElement:win.HTMLElement,location:win.location,sessionStorage:win.sessionStorage,localStorage:win.localStorage}))Object.defineProperty(globalThis,name,{configurable:true,writable:true,value});
+ const {api}=await import('../api.js');const {initModelsHub}=await import('./modelsHub.js');
+ const {store}=await import('../store.js');store.patch({projectTab:'models'});
+ let active=false,activeCalls=0,saved,autoBody,resolveActive;
+ const messages=[];
+ api.listModels=async()=>[{id:'m',name:'Real model',version_number:1,is_active_for_stream:active,map50_95:.6}];
+ api.listDatasetVersions=async()=>[];api.trainingQueue=async()=>[];api.projectDataStatistics=async()=>({statuses:[]});api.listStreams=async()=>[];
+ api.computeSchedule=async()=>({collection_start:'07:00',collection_end:'18:00',training_start:'18:00',training_end:'07:00',timezone:'UTC+04:00'});
+ api.setModelActive=async(_p,_m,value)=>{activeCalls++;await new Promise(r=>resolveActive=r);active=value;};
+ api.saveComputeSchedule=async value=>{saved=value;return {...value,timezone:'UTC+04:00'};};
+ api.autoLabel=async(_p,_m,body)=>{autoBody=body;return {id:'a',status:'COMPLETED',total_images_processed:2,total_predictions_generated:3};};
+ api.getAutoLabelJob=async()=>({id:'a',status:'COMPLETED',total_images_processed:2,total_predictions_generated:3});
+ const hub=initModelsHub({getProject:()=>({id:'p',name:'Project'}),onError:m=>messages.push(m)});
+ const click=s=>win.document.querySelector(s).click();const tick=()=>new Promise(r=>setTimeout(r,25));
+ await hub.refresh();assert.match(win.document.querySelector('#tab-view-models').textContent,/Real model/);
+ click('[data-ml="active"]');click('[data-ml="active"]');await tick();assert.equal(activeCalls,1);resolveActive();await tick();
+ assert.equal(win.document.querySelector('[role="switch"]').getAttribute('aria-checked'),'true');
+ click('[data-ml-tab="schedule"]');win.document.querySelector('#ml-collection-start').value='08:00';click('[data-ml="save-schedule"]');await tick();
+ assert.equal(saved.collection_start,'08:00');assert.equal(saved.training_end,'07:00');
+ click('[data-ml-tab="auto"]');click('[data-ml-preset="70"]');click('[data-ml="auto-start"]');await tick();
+ assert.equal(autoBody.confidence_threshold,.7);assert.equal(autoBody.enqueue_for_annotation,true);assert.equal(autoBody.all_unannotated,true);
+ assert.match(win.document.querySelector('#ml-auto-progress').textContent,/COMPLETED/);
+ win.happyDOM.abort();
+});

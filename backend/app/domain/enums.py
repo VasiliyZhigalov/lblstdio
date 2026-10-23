@@ -15,6 +15,7 @@ class VerificationStatus(str, Enum):
 
 
 class ImageStatus(str, Enum):
+    IN_PROGRESS = "IN_PROGRESS"
     UNANNOTATED = "UNANNOTATED"
     REQUIRES_REVIEW = "REQUIRES_REVIEW"
     REQUIRES_RECHECK = "REQUIRES_RECHECK"

@@ -168,6 +168,7 @@ def _scope_factory(scope):
 @pytest.mark.asyncio
 async def test_training_runner_fails_orphans_through_scope() -> None:
     job = TrainingJob.create(uuid4(), uuid4(), epochs=1, batch_size=1, imgsz=32)
+    job.mark_running()
     jobs = {job.id: job}
     scope = TrainingRunnerScope(
         jobs=_TrainingJobs(jobs),

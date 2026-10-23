@@ -164,7 +164,7 @@ class AuditAnnotationsUseCase:
                 by_image[image.id] = merged
                 image.recalculate_status(merged)
                 if result.suspicious:
-                    image.status = ImageStatus.REQUIRES_RECHECK
+                    image.status = ImageStatus.REQUIRES_REVIEW
                 await self._images.update(image)
                 results.append(result)
                 if progress is not None:
@@ -266,6 +266,11 @@ class AuditAnnotationsRunner:
             return await scope.jobs.get_by_id(task_id)
 
     async def _run(self, job_id: UUID) -> None:
+        if getattr(self,"admission",None):
+            async with self.admission(job_id): await self._run_impl(job_id)
+        else: await self._run_impl(job_id)
+
+    async def _run_impl(self, job_id: UUID) -> None:
         async with self._semaphore:
             try:
                 async with self._scopes() as scope:

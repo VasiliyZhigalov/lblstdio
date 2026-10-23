@@ -19,6 +19,7 @@ def _to_row(job: AutoLabelJob) -> AutoLabelJobRow:
         project_id=str(job.project_id),
         model_version_id=str(job.model_version_id),
         confidence_threshold=job.confidence_threshold,
+        enqueue_for_annotation=int(job.enqueue_for_annotation),
         iou_threshold=job.iou_threshold,
         consistency_iou_threshold=job.consistency_iou_threshold,
         status=job.status.value,
@@ -37,6 +38,7 @@ def _from_row(row: AutoLabelJobRow) -> AutoLabelJob:
         project_id=UUID(row.project_id),
         model_version_id=UUID(row.model_version_id),
         confidence_threshold=row.confidence_threshold,
+        enqueue_for_annotation=bool(row.enqueue_for_annotation),
         iou_threshold=float(getattr(row, "iou_threshold", 0.7) if getattr(row, "iou_threshold", None) is not None else 0.7),
         consistency_iou_threshold=float(
             getattr(row, "consistency_iou_threshold", 0.8)

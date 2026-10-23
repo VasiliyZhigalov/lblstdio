@@ -145,7 +145,7 @@ class TestTrainingAndAutoLabelApi:
         project_id, version_id, raw_id = _seed_ready_dataset(client)
         start = client.post(
             f"/api/v1/projects/{project_id}/train",
-            json={"dataset_version_id": version_id, "epochs": 10},
+            json={"schedule_mode": "now", "dataset_version_id": version_id, "epochs": 10},
         )
         assert start.status_code == 202, start.text
         job_id = start.json()["id"]
@@ -212,7 +212,7 @@ class TestTrainingAndAutoLabelApi:
         project_id, version_id, _raw_id = _seed_ready_dataset(client)
         start = client.post(
             f"/api/v1/projects/{project_id}/train",
-            json={"dataset_version_id": version_id, "epochs": 3},
+            json={"schedule_mode": "now", "dataset_version_id": version_id, "epochs": 3},
         )
         assert start.status_code == 202, start.text
         job_id = start.json()["id"]

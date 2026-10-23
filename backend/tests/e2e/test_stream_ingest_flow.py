@@ -19,7 +19,8 @@ def _jpeg_bytes(size=(64, 48)) -> bytes:
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> TestClient:
+def client(tmp_path: Path, monkeypatch) -> TestClient:
+    monkeypatch.setattr("app.infrastructure.compute_schedule.in_window", lambda *args: True)
     runner = FakeStreamRunner()
     db_path = (tmp_path / "app.db").as_posix()
     app = create_app(

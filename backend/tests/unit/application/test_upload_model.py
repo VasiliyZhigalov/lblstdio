@@ -98,7 +98,7 @@ async def test_upload_model_creates_version_without_training_link() -> None:
     assert model.version_number == 1
     assert model.weights_path.endswith("/best.pt")
     assert storage.files[model.weights_path] == b"fake-weights"
-    assert model.is_active_for_stream is True
+    assert model.is_active_for_stream is False
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,8 @@ from app.main import create_app
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> TestClient:
+def client(tmp_path: Path, monkeypatch) -> TestClient:
+    monkeypatch.setattr("app.infrastructure.compute_schedule.in_window", lambda *args: True)
     runner = FakeStreamRunner()
     db_path = (tmp_path / "app.db").as_posix()
     app = create_app(
@@ -74,7 +75,7 @@ def test_rtsp_credentials_redacted_in_api(client: TestClient) -> None:
 
 def test_stream_start_failure_keeps_inactive(client: TestClient) -> None:
     runner: FakeStreamRunner = client.app.state.stream_runner
-    runner.fail_start_message = "boom"
+    runner.runner.fail_start_message = "boom"
     project_id = client.post("/api/v1/projects", json={"name": "Fail"}).json()["id"]
     model = client.post(
         f"/api/v1/projects/{project_id}/models/upload",

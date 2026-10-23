@@ -151,6 +151,7 @@ class BatchAutoLabelUseCase:
         confidence_threshold: float = 0.05,
         iou_threshold: float = 0.7,
         consistency_iou_threshold: float = 0.8,
+        enqueue_for_annotation: bool = False,
     ) -> AutoLabelJob:
         model = await self._models.get_by_id(model_version_id)
         if model is None or model.project_id != project_id:
@@ -184,8 +185,10 @@ class BatchAutoLabelUseCase:
                 "provide image_ids or set all_unannotated=true"
             )
 
+        if enqueue_for_annotation:
+            selected = [image for image in selected if image.status == ImageStatus.UNANNOTATED]
         if not selected:
-            raise DomainValidationException("no images selected for auto-labeling")
+            raise DomainValidationException("no unannotated images selected for auto-labeling")
 
         job = AutoLabelJob.create(
             project_id=project_id,
@@ -195,6 +198,7 @@ class BatchAutoLabelUseCase:
             iou_threshold=iou_threshold,
             consistency_iou_threshold=consistency_iou_threshold,
         )
+        job.enqueue_for_annotation = enqueue_for_annotation
         await self._jobs.add(job)
         await self._uow.commit()
 
@@ -231,7 +235,7 @@ class BatchAutoLabelUseCase:
 
         project_images = await self._images.list_by_project(job.project_id)
         by_id = {item.id: item for item in project_images}
-        selected = [by_id[image_id] for image_id in job.image_ids if image_id in by_id]
+        selected = [by_id[image_id] for image_id in job.image_ids if image_id in by_id and (not job.enqueue_for_annotation or by_id[image_id].status == ImageStatus.UNANNOTATED)]
         if not selected:
             job.mark_failed("no images available for auto-labeling")
             await self._jobs.update(job)
@@ -335,7 +339,7 @@ class BatchAutoLabelUseCase:
                         confidence_threshold=job.confidence_threshold,
                         iou_threshold=job.consistency_iou_threshold,
                     )
-                    if is_consistent:
+                    if is_consistent and not job.enqueue_for_annotation:
                         for annotation in created:
                             annotation.auto_verify()
                     merged = kept + created
@@ -553,7 +557,9 @@ class AutoLabelJobRunner:
     async def _run(self, job_id: UUID) -> None:
         try:
             async with self._sem:
-                await self._run_locked(job_id)
+                if getattr(self,"admission",None):
+                    async with self.admission(job_id): await self._run_locked(job_id)
+                else: await self._run_locked(job_id)
         except asyncio.CancelledError:
             await asyncio.shield(
                 self._mark_failed(job_id, "cancelled during shutdown")

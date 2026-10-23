@@ -16,6 +16,7 @@ class AutoLabelJob:
     confidence_threshold: float
     status: AutoLabelJobStatus
     image_ids: list[UUID]
+    enqueue_for_annotation: bool = False
     iou_threshold: float = 0.7
     consistency_iou_threshold: float = 0.8
     total_images_processed: int = 0

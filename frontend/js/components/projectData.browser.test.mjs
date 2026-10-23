@@ -10,7 +10,7 @@ before(async () => {
   win = new Window({ url: "http://127.0.0.1:8000/#/projects/p/data" });
   for (const key of ["window", "document", "location", "history", "localStorage", "HTMLElement"]) globalThis[key] = key === "window" ? win : win[key];
   ({ store } = await import("../store.js"));
-  ({ api } = await import("../api.js?v=project-data-20261022d"));
+  ({ api } = await import("../api.js?v=annotation-queue-20261022e"));
   ({ initDataHub } = await import("./projectData.js"));
 });
 beforeEach(() => {

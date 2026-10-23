@@ -96,6 +96,11 @@ function findImage(imageId) {
 }
 
 function answer(pathname, method, options) {
+  const claim = pathname.match(/^\/api\/v1\/projects\/([^/]+)\/annotation-queue\/claim$/);
+  if (claim && method === "POST") return { image_id: JSON.parse(options.body || "{}").image_id, mine: true, readonly: false, revision: 0, state: "WORKING" };
+  if (pathname.includes("/annotation-queue") && pathname.endsWith("/action")) return { revision: 1, state: "QUEUED" };
+  if (pathname.endsWith("/annotation-queue")) return { items: [], counts: {}, total: 0 };
+
   if (method === "GET" && pathname === "/api/v1/projects") {
     return [...db.projects.values()].map((item) => item.project);
   }
@@ -327,6 +332,10 @@ function installDom() {
 
   const globals = {
     window: win,
+    history: win.history,
+    location: win.location,
+    localStorage: win.localStorage,
+    sessionStorage: win.sessionStorage,
     document: win.document,
     HTMLElement: win.HTMLElement,
     Element: win.Element,
@@ -415,6 +424,21 @@ before(async () => {
 afterEach(async () => {
   releaseLeftovers();
   await settle();
+});
+
+test("a delayed queue claim cannot open an image in another project", async () => {
+  putProject({id:"queue-old",name:"Old queue",images:[{id:"queue-old-image",file_name:"old.png",annotations:[]}]});
+  putProject({id:"queue-new",name:"New queue",images:[{id:"queue-new-image",file_name:"new.png",annotations:[]}]});
+  go('/projects/queue-old/annotate');
+  await waitFor(()=>store.get('currentProject')?.id==='queue-old' && !document.getElementById('annotation-queue-home').classList.contains('hidden'),'old queue home');
+  const delayed=hold((path,method)=>method==='POST' && path==='/api/v1/projects/queue-old/annotation-queue/claim');
+  document.querySelector('[data-aq="start"]').click();
+  await waitFor(()=>delayed.taken,'queue claim started');
+  await openProjectImage('queue-new','queue-new-image');
+  delayed.release({image_id:'queue-old-image',mine:true,readonly:false,state:'WORKING',revision:0});
+  await settle();
+  assert.equal(store.get('currentProject').id,'queue-new');
+  assert.equal(store.get('currentImage').id,'queue-new-image');
 });
 
 test("annotate filmstrip is a left document-flow sidebar", async () => {

@@ -124,7 +124,9 @@ class OpenCVStreamRunner:
         if ready is not None:
             ready.set()
         if thread is not None and thread.is_alive():
-            thread.join(timeout=5.0)
+            thread.join(timeout=45.0)
+            if thread.is_alive():
+                raise RuntimeError("Источник не завершил обработку: GPU ещё занят. Повторите запуск обучения после остановки источника.")
         with self._lock:
             self._threads.pop(stream_id, None)
             self._stops.pop(stream_id, None)

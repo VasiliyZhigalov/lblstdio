@@ -1,3 +1,4 @@
+from typing import Literal
 from datetime import datetime
 from uuid import UUID
 
@@ -223,6 +224,8 @@ class DatasetVersionRead(BaseModel):
 
 class TrainModelRequest(BaseModel):
     dataset_version_id: UUID
+    schedule_mode: Literal["night", "now"] = "night"
+    not_before: datetime | None = None
     epochs: int = Field(default=100, ge=1, le=500)
     patience: int = Field(default=20, ge=0, le=100)
     batch_size: int = Field(default=16, ge=1, le=64)
@@ -246,6 +249,8 @@ class TrainingJobRead(BaseModel):
     project_id: UUID
     dataset_version_id: UUID
     status: str
+    schedule_mode: str = "night"
+    not_before: datetime | None = None
     epochs: int
     patience: int = 20
     batch_size: int
@@ -297,6 +302,7 @@ class ModelVersionRead(BaseModel):
 
 
 class AutoLabelRequest(BaseModel):
+    enqueue_for_annotation: bool = False
     image_ids: list[UUID] | None = None
     all_unannotated: bool = False
     confidence_threshold: float = Field(default=0.05, ge=0.01, le=0.95)

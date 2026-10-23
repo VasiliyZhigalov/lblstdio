@@ -24,6 +24,7 @@ function isTypingTarget(target) {
 }
 
 function isModalOpen() {
+  if (document.querySelector(".aq-modal-backdrop")) return true;
   return MODAL_IDS.some((id) => {
     const el = document.getElementById(id);
     return el && !el.classList.contains("hidden");
@@ -46,8 +47,6 @@ export function initHotkeys({
   rejectAll,
   deleteImage,
   hasPending,
-  copySelected,
-  pastePropagate,
   undo,
   redo,
   toggleHide,
@@ -63,6 +62,7 @@ export function initHotkeys({
     if (isModalOpen()) return;
 
     const code = event.code;
+    if (code === "AltLeft" || code === "AltRight") { if(inAnnotateStudio()) {event.preventDefault();store.set("spaceHeld",true);} return; }
 
     // Sidebar collapse works on any project tab while shell is open? Spec: annotate only.
     if (!event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -80,10 +80,11 @@ export function initHotkeys({
 
     if (!inAnnotateStudio()) return;
 
-    if (store.get("matchingInProgress")) {
-      event.preventDefault();
-      return;
+    if (store.get("annotationReadonly")) {
+      if(code === "Space") { event.preventDefault(); store.set("spaceHeld", true); return; }
+      if(!["KeyH", "KeyF", "Escape"].includes(code)) return;
     }
+
 
     if (code === "Space") {
       event.preventDefault();
@@ -103,18 +104,6 @@ export function initHotkeys({
       if (code === "KeyS") {
         event.preventDefault();
         save();
-        return;
-      }
-      if (code === "KeyC" && !event.shiftKey) {
-        if (isClassification()) return;
-        event.preventDefault();
-        copySelected?.();
-        return;
-      }
-      if (code === "KeyV" && event.shiftKey) {
-        if (isClassification()) return;
-        event.preventDefault();
-        pastePropagate?.();
         return;
       }
       if (code === "KeyZ") {
@@ -193,7 +182,7 @@ export function initHotkeys({
         return;
       }
       if (event.shiftKey) {
-        if (!event.repeat && hasPending?.()) deleteImage?.();
+        // Image deletion is unavailable in the annotator workspace.
         return;
       }
       deleteSelected();
@@ -212,7 +201,7 @@ export function initHotkeys({
   });
 
   window.addEventListener("keyup", (event) => {
-    if (event.code === "Space") {
+    if (event.code === "AltLeft" || event.code === "AltRight") {
       store.set("spaceHeld", false);
     }
   });

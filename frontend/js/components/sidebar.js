@@ -1,7 +1,7 @@
 import { store, isClassification } from "../store.js";
 import { commitAnnotationChange } from "../annotationEdits.js";
 import { nextClassColor } from "../utils/math.js";
-import { api } from "../api.js";
+import { api } from "../api.js?v=annotation-queue-20261022e";
 import { escapeHtml, refreshIcons } from "../utils/dom.js";
 
 export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
@@ -117,6 +117,7 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
   }
 
   classesList.addEventListener("click", async (event) => {
+    if (store.get("annotationReadonly")) return;
     const deleteBtn = event.target.closest("[data-delete-class]");
     if (deleteBtn) {
       event.preventDefault();
@@ -219,6 +220,7 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
   });
   annotationsList.addEventListener("mouseleave", () => store.set("hoveredBoxId", null));
   annotationsList.addEventListener("click", (event) => {
+    if (store.get("annotationReadonly")) return;
     const del = event.target.closest("[data-delete-box]");
     if (del) {
       const id = del.dataset.deleteBox;
@@ -283,6 +285,7 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
 }
 
 export function selectClassByHotkey(digit) {
+  if (store.get("annotationReadonly")) return;
   const classes = [...(store.get("classes") || [])].sort((a, b) => a.index_id - b.index_id);
   const cls = classes[digit - 1];
   if (!cls) return;
@@ -304,6 +307,7 @@ export function selectClassByHotkey(digit) {
 }
 
 export function deleteSelectedBox() {
+  if (store.get("annotationReadonly")) return;
   const id = store.get("selectedBoxId");
   if (!id) return;
   const before = store.get("annotations");

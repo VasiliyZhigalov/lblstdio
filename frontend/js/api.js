@@ -1,3 +1,4 @@
+import { annotationSession, annotationRevision, setAnnotationRevision } from "./annotationSession.js";
 const params = new URLSearchParams(window.location.search);
 const defaultBase =
   window.location.port === "8000" || window.location.port === ""
@@ -20,15 +21,21 @@ function filenameFromDisposition(disposition, fallback = "download.zip") {
 }
 
 async function request(path, options = {}) {
+  const imageId = /^\/images\/([^/]+)/.exec(path)?.[1];
+  const revision = imageId && annotationRevision(imageId);
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
+      "X-Annotation-Session": annotationSession,
+      ...(revision != null ? { "X-Annotation-Revision": String(revision) } : {}),
       ...(options.body && !(options.body instanceof FormData)
         ? { "Content-Type": "application/json" }
         : {}),
       ...options.headers,
     },
   });
+  const nextRevision = response.headers.get("X-Annotation-Revision");
+  if (response.ok && imageId && nextRevision != null) setAnnotationRevision(imageId, nextRevision);
   if (response.status === 204) return null;
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
@@ -47,7 +54,7 @@ async function request(path, options = {}) {
         /* keep status text */
       }
     }
-    throw new Error(detail);
+    const error = new Error(detail); error.status = response.status; throw error;
   }
   const type = response.headers.get("content-type") || "";
   if (type.includes("application/json")) return response.json();
@@ -55,6 +62,18 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  annotationQueue: (id, state = "all", offset = 0) => request(`/projects/${id}/annotation-queue?state=${encodeURIComponent(state)}&offset=${offset}&limit=48`),
+  enqueueAnnotations: (id, payload) => request(`/projects/${id}/annotation-queue/enqueue`, { method: "POST", body: JSON.stringify(payload) }),
+  claimAnnotation: async (id, imageId = null) => {
+    const result = await request(`/projects/${id}/annotation-queue/claim`, { method: "POST", body: JSON.stringify({ image_id: imageId }) });
+    if (result.image_id) setAnnotationRevision(result.image_id, result.revision);
+    return result;
+  },
+  annotationQueueAction: async (id, imageId, action, reason = "") => {
+    const result = await request(`/projects/${id}/annotation-queue/${imageId}/action`, { method: "POST", body: JSON.stringify({ action, reason, revision: annotationRevision(imageId) ?? 0 }) });
+    if (action !== "heartbeat") setAnnotationRevision(imageId, result.revision);
+    return result;
+  },
   deleteUnusedDataClass: (id, classId) => request(`/projects/${id}/data/classes/${classId}`, { method: "DELETE" }),
   analyzeProjectData: (id) => request(`/projects/${id}/data/analyze`, { method: "POST" }),
   parseClassDictionary: (id, file) => { const body = new FormData(); body.append("file", file); return request(`/projects/${id}/data/dictionary/preview`, { method: "POST", body }); },
@@ -141,40 +160,6 @@ export const api = {
           if (box.id) payload.id = box.id;
           return payload;
         }),
-      }),
-    }),
-
-  propagateBox: (sourceImageId, targetImageId, sourceBox) =>
-    request("/matching/propagate-box", {
-      method: "POST",
-      body: JSON.stringify({
-        source_image_id: sourceImageId,
-        target_image_id: targetImageId,
-        source_box: {
-          id: sourceBox.id,
-          class_id: sourceBox.class_id,
-          x_center: sourceBox.x_center,
-          y_center: sourceBox.y_center,
-          width: sourceBox.width,
-          height: sourceBox.height,
-        },
-      }),
-    }),
-
-  propagateBoxes: (sourceImageId, targetImageId, sourceBoxes) =>
-    request("/matching/propagate-boxes", {
-      method: "POST",
-      body: JSON.stringify({
-        source_image_id: sourceImageId,
-        target_image_id: targetImageId,
-        source_boxes: sourceBoxes.map((sourceBox) => ({
-          id: sourceBox.id,
-          class_id: sourceBox.class_id,
-          x_center: sourceBox.x_center,
-          y_center: sourceBox.y_center,
-          width: sourceBox.width,
-          height: sourceBox.height,
-        })),
       }),
     }),
 
@@ -377,6 +362,13 @@ export const api = {
 
   getAutoLabelJob: (jobId) => request(`/auto-label-jobs/${jobId}`),
 
+  computeSchedule: () => request('/compute-schedule'),
+  saveComputeSchedule: (body) => request('/compute-schedule',{method:'PUT',body:JSON.stringify(body)}),
+  trainingQueue: (id) => request('/training-queue'+(id?'?project_id='+encodeURIComponent(id):'')),
+  cancelQueuedTraining: (id) => request(`/training-queue/${id}/cancel`,{method:'POST'}),
+  setModelActive: (pid,id,active) => request(`/projects/${pid}/models/${id}/active`,{method:'PUT',body:JSON.stringify({active})}),
+  previewModel: (pid,id,body) => request(`/projects/${pid}/models/${id}/preview`,{method:"POST",body:JSON.stringify(body)}),
+  modelDetails: (pid,id) => request(`/projects/${pid}/models/${id}/details`),
   listStreams: (projectId) => request(`/projects/${projectId}/streams`),
   createRtspStream: (projectId, body) =>
     request(`/projects/${projectId}/streams/rtsp`, {

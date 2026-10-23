@@ -224,7 +224,7 @@ async def test_create_version_rejects_pending_review() -> None:
         min_verified_images=1,
     )
 
-    with pytest.raises(UnverifiedDataException):
+    with pytest.raises(InsufficientVerifiedDataException):
         await use_case.execute(project.id)
     assert storage.deleted == []
 

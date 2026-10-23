@@ -72,7 +72,7 @@ class TestImageStatusDerivation:
 
         image.recalculate_status(annotations)
 
-        assert image.status == ImageStatus.REQUIRES_RECHECK
+        assert image.status == ImageStatus.REQUIRES_REVIEW
         assert image.can_be_included_in_dataset() is False
 
     def test_recheck_image_is_blocked_from_dataset(self) -> None:

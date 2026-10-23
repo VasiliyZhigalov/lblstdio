@@ -138,13 +138,7 @@ export function initDatasetVersionModal({
       "hidden",
       isClassification()
     );
-    if (pending > 0) {
-      banner.classList.remove("hidden");
-      banner.textContent =
-        `Нельзя создать версию датасета: ${pending} кадра содержат неподтвержденную разметку. ` +
-        "Подтвердите или отклоните их перед сборкой";
-      buildBtn.disabled = true;
-    } else if (totalVerified < MIN_VERIFIED_IMAGES) {
+    if (totalVerified < MIN_VERIFIED_IMAGES) {
       banner.classList.remove("hidden");
       banner.textContent =
         `Нужно минимум ${MIN_VERIFIED_IMAGES} подтвержденных кадров (сейчас ${totalVerified}). ` +

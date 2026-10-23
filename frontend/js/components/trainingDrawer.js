@@ -272,6 +272,8 @@ export function initTrainingDrawer({
     try {
       const job = await api.startTraining(project.id, {
         dataset_version_id: versionId,
+        schedule_mode: document.getElementById("train-schedule-mode")?.value || "night",
+        not_before: document.getElementById("train-not-before")?.value ? new Date(document.getElementById("train-not-before").value).toISOString() : null,
         epochs,
         patience,
         ...parseBaseModelSelection(baseRaw, project.task_type === "CLASSIFICATION"),

@@ -167,7 +167,9 @@ class DataImportManager:
             if rollback:
                 if job.kind not in {"images", "dataset"}: raise Invalid("Отмена доступна только для импорта изображений")
                 ids = select(ImageDataRow.image_id).where(ImageDataRow.import_id == str(job_id))
-                await session.execute(update(ImageRow).where(ImageRow.project_id == str(project_id), ImageRow.id.in_(ids)).values(deleted_at=datetime.now(timezone.utc)))
+                from app.infrastructure.db.tables import AnnotationTaskRow
+                active = select(AnnotationTaskRow.image_id).where(AnnotationTaskRow.state == "WORKING", AnnotationTaskRow.lease_until > datetime.now(timezone.utc))
+                await session.execute(update(ImageRow).where(ImageRow.project_id == str(project_id), ImageRow.id.in_(ids), ImageRow.id.not_in(active)).values(deleted_at=datetime.now(timezone.utc)))
                 job.status = "ROLLED_BACK"
             elif job.status == "PREVIEW":
                 job.status = "CANCELLED"

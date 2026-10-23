@@ -82,13 +82,27 @@ def _extract_val_metrics(metrics: Any) -> dict[str, float | None]:
     recall = _number(getattr(box, "mr", None))
     if recall is None:
         recall = _number(results_dict.get("metrics/recall(B)"))
-    return {
+    result = {
         "map50": map50,
         "map50_95": map50_95,
         "precision": precision,
         "recall": recall,
         "top1": top1,
     }
+    result["speed_ms"] = {str(k): _number(v) for k,v in (getattr(metrics,"speed",{}) or {}).items()}
+    result["per_class"] = []
+    names = getattr(metrics,"names",{}) or {}
+    if box is not None:
+        indices = list(getattr(box,"ap_class_index",[]))
+        for position,index in enumerate(indices):
+            try:
+                p,r,ap50,ap=box.class_result(position)
+                result["per_class"].append({"index":int(index),"name":str(names.get(int(index),index)),"precision":_number(p),"recall":_number(r),"map50":_number(ap50),"map50_95":_number(ap)})
+            except (AttributeError,IndexError,TypeError,ValueError): pass
+    matrix=getattr(getattr(metrics,"confusion_matrix",None),"matrix",None)
+    if matrix is not None and hasattr(matrix,"tolist"): result["confusion_matrix"]=matrix.tolist()
+    return result
+
 
 
 def split_has_images(data_path: str) -> bool:
@@ -183,6 +197,7 @@ def _training_worker(config: dict[str, Any], progress_queue, result_queue) -> No
                 verbose=False,
             )
             test_metrics = _extract_val_metrics(val_metrics)
+            test_metrics["evaluation"]={"split":"test","imgsz":config["imgsz"],"device":config["device"],"batch_size":config["batch_size"]}
         result_queue.put(
             {
                 "ok": True,

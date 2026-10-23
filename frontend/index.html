@@ -16,8 +16,9 @@
     </script>
     <link rel="stylesheet" href="/css/styles.css" />
     <link rel="stylesheet" href="/css/projectData.css?v=project-data-20261022d" />
+    <link rel="stylesheet" href="/css/annotationQueue.css?v=annotation-queue-20261022e" />
     <script src="/vendor/lucide.min.js"></script>
-  </head>
+  <link rel="stylesheet" href="css/modelLab.css?v=model-lab-20261022a"></head>
   <body class="bg-zinc-950 text-zinc-100">
     <div id="app" class="h-screen w-screen overflow-hidden">
       <!-- PROJECTS HUB -->
@@ -170,13 +171,7 @@
                 <i data-lucide="eye" class="w-3.5 h-3.5"></i>
                 <span class="hidden sm:inline">Рамки</span>
               </button>
-              <button
-                id="btn-toggle-match-debug"
-                class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border border-zinc-700 hover:bg-zinc-800 text-zinc-300"
-                title="Показать или скрыть отладку переноса"
-              >
-                Отладка переноса
-              </button>
+
             </div>
             <div id="shell-actions-models" class="hidden flex items-center gap-2">
               <button
@@ -379,7 +374,7 @@
             >
               <div class="p-3 border-b border-zinc-800/80 space-y-2">
                 <div class="flex justify-between items-center">
-                  <span class="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Список кадров</span>
+                  <span class="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Кадры очереди</span>
                   <button
                     id="btn-toggle-filmstrip"
                     class="text-zinc-500 hover:text-zinc-200"
@@ -441,22 +436,8 @@
                 Нет кадров. Загрузите на вкладке «Данные».
               </div>
               <div class="shrink-0 border-t border-zinc-800/80 p-2 space-y-1.5">
-                <button
-                  id="btn-copy-annotations"
-                  type="button"
-                  title="Ctrl+C"
-                  class="w-full px-2 py-1.5 text-[11px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200"
-                >
-                  Копировать (Ctrl+C)
-                </button>
-                <button
-                  id="btn-paste-annotations"
-                  type="button"
-                  title="Ctrl+Shift+V"
-                  class="hidden w-full px-2 py-1.5 text-[11px] rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white"
-                >
-                  Вставить по точкам (Ctrl+Shift+V)
-                </button>
+
+
               </div>
             </aside>
 
@@ -575,22 +556,13 @@
                   id="cls-label-overlay"
                   class="hidden absolute top-3 left-3 z-20 max-w-[70%] rounded-lg border border-amber-500/30 bg-black/80 backdrop-blur px-3 py-2 text-xs font-medium text-amber-200 shadow-xl"
                 ></div>
-                <div
-                  id="matching-overlay"
-                  class="hidden absolute inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-                >
-                  <div class="px-6 py-3 rounded-xl bg-zinc-900 border border-zinc-700/50 text-sm font-medium text-white shadow-2xl flex items-center gap-3">
-                    <i data-lucide="loader-circle" class="w-5 h-5 animate-spin text-indigo-400"></i>
-                    <span id="matching-overlay-text">Сопоставление ключевых точек...</span>
-                  </div>
-                </div>
                 <!-- Плавающие кнопки для выделенного Box'а -->
                 <div id="box-float-actions" class="hidden absolute z-20 flex items-center gap-0.5 pointer-events-auto">
                   <button
                     id="btn-approve-box"
                     type="button"
                     class="w-5 h-5 flex items-center justify-center rounded bg-emerald-600 hover:bg-emerald-500 text-white shadow"
-                    title="Подтвердить аннотацию (Space)"
+                    title="Подтвердить аннотацию"
                   >
                     <i data-lucide="check" class="w-3 h-3"></i>
                   </button>
@@ -685,7 +657,7 @@
             >
               <div class="p-5 border-b border-zinc-800/80 flex flex-col h-1/2">
                 <div class="flex items-center justify-between mb-4">
-                  <h3 class="text-xs font-bold uppercase tracking-widest text-zinc-500">Теги (1–9)</h3>
+                  <h3 class="text-xs font-bold uppercase tracking-widest text-zinc-500">Классы (1–9)</h3>
                   <div class="flex items-center gap-3">
                     <button id="btn-add-class" class="text-xs font-medium text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 px-2.5 py-1 rounded-md transition-colors">+ Класс</button>
                     <button
@@ -712,7 +684,7 @@
               </div>
               
               <div class="flex-1 overflow-y-auto p-5 scrollbar-thin flex flex-col">
-                <h3 class="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-4">Слои кадра</h3>
+                <h3 class="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-4">Объекты на кадре</h3>
                 <div id="annotations-list" class="flex-1 space-y-2"></div>
               </div>
             </aside>
@@ -1307,8 +1279,11 @@
               Остановка, если метрика не растёт N эпох подряд (0 = без early stop).
             </p>
           </label>
+          <label class="block space-y-1"><span class="text-xs text-zinc-300">Когда обучать</span><select id="train-schedule-mode" class="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm"><option value="night">В ночном окне по расписанию</option><option value="now">При освобождении GPU (приостановит сбор)</option></select></label>
+          <label class="block space-y-1"><span class="text-xs text-zinc-300">Не раньше (необязательно, местное время)</span><input id="train-not-before" type="datetime-local" class="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm"></label>
+          <p class="text-xs text-zinc-500">По умолчанию обучение 18:00–07:00, сбор 07:00–18:00. Точное расписание задаётся в «Расписание GPU» и использует время сервера. Закрытие окна не отменяет задание.</p>
           <button id="btn-start-training" type="button" class="w-full px-3 py-2 text-xs rounded-md bg-violet-700 hover:bg-violet-600 text-white">
-            Запустить обучение
+            Добавить в очередь обучения
           </button>
         </div>
         <div id="training-live" class="flex-1 overflow-y-auto p-4 space-y-4 hidden">
@@ -1418,6 +1393,6 @@
       id="toast"
       class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-full bg-zinc-900 border border-zinc-700 text-xs shadow-xl"
     ></div>
-    <script type="module" src="/js/app.js?v=project-data-20261022e"></script>
+    <script type="module" src="/js/app.js?v=annotation-queue-20261022e"></script>
   </body>
 </html>

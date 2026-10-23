@@ -17,6 +17,8 @@ class SqliteAnnotationRepository(IAnnotationRepository):
     async def replace_for_image(
         self, image_id: UUID, annotations: Sequence[Annotation]
     ) -> None:
+        from app.infrastructure.db.annotation_queue import protect_background_write
+        await protect_background_write(self._session, image_id)
         await self._session.execute(
             delete(AnnotationRow).where(AnnotationRow.image_id == str(image_id))
         )
