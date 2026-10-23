@@ -9,6 +9,7 @@ import yaml
 ENV_DATA_ROOT = "LBLSTDIO_DATA_ROOT"
 ENV_TRUSTED_LOCAL = "LBLSTDIO_TRUSTED_LOCAL"
 ENV_ALLOWED_ROOTS = "LBLSTDIO_ALLOWED_ROOTS"
+ENV_DATABASE_URL = "LBLSTDIO_DATABASE_URL"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_ROOT = "."
 _TRUE_TOKENS = {"1", "true", "yes", "on"}
@@ -20,6 +21,7 @@ class AppSettings:
     data_root: Path
     trusted_local: bool = False
     allowed_roots: tuple[Path, ...] = ()
+    database_url_override: str | None = None
 
     @property
     def database_path(self) -> Path:
@@ -27,6 +29,8 @@ class AppSettings:
 
     @property
     def database_url(self) -> str:
+        if self.database_url_override:
+            return self.database_url_override
         # Absolute paths: sqlite+aiosqlite:///C:/... or ////server/share/...
         return f"sqlite+aiosqlite:///{self.database_path.as_posix()}"
 
@@ -165,4 +169,5 @@ def load_settings(
         data_root=root,
         trusted_local=_resolve_trusted_local(trusted_local, env, payload),
         allowed_roots=_resolve_allowed_roots(allowed_roots, env, payload, base),
+        database_url_override=(env.get(ENV_DATABASE_URL) or payload.get("database_url") or None),
     )

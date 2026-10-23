@@ -1,3 +1,4 @@
+import {initAuth,isAnnotator} from "./auth.js?v=auth-20261023a";
 import { initAnnotationQueue } from "./components/annotationQueue.js?v=annotation-queue-20261022e";
 import { store, isClassification } from "./store.js";
 import { API_BASE, api } from "./api.js?v=annotation-queue-20261022e";
@@ -312,8 +313,8 @@ async function loadProject(projectId, seq = routeSeq) {
   if (seq !== routeSeq) return false;
   const [classes, images, versions] = await Promise.all([
     api.listClasses(projectId),
-    api.listImages(projectId, { limit: 48 }),
-    api.listDatasetVersions(projectId).catch(() => []),
+    isAnnotator() ? Promise.resolve([]) : api.listImages(projectId, { limit: 48 }),
+    isAnnotator() ? Promise.resolve([]) : api.listDatasetVersions(projectId).catch(() => []),
   ]);
   if (seq !== routeSeq) return false;
   const counts = { ...store.get("boxCounts") };
@@ -639,6 +640,10 @@ async function enterProject(route, seq) {
 async function onRoute() {
   const seq = ++routeSeq;
   const route = parseHash();
+  if(isAnnotator()){
+    if(route.name==="streams"){navigate("/projects");return;}
+    if(route.projectId&&route.tab!=="annotate"){navigate(projectPath(route.projectId,"annotate"));return;}
+  }
   const previousProjectId = store.get("currentProject")?.id;
   const previousTab = store.get("projectTab");
 
@@ -1237,14 +1242,15 @@ function goAnnotate(imageId = null) {
   navigate(projectPath(project.id, "annotate", imageId));
 }
 
-function boot() {
+async function boot() {
+  await initAuth({beforeLogout:async()=>{await annotationQueue?.leave();},notify:toast});
   canvas = new AnnotationCanvas(
     document.getElementById("annotation-canvas"),
     document.getElementById("canvas-container")
   );
 
   initProjectsHub({
-    onOpenProject: (id) => navigate(projectPath(id, "data")),
+    onOpenProject: (id) => navigate(projectPath(id, isAnnotator()?"annotate":"data")),
     onCreateProject: async (name, description, taskType = "DETECTION") => {
       try {
         const created = await api.createProject(name, description, taskType);
@@ -1460,7 +1466,7 @@ function boot() {
     onError: toast,
   });
 
-  initTrainingNotifications();
+  if(!isAnnotator())initTrainingNotifications();
   streamHub = initStreamHub({
     toast,
     navigate,
@@ -1479,7 +1485,7 @@ function boot() {
 
   document.getElementById("tab-btn-data")?.addEventListener("click", () => {
     const project = store.get("currentProject");
-    if (project) navigate(projectPath(project.id, "data"));
+    if (project) navigate(projectPath(project.id, isAnnotator()?"annotate":"data"));
   });
   document.getElementById("tab-btn-annotate")?.addEventListener("click", () => {
     goAnnotate();
@@ -1635,11 +1641,11 @@ function boot() {
   });
 
   setMode("DRAW");
-  syncTabChrome("data");
+  syncTabChrome(isAnnotator()?"annotate":"data");
   applySidebarCollapsed();
   refreshIcons();
   ensureHash();
   onRoute().catch((err) => toast(err.message));
 }
 
-boot();
+boot().catch(err=>toast(err.message));

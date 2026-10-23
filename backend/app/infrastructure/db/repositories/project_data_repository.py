@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select, func, or_, update, literal
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy import select, func, or_, update, literal, cast
+from sqlalchemy.dialects.postgresql import JSONB
+from app.infrastructure.db.dialect import dialect_insert
 from app.infrastructure.db.tables import (
     ImageRow as I, AnnotationRow as A, ImageLabelRow as L, ImageDataRow as D,
     ClassRow, ProjectRow, ProjectCameraRow, StreamSourceRow, DatasetItemRow, ModelVersionRow,
@@ -64,7 +65,11 @@ class SqliteProjectDataRepository:
         if f.get("after"): q = q.where(I.created_at >= datetime.fromisoformat(f["after"]))
         if f.get("before"): q = q.where(I.created_at < datetime.fromisoformat(f["before"]))
         if f.get("tag"):
-            q = q.where(select(D.image_id).where(D.image_id == I.id, func.json_each(D.tags).table_valued("value").c.value == f["tag"]).exists())
+            if self.session.get_bind().dialect.name == "postgresql":
+                q = q.where(select(D.image_id).where(D.image_id == I.id, cast(D.tags, JSONB).contains([f["tag"]])).exists())
+            else:
+                tag_values = func.json_each(D.tags).table_valued("value")
+                q = q.where(select(D.image_id).where(D.image_id == I.id, tag_values.c.value == f["tag"]).exists())
         if f.get("version_id"):
             q = q.where(I.id.in_(select(DatasetItemRow.image_id).where(DatasetItemRow.dataset_version_id == f["version_id"])))
         if f.get("duplicates"):
@@ -148,10 +153,18 @@ class SqliteProjectDataRepository:
         if action == "tag":
             tag = str(payload.get("tag", "")).strip()[:64]
             if not tag: raise DomainValidationException("Введите тег")
-            # Both statements act on the same bounded SQL selection; no per-image queries.
-            await self.session.execute(insert(D).from_select(["image_id", "tags"], targets.add_columns(literal("[]"))).on_conflict_do_nothing(index_elements=["image_id"]))
-            existing = func.json_each(D.tags).table_valued("value")
-            await self.session.execute(update(D).where(D.image_id.in_(targets), ~select(existing.c.value).where(existing.c.value == tag).exists()).values(tags=func.json_insert(D.tags, "$[#]", tag)))
+            await self.session.execute(dialect_insert(self.session, D).from_select(
+                ["image_id", "tags"], targets.add_columns(literal([], type_=D.__table__.c.tags.type))
+            ).on_conflict_do_nothing(index_elements=["image_id"]))
+            if self.session.get_bind().dialect.name == "postgresql":
+                await self.session.execute(update(D).where(
+                    D.image_id.in_(targets), ~cast(D.tags, JSONB).contains([tag])
+                ).values(tags=D.tags.op("||")(cast([tag], JSONB))))
+            else:
+                existing = func.json_each(D.tags).table_valued("value")
+                await self.session.execute(update(D).where(
+                    D.image_id.in_(targets), ~select(existing.c.value).where(existing.c.value == tag).exists()
+                ).values(tags=func.json_insert(D.tags, "$[#]", tag)))
         elif action in ("trash", "restore"):
             await self.session.execute(update(I).where(I.id.in_(targets)).values(deleted_at=datetime.now(timezone.utc) if action == "trash" else None))
         elif action == "review":

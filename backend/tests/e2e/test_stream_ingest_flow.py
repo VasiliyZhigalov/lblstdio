@@ -23,7 +23,7 @@ def client(tmp_path: Path, monkeypatch) -> TestClient:
     monkeypatch.setattr("app.infrastructure.compute_schedule.in_window", lambda *args: True)
     runner = FakeStreamRunner()
     db_path = (tmp_path / "app.db").as_posix()
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{db_path}",
         storage_root=tmp_path / "storage",
         stream_runner=runner,

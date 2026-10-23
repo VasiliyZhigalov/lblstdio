@@ -11,7 +11,7 @@ from app.presentation.api.v1.project_data_router import DataQuery
 router = APIRouter(tags=["annotation-queue"])
 
 
-def owner(request: Request): return session_owner(request.headers.get("X-Annotation-Session"))
+def owner(request: Request): return session_owner(request.headers.get("X-Annotation-Session"), getattr(request.state,"user",{}).get("id"))
 
 
 def use_case(session=Depends(get_session)): return AnnotationQueue(SqliteAnnotationQueue(session))
@@ -60,6 +60,6 @@ async def guard_annotation_mutation(request: Request, response: Response, sessio
     raw = request.headers.get("X-Annotation-Revision")
     try: revision = int(raw) if raw is not None else None
     except ValueError: raise HTTPException(409, "Некорректная версия кадра")
-    actor = session_owner(request.headers.get("X-Annotation-Session")) if request.headers.get("X-Annotation-Session") else None
+    actor = session_owner(request.headers.get("X-Annotation-Session"), getattr(request.state,"user",{}).get("id")) if request.headers.get("X-Annotation-Session") else None
     updated = await require_write(session, image_id, actor, revision)
     if updated is not None: response.headers["X-Annotation-Revision"] = str(updated)

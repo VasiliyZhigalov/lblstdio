@@ -36,7 +36,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(mod.CreateDatasetVersionUseCase, "__init__", patched_init)
 
     db_path = (tmp_path / "app.db").as_posix()
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{db_path}",
         storage_root=tmp_path / "storage",
     )

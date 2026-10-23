@@ -51,21 +51,23 @@ _AUTO_LABEL_JOB_COLUMNS = (
 
 def create_engine(database_url: str) -> AsyncEngine:
     kwargs: dict = {"echo": False}
-    if ":memory:" in database_url:
+    is_sqlite = database_url.startswith("sqlite")
+    if is_sqlite and ":memory:" in database_url:
         kwargs["connect_args"] = {"check_same_thread": False}
         kwargs["poolclass"] = StaticPool
-    else:
+    elif is_sqlite:
         db_path = database_url.split("///")[-1]
         if db_path and db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
     engine = create_async_engine(database_url, **kwargs)
 
-    @event.listens_for(engine.sync_engine, "connect")
-    def _enable_foreign_keys(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    if is_sqlite:
+        @event.listens_for(engine.sync_engine, "connect")
+        def _enable_foreign_keys(dbapi_connection, _connection_record) -> None:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
 
     return engine
 
@@ -166,7 +168,8 @@ def _ensure_model_versions_nullable_fks(connection) -> None:
 async def init_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-        await connection.run_sync(_ensure_sqlite_columns)
+        if connection.dialect.name == "sqlite":
+            await connection.run_sync(_ensure_sqlite_columns)
 
 
 async def create_session_factory(

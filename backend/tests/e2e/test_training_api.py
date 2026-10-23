@@ -84,7 +84,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     db_path = (tmp_path / "app.db").as_posix()
     fake_predictor = _FakePredictor()
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{db_path}",
         storage_root=tmp_path / "storage",
         training_trainer=_FakeTrainer(),

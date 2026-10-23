@@ -24,6 +24,7 @@ async function request(path, options = {}) {
   const imageId = /^\/images\/([^/]+)/.exec(path)?.[1];
   const revision = imageId && annotationRevision(imageId);
   const response = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
     ...options,
     headers: {
       "X-Annotation-Session": annotationSession,
@@ -38,6 +39,7 @@ async function request(path, options = {}) {
   if (response.ok && imageId && nextRevision != null) setAnnotationRevision(imageId, nextRevision);
   if (response.status === 204) return null;
   if (!response.ok) {
+    if(response.status===401&&!path.startsWith("/auth/"))window.dispatchEvent(new CustomEvent("auth-required"));
     let detail = `${response.status} ${response.statusText}`;
     try {
       const payload = await response.json();
@@ -62,6 +64,15 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  authStatus: () => request('/auth/status'),
+  authMe: () => request('/auth/me'),
+  authLogin: (body) => request('/auth/login',{method:'POST',body:JSON.stringify(body)}),
+  authSetup: (body) => request('/auth/setup',{method:'POST',body:JSON.stringify(body)}),
+  authLogout: () => request('/auth/logout',{method:'POST'}),
+  authUsers: () => request('/auth/users'),
+  authCreateUser: (body) => request('/auth/users',{method:'POST',body:JSON.stringify(body)}),
+  authUpdateUser: (id,body) => request(`/auth/users/${id}`,{method:'PATCH',body:JSON.stringify(body)}),
+
   annotationQueue: (id, state = "all", offset = 0) => request(`/projects/${id}/annotation-queue?state=${encodeURIComponent(state)}&offset=${offset}&limit=48`),
   enqueueAnnotations: (id, payload) => request(`/projects/${id}/annotation-queue/enqueue`, { method: "POST", body: JSON.stringify(payload) }),
   claimAnnotation: async (id, imageId = null) => {

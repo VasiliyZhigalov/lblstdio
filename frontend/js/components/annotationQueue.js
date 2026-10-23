@@ -1,3 +1,4 @@
+import {authUser} from "../auth.js?v=auth-20261023a";
 import { api } from "../api.js?v=annotation-queue-20261022e";
 import { annotationRevision } from "../annotationSession.js";
 import { store, isClassification } from "../store.js";
@@ -31,7 +32,7 @@ export function initAnnotationQueue({ openImage, save, confirmModel, toast, fit 
   let lease = null, busy = false, listState = "all", offset = 0, homeSeq = 0, heartbeat, autosave, modal, stale = false;
   let claimChain = Promise.resolve();
   const projectId = () => store.get("currentProject")?.id;
-  const draftKey = id => `lblstdio:annotation-draft:${projectId()}:${id}`;
+  const draftKey = id => `lblstdio:annotation-draft:${authUser()?.id ? authUser().id+":" : ""}${projectId()}:${id}`;
   function closeModal() { modal?.remove(); modal = null; }
   function dialog(title, body, actions = "") {
     closeModal(); modal = document.createElement("div"); modal.className = "aq-modal-backdrop";
@@ -216,7 +217,7 @@ export function initAnnotationQueue({ openImage, save, confirmModel, toast, fit 
     }).catch(err=>{if(err.status===409)lock(err.message);toast(err.message);});
   });
   document.addEventListener('keydown',e=>{
-    if(store.get('projectTab')!=='annotate')return;
+    if(store.get('projectTab')!=='annotate'||document.querySelector('.auth-screen,.auth-dialog-backdrop'))return;
     if(modal){if(e.key==='Escape')closeModal();return;}
     if(e.target.closest?.('input,textarea,select,[contenteditable="true"]') || document.querySelector('.pd-modal-backdrop'))return;
     const shortcuts = {Space:'aq-finish', Delete:'aq-trash', KeyR:'aq-clear', KeyN:'aq-background'};

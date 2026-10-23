@@ -24,7 +24,7 @@ function isTypingTarget(target) {
 }
 
 function isModalOpen() {
-  if (document.querySelector(".aq-modal-backdrop")) return true;
+  if (document.querySelector(".aq-modal-backdrop,.auth-screen,.auth-dialog-backdrop")) return true;
   return MODAL_IDS.some((id) => {
     const el = document.getElementById(id);
     return el && !el.classList.contains("hidden");

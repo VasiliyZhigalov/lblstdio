@@ -37,7 +37,7 @@ async def test_lifespan_finishes_active_jobs_before_dispose(tmp_path, monkeypatc
     monkeypatch.setattr(AutoLabelJobRunner, "_run", _hang)
     monkeypatch.setattr("app.main.dispose_engine", _track_dispose)
 
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}",
         storage_root=tmp_path / "files",
         stream_runner=FakeStreamRunner(),

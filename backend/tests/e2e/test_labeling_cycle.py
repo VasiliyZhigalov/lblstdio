@@ -19,7 +19,7 @@ def _png(width: int = 40, height: int = 30) -> bytes:
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
     db_path = (tmp_path / "app.db").as_posix()
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{db_path}",
         storage_root=tmp_path / "storage",
     )
@@ -276,7 +276,7 @@ class TestLabelingCycleE2E:
 
 def test_delete_project_removes_files(tmp_path: Path) -> None:
     storage = tmp_path / "storage"
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}",
         storage_root=storage,
     )
@@ -294,7 +294,7 @@ def test_delete_project_removes_files(tmp_path: Path) -> None:
 
 
 def test_update_project(tmp_path: Path) -> None:
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}",
         storage_root=tmp_path / "storage",
     )

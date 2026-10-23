@@ -28,6 +28,9 @@ test("queue completes frames without reviewer, skips without a reason, and prese
   assert.equal(store.get("currentImage").id,"i1");
   assert.equal(win.document.querySelector("#aq-finish").disabled,true);
   store.patch({annotations:[{id:"box",verification_status:"VERIFIED"}],hasUnsavedChanges:true});
+  const loginOverlay=win.document.createElement('div');loginOverlay.className='auth-screen';win.document.body.append(loginOverlay);
+  win.document.body.dispatchEvent(new win.KeyboardEvent('keydown',{code:'Space',bubbles:true}));await tick();
+  assert.equal(tasks[0].state,'WORKING');loginOverlay.remove();
   win.document.body.dispatchEvent(new win.KeyboardEvent('keydown',{code:'Space',bubbles:true}));await tick();
   assert.match(win.document.querySelector("#aq-finish").textContent,/Пробел/);
   assert.match(win.document.querySelector("#aq-trash").textContent,/Delete/);

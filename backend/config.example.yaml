@@ -1,7 +1,6 @@
-# Root directory for all project data (SQLite DB + file storage).
+# Root directory for uploaded images, model weights and generated datasets.
 # Layout:
 #   <data_root>/
-#     app.db
 #     storage/
 #       projects/...
 #
@@ -12,5 +11,8 @@
 # Relative paths are resolved from the backend/ directory.
 # Override with env: LBLSTDIO_DATA_ROOT=Z:/lblstdio-data
 #
-# Default "." keeps app.db and storage/ next to the backend (current layout).
+# Configure PostgreSQL with LBLSTDIO_DATABASE_URL or database_url below.
+# The URL can also be supplied as an environment variable so credentials stay out of this file.
+# database_url: "postgresql+asyncpg://lblstdio:password@127.0.0.1:5432/lblstdio"
+# Default "." keeps storage/ next to the backend (current layout).
 data_root: "."

@@ -15,7 +15,7 @@ def _client(
     trusted_local: bool,
     allowed_roots: list[Path] | None = None,
 ) -> TestClient:
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}",
         storage_root=tmp_path / "storage",
         trusted_local=trusted_local,

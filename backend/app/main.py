@@ -52,6 +52,7 @@ def create_app(
     training_trainer=None,
     predictor=None,
     stream_runner=None,
+    auth_enabled: bool = True,
 ) -> FastAPI:
     settings = load_settings(
         data_root=data_root,
@@ -136,6 +137,11 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+    app.state.auth_enabled = auth_enabled
+    from app.presentation.auth_middleware import authorize
+    app.middleware("http")(authorize)
+    from app.presentation.api.v1.auth_router import router as auth_router
+    app.include_router(auth_router, prefix="/api/v1")
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",

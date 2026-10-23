@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -24,7 +25,7 @@ class AnnotationTaskRow(Base):
 class ImageDataRow(Base):
     __tablename__ = "image_data"
     image_id: Mapped[str] = mapped_column(ForeignKey("images.id", ondelete="CASCADE"), primary_key=True)
-    tags: Mapped[list] = mapped_column(JSON, default=list)
+    tags: Mapped[list] = mapped_column(JSON().with_variant(JSONB, "postgresql"), default=list)
     brightness: Mapped[float | None] = mapped_column(Float, nullable=True)
     sharpness: Mapped[float | None] = mapped_column(Float, nullable=True)
     import_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
@@ -400,3 +401,25 @@ class StreamSourceRow(Base):
     config_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     captured_frames_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UserRow(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    username: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LoginSessionRow(Base):
+    __tablename__ = "login_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AuthSetupRow(Base):
+    __tablename__ = "auth_setup"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)

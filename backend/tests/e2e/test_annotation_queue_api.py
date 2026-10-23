@@ -9,7 +9,7 @@ from app.main import create_app
 
 @pytest.fixture
 def fixture(tmp_path):
-    app = create_app(database_url=f"sqlite+aiosqlite:///{(tmp_path/'app.db').as_posix()}", storage_root=tmp_path/'storage')
+    app = create_app(auth_enabled=False, database_url=f"sqlite+aiosqlite:///{(tmp_path/'app.db').as_posix()}", storage_root=tmp_path/'storage')
     with TestClient(app) as c:
         pid = c.post('/api/v1/projects', json={'name':'Queue'}).json()['id']
         cid = c.post(f'/api/v1/projects/{pid}/classes', json={'name':'Car','color_hex':'#123456'}).json()['id']

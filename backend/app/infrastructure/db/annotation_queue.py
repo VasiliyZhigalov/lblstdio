@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from uuid import UUID
 
 from sqlalchemy import select, update, delete, func, or_, and_, literal
-from sqlalchemy.dialects.sqlite import insert
+from app.infrastructure.db.dialect import dialect_insert
 from app.infrastructure.db.tables import AnnotationTaskRow as T, ImageRow as I, AnnotationRow as A, ImageLabelRow as L, ProjectRow
 from app.infrastructure.db.repositories.project_data_repository import SqliteProjectDataRepository
 from app.domain.exceptions import DomainValidationException
@@ -18,10 +18,10 @@ class QueueConflict(DomainValidationException):
 def now(): return datetime.now(timezone.utc)
 
 
-def session_owner(value):
+def session_owner(value, user_id=None):
     try: token = str(UUID(value or ""))
     except (ValueError, TypeError, AttributeError): raise QueueConflict("Откройте вкладку заново: отсутствует сессия разметки")
-    return hashlib.sha256(token.encode()).hexdigest()
+    return hashlib.sha256((f"{user_id}:{token}" if user_id else token).encode()).hexdigest()
 
 
 def public(row, owner):
@@ -36,7 +36,7 @@ async def require_write(session, image_id, owner, revision):
     if task is None: return None
     if owner is None or revision is None:
         raise QueueConflict("Сначала получите кадр в работу из очереди")
-    # The conditional write reserves SQLite's writer lock for the entire mutation.
+    # The conditional update reserves the lease row for the remainder of this transaction.
     result = await session.execute(update(T).execution_options(synchronize_session=False).where(T.image_id == str(image_id), T.state == "WORKING", T.owner == owner, T.lease_until > now(), T.revision == revision).values(revision=T.revision + 1, updated_at=now()).returning(T.revision))
     updated = result.scalar_one_or_none()
     if updated is None: raise QueueConflict("Кадр занят, блокировка истекла или версия изменилась. Перезагрузите кадр; локальный черновик сохранён.")
@@ -79,7 +79,7 @@ class SqliteAnnotationQueue:
         targets = q.with_only_columns(I.id)
         stamp = now()
         # Re-enqueue is explicit; live leases are preserved even for the caller.
-        statement = insert(T).from_select(["image_id", "project_id", "state", "revision", "created_at", "updated_at"], targets.add_columns(literal(str(project_id)), literal("QUEUED"), literal(0), literal(stamp), literal(stamp)))
+        statement = dialect_insert(self.session, T).from_select(["image_id", "project_id", "state", "revision", "created_at", "updated_at"], targets.add_columns(literal(str(project_id)), literal("QUEUED"), literal(0), literal(stamp), literal(stamp)))
         statement = statement.on_conflict_do_update(index_elements=["image_id"], set_={"state": "QUEUED", "owner": None, "lease_until": None, "reason": None, "revision": T.revision+1, "updated_at": stamp}, where=or_(T.state != "WORKING", T.lease_until <= stamp))
         result = await self.session.execute(statement)
         await self.session.execute(update(I).where(I.id.in_(targets), I.id.in_(select(T.image_id).where(T.state == "QUEUED"))).values(status="IN_PROGRESS"))
@@ -96,7 +96,7 @@ class SqliteAnnotationQueue:
             if (existing and existing.state == "DONE") or (not existing and image.status in {"VERIFIED", "AUTO_VERIFIED"}):
                 raise QueueConflict("Кадр уже завершён и не входит в очередь разметки")
             # Opening an unfinished image explicitly takes it into the queue.
-            await self.session.execute(insert(T).values(image_id=str(image_id), project_id=str(project_id), state="QUEUED", revision=0, created_at=stamp, updated_at=stamp).on_conflict_do_nothing(index_elements=["image_id"]))
+            await self.session.execute(dialect_insert(self.session, T).values(image_id=str(image_id), project_id=str(project_id), state="QUEUED", revision=0, created_at=stamp, updated_at=stamp).on_conflict_do_nothing(index_elements=["image_id"]))
             task = await self.session.get(T, str(image_id))
             target = str(image_id)
         else:

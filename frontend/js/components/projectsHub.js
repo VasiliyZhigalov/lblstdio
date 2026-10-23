@@ -1,3 +1,4 @@
+import {isAnnotator} from "../auth.js?v=auth-20261023a";
 import { store } from "../store.js";
 import { api } from "../api.js";
 import { escapeHtml, formatRelative, refreshIcons, showModal } from "../utils/dom.js";
@@ -8,6 +9,10 @@ function taskTypeLabel(taskType) {
 
 async function enrichProject(project) {
   try {
+    if(isAnnotator()){
+      const [tasks,classes]=await Promise.all([api.annotationQueue(project.id),api.listClasses(project.id)]);
+      return {...project,imageCount:tasks.total,classCount:classes.length,verifiedCount:0};
+    }
     const [images, classes] = await Promise.all([
       api.listImages(project.id),
       api.listClasses(project.id),
@@ -76,7 +81,7 @@ function renderProjects() {
           </div>
           <p class="text-xs text-zinc-400 line-clamp-2 min-h-[2rem]">${escapeHtml(project.description || "Без описания")}</p>
           <div class="text-[11px] text-zinc-400">
-            ${project.imageCount ?? 0} кадров / ${project.classCount ?? 0} классов
+            ${project.imageCount ?? 0} ${isAnnotator()?"заданий в очереди":`кадров / ${project.classCount ?? 0} классов`}
             ${project.verifiedCount ? ` · ${project.verifiedCount} verified` : ""}
           </div>
           <button type="button" data-open-project="${project.id}"

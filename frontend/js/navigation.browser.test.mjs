@@ -169,6 +169,7 @@ function answer(pathname, method, options) {
 async function fetchImpl(url, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
   const pathname = pathnameOf(url);
+  if(pathname.endsWith("/auth/status"))return jsonResponse({enabled:false,needs_setup:false});
   const slot = waits.find((item) => !item.taken && item.match(pathname, method));
   if (slot) {
     slot.taken = true;
@@ -821,4 +822,21 @@ test("delete, verify, and save do not patch another image after navigation", asy
     (store.get("galleryAnnotations")?.["mut-a"] || []).some((item) => item.id === "saved-from-a"),
     false
   );
+});
+
+
+test("annotator routes open the queue without requesting image library or models",async()=>{
+  const {api}=await import('./api.js');
+  const {initAuth}=await import('./auth.js?v=auth-20261023a');
+  api.authStatus=async()=>({enabled:true,needs_setup:false});
+  api.authMe=async()=>({id:'worker',username:'worker',role:'ANNOTATOR'});
+  await initAuth();
+  putProject({id:'worker-project',name:'Worker project',images:[]});
+  const forbidden=hold((path,method)=>method==='GET'&&['/api/v1/projects/worker-project/images','/api/v1/projects/worker-project/dataset-versions','/api/v1/projects/worker-project/models'].includes(path));
+  go('/projects/worker-project/data');
+  await waitFor(()=>store.get('currentProject')?.id==='worker-project'&&store.get('projectTab')==='annotate'&&!document.getElementById('annotation-queue-home').classList.contains('hidden'),'annotator queue');
+  assert.equal(document.body.dataset.role,'ANNOTATOR');
+  assert.equal(forbidden.taken,false);
+  assert.equal(document.querySelector('[data-auth-users]'),null);
+  go('/streams');await waitFor(()=>window.location.hash==='#/projects','streams redirected');
 });

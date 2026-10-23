@@ -30,7 +30,7 @@ def seed(c):
 def test_deferred_training_persists_and_manual_activation(tmp_path):
     db=tmp_path/'app.db';kwargs={'database_url':f'sqlite+aiosqlite:///{db.as_posix()}','storage_root':tmp_path/'storage','training_trainer':Trainer()}
     future=(datetime.now(timezone.utc)+timedelta(days=1)).isoformat()
-    with TestClient(create_app(**kwargs)) as c:
+    with TestClient(create_app(auth_enabled=False, **kwargs)) as c:
         policy=c.get('/api/v1/compute-schedule').json()
         assert policy['collection_start']=='07:00' and policy['collection_end']=='18:00'
         assert c.put('/api/v1/compute-schedule',json={'collection_start':'25:00'}).status_code==422
@@ -39,7 +39,7 @@ def test_deferred_training_persists_and_manual_activation(tmp_path):
         queued=c.post(f'/api/v1/projects/{pid}/train',json={'dataset_version_id':vid,'not_before':future,'epochs':1,'device':'cpu'}).json()
         assert queued['status']=='QUEUED' and queued['schedule_mode']=='night'
         jid=queued['id']
-    with TestClient(create_app(**kwargs)) as c:
+    with TestClient(create_app(auth_enabled=False, **kwargs)) as c:
         assert c.get('/api/v1/compute-schedule').json()['collection_start']=='08:00'
         assert c.get(f'/api/v1/training-jobs/{jid}').json()['status']=='QUEUED'
         assert c.post(f'/api/v1/training-queue/{jid}/cancel').status_code==200
@@ -63,7 +63,7 @@ def test_scheduled_source_is_restored_after_restart(tmp_path,monkeypatch):
     from app.infrastructure.streaming.opencv_stream_runner import FakeStreamRunner
     monkeypatch.setattr('app.infrastructure.compute_schedule.in_window',lambda *args:False)
     db=tmp_path/'restore.db';kwargs={'database_url':f'sqlite+aiosqlite:///{db.as_posix()}','storage_root':tmp_path/'storage'}
-    with TestClient(create_app(**kwargs,stream_runner=FakeStreamRunner())) as c:
+    with TestClient(create_app(auth_enabled=False, **kwargs,stream_runner=FakeStreamRunner())) as c:
         pid=c.post('/api/v1/projects',json={'name':'Scheduled camera'}).json()['id']
         stream=c.post(f'/api/v1/projects/{pid}/streams/rtsp',json={'name':'Camera','rtsp_url':'rtsp://127.0.0.1/example'}).json()
         sid=stream['id']
@@ -72,7 +72,7 @@ def test_scheduled_source_is_restored_after_restart(tmp_path,monkeypatch):
         assert start.status_code==200,start.text
         assert start.json()['is_active'] is True
         assert c.get(f'/api/v1/streams/{sid}/status').json()['state']=='scheduled'
-    with TestClient(create_app(**kwargs,stream_runner=FakeStreamRunner())) as c:
+    with TestClient(create_app(auth_enabled=False, **kwargs,stream_runner=FakeStreamRunner())) as c:
         assert c.get(f'/api/v1/streams/{sid}/status').json()['state']=='scheduled'
         assert c.post(f'/api/v1/streams/{sid}/stop').json()['is_active'] is False
         assert c.get(f'/api/v1/streams/{sid}/status').json()['state']=='stopped'
@@ -80,7 +80,7 @@ def test_scheduled_source_is_restored_after_restart(tmp_path,monkeypatch):
 
 def test_auto_label_result_is_queued_unconfirmed_and_preview_is_read_only(tmp_path):
     from tests.e2e.test_training_api import _FakePredictor
-    app=create_app(database_url=f"sqlite+aiosqlite:///{(tmp_path/'auto.db').as_posix()}",storage_root=tmp_path/'storage',training_trainer=Trainer(),predictor=_FakePredictor())
+    app=create_app(auth_enabled=False, database_url=f"sqlite+aiosqlite:///{(tmp_path/'auto.db').as_posix()}",storage_root=tmp_path/'storage',training_trainer=Trainer(),predictor=_FakePredictor())
     with TestClient(app) as c:
         pid,vid=seed(c)
         job=c.post(f'/api/v1/projects/{pid}/train',json={'dataset_version_id':vid,'schedule_mode':'now','epochs':1,'device':'cpu'}).json()

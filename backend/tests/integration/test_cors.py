@@ -8,7 +8,7 @@ from app.main import create_app
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}",
         storage_root=tmp_path / "storage",
     )
