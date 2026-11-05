@@ -103,6 +103,80 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 ---
 
+## CLI для Codex
+
+`lblstdio_cli.py` работает через REST API. На машине с Codex нужен Python 3.10 или новее. Успешные команды возвращают JSON в stdout, ошибки идут в stderr с ненулевым кодом выхода.
+
+Из корня репозитория на машине с Codex:
+
+```powershell
+$env:LBLSTDIO_URL = 'https://lblstdio.example.internal'
+python lblstdio_cli.py auth login my-user
+python lblstdio_cli.py auth whoami
+python lblstdio_cli.py project list
+```
+
+Если backend на другой машине слушает только `127.0.0.1:8000`, откройте туннель командой `ssh -N -L 127.0.0.1:8000:127.0.0.1:8000 user@server` и задайте `LBLSTDIO_URL=http://127.0.0.1:8000` в терминале, из которого запускаете клиент. Пароль вводится при входе. CLI хранит cookie-сессию для каждого адреса сервера в профиле текущего пользователя. Для выхода используйте `auth logout`. Для сборки датасета, обучения, управления потоками и добавления кадров в очередь текущий API требует роль `ADMIN`.
+
+Для повторного входа без запроса пароля можно хранить учётные данные в JSON-файле в личном профиле. Например, создайте `%LOCALAPPDATA%\lblstdio-cli\credentials.json` вне репозитория и оставьте доступ к файлу только своей учётной записи. Поля файла:
+
+```json
+{
+  "url": "http://localhost:8000",
+  "username": "ваш логин",
+  "password": "ваш пароль"
+}
+```
+
+```powershell
+$env:LBLSTDIO_CREDENTIALS_FILE = Join-Path $env:LOCALAPPDATA 'lblstdio-cli\credentials.json'
+$env:LBLSTDIO_URL = 'http://localhost:8000'
+python lblstdio_cli.py auth login --credentials-file $env:LBLSTDIO_CREDENTIALS_FILE
+```
+
+Пароль в файле хранится открытым текстом. CLI проверяет совпадение адреса из файла с настроенным URL перед отправкой пароля. Для последующих команд используется сохранённая cookie-сессия.
+
+### Проверка кадра
+
+```powershell
+python lblstdio_cli.py project classes $project
+$lease = python lblstdio_cli.py review claim $project | ConvertFrom-Json
+python lblstdio_cli.py image show $lease.image_id
+python lblstdio_cli.py image download $lease.image_id --out frame.jpg
+```
+
+Если очередь пуста, `claim` возвращает `image_id: null`. Администратор может найти кадры через `image list PROJECT` и добавить их через `review enqueue PROJECT IMAGE`.
+
+Откройте скачанный кадр перед подтверждением. `image show` возвращает ID боксов и нормализованные координаты.
+
+```powershell
+$verified = python lblstdio_cli.py review verify $lease.image_id $annotation --session $lease.session --revision $lease.revision | ConvertFrom-Json
+# Только после проверки всей разметки кадра
+python lblstdio_cli.py review finish $project $lease.image_id --session $lease.session --revision $verified.revision
+```
+
+`finish` подтверждает все оставшиеся боксы или метку классификации и закрывает задание. Для исправления отдельного бокса передайте в `review save-boxes IMAGE boxes.json --session SESSION --revision REVISION` полный массив боксов кадра. У каждого элемента нужны `class_id`, `x_center`, `y_center`, `width` и `height` в долях от размера кадра. Сохраните `id` существующих боксов, а у новых опустите его. Для удаления отдельного бокса есть `review delete-box`, для пустого кадра — `review background`. В проектах классификации используйте `review set-label` и `review confirm-label`.
+
+После каждого изменения берите `revision` из нового ответа. Если нужно больше времени на просмотр, `review heartbeat PROJECT IMAGE --session SESSION` продлевает аренду. При HTTP 409 заново получите кадр с той же сессией и перечитайте разметку перед следующей попыткой.
+
+### Датасет, обучение и сбор
+
+```powershell
+$build = python lblstdio_cli.py dataset build $project --name cli-pilot | ConvertFrom-Json
+python lblstdio_cli.py dataset status $project $build.id
+# После COMPLETED возьмите ID версии из summary.version.id
+$training = python lblstdio_cli.py train start $project $version --schedule now --epochs 1 | ConvertFrom-Json
+python lblstdio_cli.py train status $training.id
+python lblstdio_cli.py stream list $project
+python lblstdio_cli.py stream start $stream
+python lblstdio_cli.py stream status $stream
+python lblstdio_cli.py stream stop $stream
+```
+
+Поток запускается с сохранёнными на сервере настройками источника и триггеров. После таймаута при запуске датасета или обучения проверьте `task list` перед повтором команды. Клиент использует существующие API, поэтому у запуска задач нет ключа идемпотентности, а `stream start` не принимает лимит времени или кадров.
+
+---
+
 ## 🔄 Цикл работы (Active Learning Workflow)
 
 ```text
