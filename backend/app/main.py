@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,6 +9,11 @@ from fastapi.staticfiles import StaticFiles
 from app.application.use_cases.ml.batch_auto_label import AutoLabelJobRunner
 from app.application.use_cases.ml.audit_annotations import AuditAnnotationsRunner
 from app.application.use_cases.ml.train_model import TrainingJobRunner
+from app.infrastructure.db.job_runner_scopes import (
+    audit_runner_scope,
+    auto_label_runner_scope,
+    training_runner_scope,
+)
 from app.infrastructure.db.session import create_session_factory, dispose_engine
 from app.infrastructure.ml.device import UltralyticsDeviceResolver
 from app.infrastructure.ml.ultralytics_predictor import (
@@ -25,6 +31,11 @@ from app.presentation.api.v1.matching_router import router as matching_router
 from app.presentation.api.v1.projects_router import router as projects_router
 from app.presentation.api.v1.stream_router import router as stream_router
 from app.presentation.api.v1.training_router import router as training_router
+from app.presentation.api.v1.project_data_router import router as project_data_router
+from app.presentation.api.v1.annotation_queue_router import router as annotation_queue_router, guard_annotation_mutation
+from app.infrastructure.db.annotation_queue import QueueConflict
+from fastapi import Depends, Request
+from fastapi.responses import JSONResponse
 from app.presentation.exception_handlers import register_exception_handlers
 from app.settings import load_settings
 
@@ -36,13 +47,21 @@ def create_app(
     storage_root: str | Path | None = None,
     data_root: str | Path | None = None,
     *,
+    trusted_local: bool | None = None,
+    allowed_roots: Sequence[str | Path] | None = None,
     training_trainer=None,
     predictor=None,
     stream_runner=None,
+    auth_enabled: bool = True,
 ) -> FastAPI:
-    settings = load_settings(data_root=data_root)
+    settings = load_settings(
+        data_root=data_root,
+        trusted_local=trusted_local,
+        allowed_roots=None if allowed_roots is None else list(allowed_roots),
+    )
     db_url = database_url or settings.database_url
     files_root = Path(storage_root) if storage_root is not None else settings.storage_root
+    resolved_storage = files_root.resolve()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -52,34 +71,47 @@ def create_app(
         engine, factory = await create_session_factory(db_url)
         app.state.engine = engine
         app.state.session_factory = factory
-        app.state.storage = LocalFileStorage(files_root)
+        app.state.storage = LocalFileStorage(resolved_storage)
+        app.state.storage_root = resolved_storage
         app.state.settings = settings
         app.state.metadata_reader = PillowMetadataReader()
+        from app.infrastructure.db.data_imports import DataImportManager
+        app.state.data_imports = DataImportManager(factory, app.state.storage)
+        await app.state.data_imports.recover()
+        from app.infrastructure.compute_schedule import ComputeSchedule
+        app.state.compute_schedule = ComputeSchedule(factory, stream_runner or OpenCVStreamRunner())
+        await app.state.compute_schedule.load()
         trainer = training_trainer or ProcessUltralyticsTrainer()
         predictor_instance = predictor or UltralyticsPredictor()
         classification_predictor = UltralyticsClassificationPredictor()
+        app.state.compute_schedule.predictors = [predictor_instance, classification_predictor]
+        app.state.model_predictor = predictor_instance
+        app.state.classification_predictor = classification_predictor
         device_resolver = UltralyticsDeviceResolver()
         app.state.training_runner = TrainingJobRunner(
-            factory,
+            training_runner_scope(factory),
             app.state.storage,
             trainer,
             device_resolver=device_resolver,
             max_concurrent=1,
         )
         app.state.auto_label_runner = AutoLabelJobRunner(
-            factory,
+            auto_label_runner_scope(factory),
             app.state.storage,
             predictor_instance,
             max_concurrent=1,
             classification_predictor=classification_predictor,
         )
         app.state.audit_annotations_runner = AuditAnnotationsRunner(
-            factory,
+            audit_runner_scope(factory),
             app.state.storage,
             predictor_instance,
             max_concurrent=1,
         )
-        app.state.stream_runner = stream_runner or OpenCVStreamRunner()
+        app.state.stream_runner = app.state.compute_schedule.streams
+        app.state.training_runner.admission = app.state.compute_schedule.training_slot
+        app.state.auto_label_runner.admission = app.state.compute_schedule.inference_slot
+        app.state.audit_annotations_runner.admission = app.state.compute_schedule.inference_slot
         app.state.stream_ingest_consumer = StreamIngestConsumer(
             factory, app.state.storage, app.state.stream_runner
         )
@@ -87,7 +119,13 @@ def create_app(
         await app.state.auto_label_runner.fail_orphaned_jobs()
         await app.state.audit_annotations_runner.fail_orphaned_jobs()
         app.state.stream_ingest_consumer.start()
+        await app.state.compute_schedule.restore_sources(app.state.storage)
+        app.state.compute_schedule.start()
         yield
+        await app.state.compute_schedule.close()
+        await app.state.data_imports.close()
+        await app.state.training_runner.close()
+        await app.state.auto_label_runner.close()
         await app.state.audit_annotations_runner.close()
         await app.state.stream_ingest_consumer.stop()
         app.state.stream_runner.stop_all()
@@ -99,22 +137,37 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+    app.state.auth_enabled = auth_enabled
+    from app.presentation.auth_middleware import authorize
+    app.middleware("http")(authorize)
+    from app.presentation.api.v1.auth_router import router as auth_router
+    app.include_router(auth_router, prefix="/api/v1")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Skipped-Duplicates", "X-Annotation-Revision"],
     )
     register_exception_handlers(app)
+    @app.exception_handler(QueueConflict)
+    async def queue_conflict(request: Request, exc: QueueConflict):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     app.include_router(projects_router, prefix="/api/v1")
-    app.include_router(images_router, prefix="/api/v1")
-    app.include_router(labels_router, prefix="/api/v1")
-    app.include_router(annotations_router, prefix="/api/v1")
-    app.include_router(matching_router, prefix="/api/v1")
+    app.include_router(images_router, prefix="/api/v1", dependencies=[Depends(guard_annotation_mutation)])
+    app.include_router(labels_router, prefix="/api/v1", dependencies=[Depends(guard_annotation_mutation)])
+    app.include_router(annotations_router, prefix="/api/v1", dependencies=[Depends(guard_annotation_mutation)])
+    app.include_router(matching_router, prefix="/api/v1", dependencies=[Depends(guard_annotation_mutation)])
     app.include_router(dataset_versions_router, prefix="/api/v1")
     app.include_router(training_router, prefix="/api/v1")
+    from app.presentation.api.v1.model_lab_router import router as model_lab_router
+    app.include_router(model_lab_router, prefix="/api/v1")
     app.include_router(stream_router, prefix="/api/v1")
+    app.include_router(project_data_router, prefix="/api/v1")
+    app.include_router(annotation_queue_router, prefix="/api/v1")
+    from app.presentation.api.v1.tasks_router import router as tasks_router
+    app.include_router(tasks_router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

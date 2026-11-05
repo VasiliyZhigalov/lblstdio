@@ -1,3 +1,4 @@
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -8,6 +9,7 @@ from app.domain.entities.annotation_class import AnnotationClass
 from app.domain.entities.model_version import ModelVersion
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
+from app.domain.exceptions import DomainValidationException
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
 
 
@@ -77,7 +79,7 @@ class _Uow:
 
 
 @pytest.mark.asyncio
-async def test_start_deactivates_other_active_stream_in_project() -> None:
+async def test_start_preserves_other_active_stream_in_project() -> None:
     project_id = uuid4()
     model = ModelVersion.create_uploaded(project_id, 1, "w.pt", name="m")
     a = StreamSource.create(
@@ -94,9 +96,9 @@ async def test_start_deactivates_other_active_stream_in_project() -> None:
         streams, _Models(model), _Classes(), _Storage(), runner, _Uow()
     ).execute(b.id)
 
-    assert streams.by_id[a.id].is_active is False
+    assert streams.by_id[a.id].is_active is True
     assert streams.by_id[b.id].is_active is True
-    assert ("stop", a.id) in runner.stopped
+    assert ("stop", a.id) not in runner.stopped
     assert b.id in runner.started
 
 
@@ -120,3 +122,105 @@ async def test_timer_stream_can_start_without_model() -> None:
     assert stream.is_active is True
     assert stream.id in runner.started
     assert runner.weights == [None]
+
+
+@pytest.mark.asyncio
+async def test_start_image_folder_reports_logon_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = tmp_path / "share"
+    folder.mkdir()
+    (folder / "a.jpg").write_bytes(b"x")
+    project_id = uuid4()
+    stream = StreamSource.create(
+        project_id,
+        "Share",
+        StreamSourceType.IMAGE_FOLDER,
+        str(folder),
+        config=StreamTriggerConfig(timer_enabled=True),
+    )
+    original = Path.is_dir
+
+    def fake(self, *args, **kwargs):
+        if Path(self) == folder:
+            raise OSError(1326, "Logon failure", str(self), 1326)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", fake)
+    runner = _Runner()
+    with pytest.raises(DomainValidationException, match="пользователя или пароль"):
+        await StartStreamUseCase(
+            _Streams(stream), _NoModels(), _Classes(), _Storage(), runner, _Uow()
+        ).execute(stream.id)
+    assert runner.started == []
+    assert stream.is_active is False
+
+
+class _SwapRunner:
+    """Independent sources match the production runner's concurrent collection contract."""
+
+    def __init__(self, fail_id) -> None:
+        self.fail_id = fail_id
+        self.running: dict = {}
+        self.started: list = []
+        self.stopped: list = []
+
+    def stop(self, stream_id) -> None:
+        self.stopped.append(("stop", stream_id))
+        self.running[stream_id] = False
+
+    def stop_project(self, project_id) -> None:
+        self.stopped.append(("stop_project", project_id))
+
+    def start(self, stream, weights, *, allowed_class_indices=None) -> None:
+        self.started.append(stream.id)
+        self.running[stream.id] = stream.id != self.fail_id
+
+    def wait_until_ready(self, stream_id, timeout: float = 30.0) -> StreamStatus:
+        if self.running.get(stream_id):
+            return StreamStatus(is_running=True, state="running")
+        return StreamStatus(
+            is_running=False,
+            state="error",
+            error_message="failed to open camera",
+        )
+
+    def get_status(self, stream_id) -> StreamStatus:
+        if self.running.get(stream_id):
+            return StreamStatus(is_running=True, state="running")
+        return StreamStatus(is_running=False, state="stopped")
+
+
+class _CountingUow:
+    def __init__(self) -> None:
+        self.commits = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+
+@pytest.mark.asyncio
+async def test_failed_replacement_keeps_previous_stream_active() -> None:
+    project_id = uuid4()
+    model = ModelVersion.create_uploaded(project_id, 1, "w.pt", name="m")
+    current = StreamSource.create(
+        project_id, "A", StreamSourceType.DEVICE, "0", model_version_id=model.id
+    )
+    current.activate()
+    replacement = StreamSource.create(
+        project_id, "B", StreamSourceType.DEVICE, "1", model_version_id=model.id
+    )
+    streams = _Streams(current, replacement)
+    runner = _SwapRunner(fail_id=replacement.id)
+    runner.running[current.id] = True
+    uow = _CountingUow()
+
+    with pytest.raises(DomainValidationException, match="failed to open camera"):
+        await StartStreamUseCase(
+            streams, _Models(model), _Classes(), _Storage(), runner, uow
+        ).execute(replacement.id)
+
+    assert streams.by_id[current.id].is_active is True
+    assert streams.by_id[replacement.id].is_active is False
+    assert runner.running[current.id] is True
+    assert uow.commits == 0

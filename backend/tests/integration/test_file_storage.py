@@ -19,6 +19,19 @@ async def test_saves_binary_stream(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_save_from_path_copies_in_chunks(tmp_path: Path) -> None:
+    storage = LocalFileStorage(tmp_path / "root")
+    source = tmp_path / "upload.bin"
+    payload = b"video-bytes" * 1000
+    source.write_bytes(payload)
+
+    relative = await storage.save_from_path("projects/p/videos", "clip.mp4", source)
+
+    assert (tmp_path / "root" / relative).read_bytes() == payload
+    assert source.read_bytes() == payload
+
+
+@pytest.mark.asyncio
 async def test_does_not_overwrite_on_name_collision(tmp_path: Path) -> None:
     storage = LocalFileStorage(tmp_path)
     first = await storage.save("images", "dup.png", b"first")

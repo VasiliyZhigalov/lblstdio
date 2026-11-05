@@ -15,6 +15,7 @@ class VerificationStatus(str, Enum):
 
 
 class ImageStatus(str, Enum):
+    IN_PROGRESS = "IN_PROGRESS"
     UNANNOTATED = "UNANNOTATED"
     REQUIRES_REVIEW = "REQUIRES_REVIEW"
     REQUIRES_RECHECK = "REQUIRES_RECHECK"
@@ -27,6 +28,11 @@ class ImageSourceType(str, Enum):
     MANUAL_UPLOAD = "MANUAL_UPLOAD"
     STREAM_INGEST = "STREAM_INGEST"
     DATASET_IMPORT = "DATASET_IMPORT"
+
+
+class ImageListSort(str, Enum):
+    CREATED = "created"
+    UNCERTAINTY = "uncertainty"
 
 
 class SplitType(str, Enum):
@@ -44,8 +50,10 @@ class DatasetVersionStatus(str, Enum):
 class TrainingJobStatus(str, Enum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    CANCELLING = "CANCELLING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class AutoLabelJobStatus(str, Enum):

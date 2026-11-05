@@ -1,6 +1,9 @@
+from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from app.application.use_cases.ml.batch_auto_label import (
     BatchAutoLabelUseCase,
@@ -12,12 +15,14 @@ from app.application.use_cases.ml.manage_model_version import (
     ExportModelVersionUseCase,
     RenameModelVersionUseCase,
     UploadModelVersionUseCase,
+    MAX_MODEL_UPLOAD_BYTES,
 )
 from app.application.use_cases.ml.train_model import (
     GetTrainingJobUseCase,
     ListModelVersionsUseCase,
     TrainModelUseCase,
 )
+from app.domain.exceptions import DomainValidationException
 from app.presentation.dependencies import (
     get_batch_auto_label_use_case,
     get_audit_annotations_runner,
@@ -30,6 +35,7 @@ from app.presentation.dependencies import (
     get_train_model_use_case,
     get_upload_model_version_use_case,
 )
+from app.presentation.streaming_io import UploadTooLarge, discard_file, spool_upload
 from app.presentation.schemas import (
     AutoLabelJobRead,
     AutoLabelRequest,
@@ -54,6 +60,8 @@ def _job_to_read(job) -> TrainingJobRead:
         status=job.status.value,
         epochs=job.epochs,
         patience=job.patience,
+        schedule_mode=job.schedule_mode,
+        not_before=job.not_before,
         batch_size=job.batch_size,
         imgsz=job.imgsz,
         device=job.device,
@@ -74,6 +82,7 @@ def _job_to_read(job) -> TrainingJobRead:
 
 def _model_to_read(model) -> ModelVersionRead:
     return ModelVersionRead(
+        class_metadata=getattr(model, "class_metadata", None),
         id=model.id,
         project_id=model.project_id,
         dataset_version_id=model.dataset_version_id,
@@ -130,6 +139,8 @@ async def start_training(
     job = await use_case.execute(
         project_id,
         payload.dataset_version_id,
+        schedule_mode=payload.schedule_mode,
+        not_before=payload.not_before,
         epochs=payload.epochs,
         batch_size=payload.batch_size,
         imgsz=payload.imgsz,
@@ -171,14 +182,25 @@ async def upload_model(
     name: str | None = Form(default=None),
     use_case: UploadModelVersionUseCase = Depends(get_upload_model_version_use_case),
 ) -> ModelVersionRead:
-    raw = await file.read()
-    model = await use_case.execute(
-        project_id,
-        filename=file.filename or "best.pt",
-        data=raw,
-        name=name,
-    )
-    return _model_to_read(model)
+    spooled: Path | None = None
+    try:
+        try:
+            spooled = await spool_upload(file, max_bytes=MAX_MODEL_UPLOAD_BYTES)
+        except UploadTooLarge as exc:
+            raise DomainValidationException(
+                f"weights file exceeds {exc.limit_bytes // (1024 * 1024)} MB limit"
+            ) from exc
+        model = await use_case.execute(
+            project_id,
+            filename=file.filename or "best.pt",
+            source_path=spooled,
+            name=name,
+        )
+        return _model_to_read(model)
+    finally:
+        if spooled is not None:
+            spooled.unlink(missing_ok=True)
+        await file.close()
 
 
 @router.patch(
@@ -199,12 +221,13 @@ async def export_model(
     project_id: UUID,
     model_id: UUID,
     use_case: ExportModelVersionUseCase = Depends(get_export_model_version_use_case),
-) -> Response:
-    archive, filename = await use_case.execute(project_id, model_id)
-    return Response(
-        content=archive,
+) -> FileResponse:
+    path, filename = await use_case.execute(project_id, model_id)
+    return FileResponse(
+        path,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        filename=filename,
+        background=BackgroundTask(discard_file, str(path)),
     )
 
 
@@ -239,6 +262,7 @@ async def auto_label(
         confidence_threshold=payload.confidence_threshold,
         iou_threshold=payload.iou_threshold,
         consistency_iou_threshold=payload.consistency_iou_threshold,
+        enqueue_for_annotation=payload.enqueue_for_annotation,
     )
     return _auto_to_read(job)
 

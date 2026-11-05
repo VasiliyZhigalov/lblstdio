@@ -1,6 +1,7 @@
 import { store, isClassification } from "../store.js";
+import { commitAnnotationChange } from "../annotationEdits.js";
 import { nextClassColor } from "../utils/math.js";
-import { api } from "../api.js";
+import { api } from "../api.js?v=annotation-queue-20261022e";
 import { escapeHtml, refreshIcons } from "../utils/dom.js";
 
 export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
@@ -13,8 +14,10 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
   function renderClasses() {
     const classes = [...(store.get("classes") || [])].sort((a, b) => a.index_id - b.index_id);
     const active = store.get("activeClassId");
+    const project = store.get("currentProject");
+    const manageLink = project ? `<a href="#/projects/${project.id}/data?section=classes" class="block text-[10px] text-indigo-300 mt-3 py-1">Настроить классы в Данных →</a>` : "";
     if (!classes.length) {
-      classesList.innerHTML = `<p class="text-[11px] text-zinc-500">Добавьте класс, чтобы начать разметку.</p>`;
+      classesList.innerHTML = `<p class="text-[11px] text-zinc-500">Создайте классы в разделе «Данные → Классы».</p>${manageLink}`;
       return;
     }
     classesList.innerHTML = classes
@@ -24,26 +27,18 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
         return `
           <div class="flex items-stretch gap-0.5 group/class">
             <button type="button" data-class-id="${cls.id}"
-              class="flex-1 flex items-center gap-2 px-2 ${
-                isClassification() ? "py-2.5" : "py-1.5"
-              } rounded-md text-left text-sm min-w-0 ${
+              class="flex-1 flex items-center gap-1.5 px-1.5 ${
+                isClassification() ? "py-1.5" : "py-0.5"
+              } rounded text-left text-[11px] leading-tight min-w-0 transition-colors ${
                 selected ? "bg-zinc-800 text-white" : "hover:bg-zinc-800/60 text-zinc-300"
               }">
-              <span class="font-mono text-[10px] text-zinc-500 w-4 shrink-0">${hotkey}</span>
-              <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:${escapeHtml(cls.color_hex)}"></span>
+              <span class="font-mono text-[9px] text-zinc-500 w-3 shrink-0">${hotkey}</span>
+              <span class="w-2 h-2 rounded-full shrink-0" style="background:${escapeHtml(cls.color_hex)}"></span>
               <span class="truncate" data-class-name="${cls.id}">${escapeHtml(cls.name)}</span>
-            </button>
-            <button type="button" data-rename-class="${cls.id}" title="Переименовать"
-              class="px-1.5 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/80 opacity-0 group-hover/class:opacity-100">
-              <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
-            </button>
-            <button type="button" data-delete-class="${cls.id}" title="Удалить класс"
-              class="px-1.5 rounded-md text-zinc-500 hover:text-red-400 hover:bg-red-950/40 opacity-0 group-hover/class:opacity-100">
-              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
             </button>
           </div>`;
       })
-      .join("");
+      .join("") + manageLink;
     refreshIcons();
   }
 
@@ -100,20 +95,20 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
           box.confidence == null ? "" : `${Math.round(Number(box.confidence) * 100)}%`;
         return `
           <div data-box-id="${box.id}"
-            class="box-row group flex items-center gap-2 px-2 py-1.5 rounded-md text-xs cursor-pointer ${
-              selected ? "selected" : "hover:bg-zinc-800/50"
+            class="box-row group flex items-center gap-3 px-3 py-2 rounded-lg text-sm cursor-pointer transition-colors ${
+              selected ? "selected bg-indigo-500/10 border border-indigo-500/30 text-white" : "hover:bg-zinc-800/60 text-zinc-300 border border-transparent"
             }">
-            <span class="w-2 h-2 rounded-full shrink-0" style="background:${color}"></span>
-            <span class="truncate flex-1">${index + 1}. ${escapeHtml(name)}</span>
+            <span class="w-3 h-3 rounded-full shrink-0 shadow-inner" style="background:${color}"></span>
+            <span class="truncate flex-1 font-medium">${index + 1}. ${escapeHtml(name)}</span>
             ${
               pending
-                ? `<span class="text-[9px] text-amber-300 border border-amber-800/60 rounded px-1" title="Предсказание модели">Модель</span>`
+                ? `<span class="text-[10px] font-bold text-amber-300 bg-amber-950/50 border border-amber-500/30 rounded-md px-1.5 py-0.5" title="Предсказание модели">AI</span>`
                 : ""
             }
-            <span class="text-[9px] font-mono text-zinc-500">${confidence}</span>
+            <span class="text-[10px] font-mono font-bold text-zinc-500">${confidence}</span>
             <button type="button" data-delete-box="${box.id}"
-              class="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400" title="Удалить">
-              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+              class="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 transition-opacity ml-1" title="Удалить">
+              <i data-lucide="trash-2" class="w-4 h-4"></i>
             </button>
           </div>`;
       })
@@ -122,6 +117,7 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
   }
 
   classesList.addEventListener("click", async (event) => {
+    if (store.get("annotationReadonly")) return;
     const deleteBtn = event.target.closest("[data-delete-class]");
     if (deleteBtn) {
       event.preventDefault();
@@ -202,7 +198,8 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
     }
     const selectedId = store.get("selectedBoxId");
     if (selectedId) {
-      const annotations = store.get("annotations").map((box) =>
+      const before = store.get("annotations");
+      const annotations = before.map((box) =>
         box.id === selectedId ? { ...box, class_id: classId } : box
       );
       store.patch({
@@ -211,6 +208,7 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
         hasUnsavedChanges: true,
         saveStatus: "unsaved",
       });
+      commitAnnotationChange(before);
     } else {
       store.set("activeClassId", classId);
     }
@@ -222,17 +220,20 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
   });
   annotationsList.addEventListener("mouseleave", () => store.set("hoveredBoxId", null));
   annotationsList.addEventListener("click", (event) => {
+    if (store.get("annotationReadonly")) return;
     const del = event.target.closest("[data-delete-box]");
     if (del) {
       const id = del.dataset.deleteBox;
       if (onDeleteBox) onDeleteBox(id);
       else {
+        const before = store.get("annotations");
         store.patch({
-          annotations: store.get("annotations").filter((box) => box.id !== id),
+          annotations: before.filter((box) => box.id !== id),
           selectedBoxId: store.get("selectedBoxId") === id ? null : store.get("selectedBoxId"),
           hasUnsavedChanges: true,
           saveStatus: "unsaved",
         });
+        commitAnnotationChange(before);
       }
       return;
     }
@@ -284,31 +285,37 @@ export function initSidebar({ onError, onDeleteBox, onAssignClass }) {
 }
 
 export function selectClassByHotkey(digit) {
+  if (store.get("annotationReadonly")) return;
   const classes = [...(store.get("classes") || [])].sort((a, b) => a.index_id - b.index_id);
   const cls = classes[digit - 1];
   if (!cls) return;
   const selectedId = store.get("selectedBoxId");
   if (selectedId) {
+    const before = store.get("annotations");
     store.patch({
-      annotations: store.get("annotations").map((box) =>
+      annotations: before.map((box) =>
         box.id === selectedId ? { ...box, class_id: cls.id } : box
       ),
       activeClassId: cls.id,
       hasUnsavedChanges: true,
       saveStatus: "unsaved",
     });
+    commitAnnotationChange(before);
   } else {
     store.set("activeClassId", cls.id);
   }
 }
 
 export function deleteSelectedBox() {
+  if (store.get("annotationReadonly")) return;
   const id = store.get("selectedBoxId");
   if (!id) return;
+  const before = store.get("annotations");
   store.patch({
-    annotations: store.get("annotations").filter((box) => box.id !== id),
+    annotations: before.filter((box) => box.id !== id),
     selectedBoxId: null,
     hasUnsavedChanges: true,
     saveStatus: "unsaved",
   });
+  commitAnnotationChange(before);
 }

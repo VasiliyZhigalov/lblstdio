@@ -95,12 +95,44 @@ backend/
 ├── config.yaml                         # Локальный конфиг (не в git; copy from example)
 │
 # По умолчанию data_root = backend/ (рядом с этим деревом):
-├── storage/                            # Физическое хранение: <data_root>/storage
-└── app.db                              # SQLite: <data_root>/app.db
+└── storage/                            # Физическое хранение: <data_root>/storage
 ```
 
-Пути к данным задаются одним корнем `data_root` в `config.yaml` или переменной `LBLSTDIO_DATA_ROOT`
-(например `Z:/lblstdio-data` или `//NAS/share/lblstdio`). Внутри корня всегда `app.db` и `storage/`.
+Путь к файлам задаётся через `data_root` в `config.yaml` или `LBLSTDIO_DATA_ROOT`. Для базы задайте
+`database_url` в конфиге или `LBLSTDIO_DATABASE_URL`, например:
+`postgresql+asyncpg://lblstdio:<password>@127.0.0.1:5432/lblstdio`. SQLite остаётся вариантом для
+тестов и локального запуска; production использует PostgreSQL. Изображения, веса и датасеты остаются
+в `data_root/storage` и не помещаются в базу.
+
+### PostgreSQL
+
+В `backend/compose.postgres.yaml` описан отдельный PostgreSQL 17 с постоянным Docker volume. Создайте
+`backend/.env` с собственным длинным паролем (файл игнорируется Git):
+
+```powershell
+@"
+POSTGRES_PASSWORD=<длинный случайный пароль>
+LBLSTDIO_DATABASE_URL=postgresql+asyncpg://lblstdio:<URL-encoded пароль>@127.0.0.1:5432/lblstdio
+"@ | Set-Content -Encoding ascii .env
+docker compose --env-file .env -f compose.postgres.yaml up -d --wait
+```
+
+Остановите приложение перед переносом SQLite. Для переноса задайте `--source` текущей SQLite-базе и
+`--target` пустой PostgreSQL-базе:
+
+```powershell
+$env:LBLSTDIO_DATABASE_URL = (Get-Content .env | Where-Object { $_ -like 'LBLSTDIO_DATABASE_URL=*' }) -replace '^LBLSTDIO_DATABASE_URL=', ''
+python scripts/migrate_sqlite_to_postgres.py `
+  --source "sqlite+aiosqlite:///C:/path/to/app.db" `
+  --target "$env:LBLSTDIO_DATABASE_URL"
+```
+
+Переносчик проверяет, что PostgreSQL пуст, переносит строки таблиц пакетами и оставляет SQLite-файл
+на месте. Каталог `storage` копируется отдельно, если меняется сервер или диск. После переноса
+запускайте приложение командой `./start_postgres.ps1`: она загружает URL из `.env`, проверяет БД и
+запускает сервер. Переносчик сохраняет старые записи фоновых заданий, которые остались от уже
+удалённых проектов; PostgreSQL помечает эти прежние ссылки как непроверенные, а новые ссылки
+проверяет. Для production настройте регулярные `pg_dump` и периодически проверяйте восстановление.
 
 ---
 
@@ -306,3 +338,13 @@ REST API (актуально):
 2. **`UnverifiedDataException` $\to$ HTTP 400 Bad Request:** Попытка включить неподтвержденные аннотации или изображения со статусом `REQUIRES_REVIEW` в сборку датасета.
 3. **`ResourceNotFoundException` $\to$ HTTP 404 Not Found:** Отсутствие запрашиваемого кадра, модели или проекта.
 4. **`ModelExecutionException` $\to$ HTTP 500 Internal Server Error:** Сбои при инициализации CUDA, чтении поврежденных весов или нехватке памяти при инференсе.
+
+## Авторизация и роли
+
+При первом открытии приложения создаётся первый администратор: логин и пароль задаёт владелец. Общего пароля по умолчанию нет. Остальных пользователей администратор добавляет через кнопку «Пользователи» в верхней панели. Роли: `ADMIN` и `ANNOTATOR`.
+
+Сеанс хранится на сервере 12 часов; браузер получает случайный токен в HttpOnly / SameSite=Strict cookie. В базе сохраняются только хэш токена и PBKDF2-хэши паролей. Отключение пользователя, сброс пароля и смена роли отзывают его сеансы.
+
+Разметчик видит проекты, классы и незавершённую очередь. Изображения вне очереди и административные API для него закрыты. Изменять разметку можно только с действующим закреплением кадра и актуальной ревизией; закрепление привязано к пользователю и вкладке. Кнопки «Очистить», «Удалить в корзину» и «Фон» работают только для своего кадра. Админ управляет всеми разделами и пользователями; снять свою роль или отключить себя нельзя.
+
+Авторизация включена по умолчанию. Параметр `create_app(auth_enabled=False)` используется только в изолированных тестах остальных подсистем; через API отключить вход нельзя.

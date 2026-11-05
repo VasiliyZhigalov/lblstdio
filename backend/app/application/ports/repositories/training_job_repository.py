@@ -32,6 +32,10 @@ class ITrainingJobRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_by_project(self, project_id: UUID) -> list[TrainingJob]:
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_by_dataset_version(self, dataset_version_id: UUID) -> None:
         raise NotImplementedError
 

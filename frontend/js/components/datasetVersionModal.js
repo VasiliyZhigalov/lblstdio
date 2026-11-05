@@ -62,6 +62,7 @@ export function initDatasetVersionModal({
   let previewImages = [];
   let versionCount = 0;
   let createdVersionId = null;
+  let modalGeneration = 0;
   const splits = { train: 80, valid: 20 };
 
   function renderSplitLabels() {
@@ -116,12 +117,14 @@ export function initDatasetVersionModal({
   }
 
   function close() {
+    modalGeneration += 1;
     showModal(modal, false);
     spinner.classList.add("hidden");
     showForm();
   }
 
   function open() {
+    modalGeneration += 1;
     const images = getImages() || [];
     const project = getProject();
     previewImages = images;
@@ -138,13 +141,7 @@ export function initDatasetVersionModal({
       "hidden",
       isClassification()
     );
-    if (pending > 0) {
-      banner.classList.remove("hidden");
-      banner.textContent =
-        `Нельзя создать версию датасета: ${pending} кадра содержат неподтвержденную разметку. ` +
-        "Подтвердите или отклоните их перед сборкой";
-      buildBtn.disabled = true;
-    } else if (totalVerified < MIN_VERIFIED_IMAGES) {
+    if (totalVerified < MIN_VERIFIED_IMAGES) {
       banner.classList.remove("hidden");
       banner.textContent =
         `Нужно минимум ${MIN_VERIFIED_IMAGES} подтвержденных кадров (сейчас ${totalVerified}). ` +
@@ -195,6 +192,7 @@ export function initDatasetVersionModal({
   buildBtn?.addEventListener("click", async () => {
     const project = getProject();
     if (!project || buildBtn.disabled) return;
+    const generation = modalGeneration;
     spinner.classList.remove("hidden");
     buildBtn.disabled = true;
     try {
@@ -205,7 +203,7 @@ export function initDatasetVersionModal({
       };
       const drift = 1 - (ratios.train + ratios.valid);
       ratios.valid = Number((ratios.valid + drift).toFixed(4));
-      const version = await api.createDatasetVersion(project.id, {
+      let job = await api.createDatasetJob(project.id, {
         name: document.getElementById("ds-name").value.trim() || null,
         train: ratios.train,
         valid: ratios.valid,
@@ -242,13 +240,21 @@ export function initDatasetVersionModal({
           multiplier: Number(document.getElementById("ds-multiplier").value || 3),
         },
       });
+      while (["QUEUED", "RUNNING"].includes(job.status)) {
+        const text = document.getElementById("dataset-building-text");
+        const progress = document.getElementById("dataset-building-progress");
+        if (generation === modalGeneration && text) text.textContent = job.total ? `Сборка датасета: ${job.processed} из ${job.total} кадров` : "Подготовка датасета…";
+        if (generation === modalGeneration && progress) { progress.classList.toggle("hidden", !job.total); if (job.total) progress.value = Math.min(100, Math.round(job.processed * 100 / job.total)); }
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        job = await api.getDataImport(project.id, job.id);
+      }
+      if (job.status !== "COMPLETED") throw new Error(job.error || "Не удалось создать датасет");
+      const version = job.summary.version;
       versionCount = version.version_number;
-      spinner.classList.add("hidden");
-      showSuccess(version);
-      onCreated?.(version);
+      if (generation === modalGeneration) spinner.classList.add("hidden");
+      if (getProject()?.id === project.id) { if (generation === modalGeneration) showSuccess(version); onCreated?.(version); }
     } catch (err) {
-      spinner.classList.add("hidden");
-      buildBtn.disabled = false;
+      if (generation === modalGeneration) { spinner.classList.add("hidden"); buildBtn.disabled = false; }
       onError?.(err.message || String(err));
     }
   });

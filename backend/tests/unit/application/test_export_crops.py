@@ -1,11 +1,14 @@
+import asyncio
 import io
+import time
 import zipfile
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from PIL import Image as PILImage
 
-from app.application.use_cases.dataset.export_crops import ExportCropsUseCase
+from app.application.use_cases.dataset.export_crops import ExportCropsUseCase, encode_crop
 from app.domain.entities.annotation import Annotation
 from app.domain.entities.annotation_class import AnnotationClass
 from app.domain.entities.image import Image
@@ -101,35 +104,38 @@ class TestExportCropsUseCase:
     async def test_zip_groups_crops_by_class(self, crops_fixture) -> None:
         use_case, project, frame = crops_fixture
 
-        payload, filename = await use_case.execute(project.id)
+        path, filename = await use_case.execute(project.id)
 
         assert filename == "Export_Me_crop.zip"
-        archive = zipfile.ZipFile(io.BytesIO(payload))
-        names = set(archive.namelist())
-        root = "Export_Me_crop"
-        assert f"{root}/class_c/" in names
-        assert f"{root}/class_a/{frame.id}_0.png" in names
-        assert f"{root}/class_a/{frame.id}_1.png" in names
-        assert f"{root}/class_b/{frame.id}_0.png" in names
-        class_a_crops = {
-            name
-            for name in names
-            if name.startswith(f"{root}/class_a/") and name.endswith(".png")
-        }
-        assert class_a_crops == {
-            f"{root}/class_a/{frame.id}_0.png",
-            f"{root}/class_a/{frame.id}_1.png",
-        }
+        try:
+            with zipfile.ZipFile(path) as archive:
+                names = set(archive.namelist())
+                root = "Export_Me_crop"
+                assert f"{root}/class_c/" in names
+                assert f"{root}/class_a/{frame.id}_0.png" in names
+                assert f"{root}/class_a/{frame.id}_1.png" in names
+                assert f"{root}/class_b/{frame.id}_0.png" in names
+                class_a_crops = {
+                    name
+                    for name in names
+                    if name.startswith(f"{root}/class_a/") and name.endswith(".png")
+                }
+                assert class_a_crops == {
+                    f"{root}/class_a/{frame.id}_0.png",
+                    f"{root}/class_a/{frame.id}_1.png",
+                }
 
-        first = PILImage.open(io.BytesIO(archive.read(f"{root}/class_a/{frame.id}_0.png")))
-        second = PILImage.open(io.BytesIO(archive.read(f"{root}/class_a/{frame.id}_1.png")))
-        third = PILImage.open(io.BytesIO(archive.read(f"{root}/class_b/{frame.id}_0.png")))
-        assert first.size == (10, 16)
-        assert second.size == (20, 16)
-        assert third.size == (10, 8)
-        assert first.getpixel((0, 0)) == (10, 20, 30)
-        assert second.getpixel((0, 0)) == (200, 10, 10)
-        assert third.getpixel((0, 0)) == (1, 2, 3)
+                first = PILImage.open(io.BytesIO(archive.read(f"{root}/class_a/{frame.id}_0.png")))
+                second = PILImage.open(io.BytesIO(archive.read(f"{root}/class_a/{frame.id}_1.png")))
+                third = PILImage.open(io.BytesIO(archive.read(f"{root}/class_b/{frame.id}_0.png")))
+                assert first.size == (10, 16)
+                assert second.size == (20, 16)
+                assert third.size == (10, 8)
+                assert first.getpixel((0, 0)) == (10, 20, 30)
+                assert second.getpixel((0, 0)) == (200, 10, 10)
+                assert third.getpixel((0, 0)) == (1, 2, 3)
+        finally:
+            Path(path).unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_classification_project_is_rejected(self, crops_fixture) -> None:
@@ -145,6 +151,31 @@ class TestExportCropsUseCase:
         use_case, *_ = crops_fixture
         with pytest.raises(ResourceNotFoundException):
             await use_case.execute(uuid4())
+
+    @pytest.mark.asyncio
+    async def test_encoding_does_not_block_event_loop(self, crops_fixture, monkeypatch) -> None:
+        from app.application.use_cases.dataset import export_crops as export_mod
+
+        def slow_encode(image, box):
+            time.sleep(0.25)
+            return encode_crop(image, box)
+
+        monkeypatch.setattr(export_mod, "encode_crop", slow_encode)
+        use_case, project, _frame = crops_fixture
+        finished = False
+
+        async def side() -> None:
+            nonlocal finished
+            await asyncio.sleep(0.05)
+            finished = True
+
+        task = asyncio.create_task(side())
+        path, _filename = await use_case.execute(project.id)
+        try:
+            assert finished
+            await task
+        finally:
+            Path(path).unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_archive_filename_matches_zip_stem(self, crops_fixture) -> None:

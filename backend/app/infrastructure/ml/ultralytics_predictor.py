@@ -10,11 +10,31 @@ from app.application.ports.services.model_predictor import (
 )
 
 
+_PREDICT_BATCH = 4
+
+
 def _norm(path: str) -> str:
     return Path(path).resolve().as_posix()
 
 
+def _cached_model(cache: dict[str, object], weights_path: str):
+    model = cache.get(weights_path)
+    if model is None:
+        from ultralytics import YOLO
+
+        model = YOLO(weights_path)
+        cache[weights_path] = model
+    return model
+
+
 class UltralyticsPredictor(IModelPredictor):
+    def __init__(self) -> None:
+        self._models: dict[str, object] = {}
+
+    def release(self) -> None:
+        """Drop model references before handing GPU memory to training."""
+        self._models.clear()
+
     def predict(
         self,
         weights_path: str,
@@ -24,13 +44,13 @@ class UltralyticsPredictor(IModelPredictor):
     ) -> dict[str, list[Detection]]:
         if not image_paths:
             return {}
-        from ultralytics import YOLO
-
-        model = YOLO(weights_path)
+        model = _cached_model(self._models, weights_path)
         results = model.predict(
             source=image_paths,
             conf=confidence_threshold,
             iou=iou_threshold,
+            batch=_PREDICT_BATCH,
+            stream=True,
             verbose=False,
         )
         by_resolved = {_norm(path): path for path in image_paths}
@@ -69,10 +89,15 @@ def _yolo_class_names(model) -> dict[int, str]:
 
 
 class UltralyticsClassificationPredictor(IClassificationPredictor):
-    def class_names(self, weights_path: str) -> dict[int, str]:
-        from ultralytics import YOLO
+    def __init__(self) -> None:
+        self._models: dict[str, object] = {}
 
-        return _yolo_class_names(YOLO(weights_path))
+    def release(self) -> None:
+        """Drop model references before handing GPU memory to training."""
+        self._models.clear()
+
+    def class_names(self, weights_path: str) -> dict[int, str]:
+        return _yolo_class_names(_cached_model(self._models, weights_path))
 
     def predict(
         self,
@@ -82,11 +107,11 @@ class UltralyticsClassificationPredictor(IClassificationPredictor):
     ) -> dict[str, Classification]:
         if not image_paths:
             return {}
-        from ultralytics import YOLO
-
-        model = YOLO(weights_path)
+        model = _cached_model(self._models, weights_path)
         results = model.predict(
             source=image_paths,
+            batch=_PREDICT_BATCH,
+            stream=True,
             verbose=False,
         )
         by_resolved = {_norm(path): path for path in image_paths}

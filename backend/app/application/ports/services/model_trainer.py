@@ -15,6 +15,7 @@ class TrainingConfig:
     base_weights: str = "yolov8n.pt"
     patience: int = 20
     task: str = "detection"
+    job_id: str | None = None
 
 
 @dataclass
@@ -29,6 +30,7 @@ class TrainingResult:
     test_metrics: dict[str, Any] | None = None
     stopped_early: bool = False
     epochs_trained: int | None = None
+    cancelled: bool = False
 
 
 EpochCallback = Callable[[dict[str, Any]], None]

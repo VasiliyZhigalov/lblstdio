@@ -36,6 +36,7 @@ from app.application.use_cases.labels.save_image_label import (
 )
 from app.application.use_cases.images.delete_image import DeleteImageUseCase
 from app.application.use_cases.images.get_image import GetImageUseCase, ListImagesUseCase
+from app.application.use_cases.images.get_images_summary import GetImagesSummaryUseCase
 from app.application.use_cases.images.set_test_holdout import SetImageTestHoldoutUseCase
 from app.application.use_cases.images.upload_images import UploadImagesUseCase
 from app.application.use_cases.keypoints.propagate_box import PropagateBoxViaKeypointsUseCase
@@ -68,6 +69,9 @@ from app.application.use_cases.streaming.control_stream import (
     StopStreamUseCase,
 )
 from app.application.use_cases.streaming.manage_stream_source import ManageStreamSourceUseCase
+from app.infrastructure.db.repositories.annotation_audit_job_repository import (
+    SqliteAnnotationAuditJobRepository,
+)
 from app.infrastructure.db.repositories.annotation_repository import (
     SqliteAnnotationRepository,
 )
@@ -165,6 +169,12 @@ def get_auto_label_job_repo(
     return SqliteAutoLabelJobRepository(session)
 
 
+def get_annotation_audit_job_repo(
+    session: AsyncSession = Depends(get_session),
+) -> SqliteAnnotationAuditJobRepository:
+    return SqliteAnnotationAuditJobRepository(session)
+
+
 def get_stream_source_repo(
     session: AsyncSession = Depends(get_session),
 ) -> SqliteStreamSourceRepository:
@@ -256,8 +266,18 @@ def get_delete_project_use_case(
     projects: SqliteProjectRepository = Depends(get_project_repo),
     storage: LocalFileStorage = Depends(get_storage),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+    training_jobs: SqliteTrainingJobRepository = Depends(get_training_job_repo),
+    auto_label_jobs: SqliteAutoLabelJobRepository = Depends(get_auto_label_job_repo),
+    audit_jobs: SqliteAnnotationAuditJobRepository = Depends(get_annotation_audit_job_repo),
 ) -> DeleteProjectUseCase:
-    return DeleteProjectUseCase(projects, storage, uow)
+    return DeleteProjectUseCase(
+        projects,
+        storage,
+        uow,
+        training_jobs=training_jobs,
+        auto_label_jobs=auto_label_jobs,
+        audit_jobs=audit_jobs,
+    )
 
 
 def get_create_class_use_case(
@@ -315,6 +335,14 @@ def get_list_images_use_case(
     images: SqliteImageRepository = Depends(get_image_repo),
 ) -> ListImagesUseCase:
     return ListImagesUseCase(images)
+
+
+def get_images_summary_use_case(
+    images: SqliteImageRepository = Depends(get_image_repo),
+    annotations: SqliteAnnotationRepository = Depends(get_annotation_repo),
+    labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
+) -> GetImagesSummaryUseCase:
+    return GetImagesSummaryUseCase(images, annotations, labels)
 
 
 def get_get_image_use_case(

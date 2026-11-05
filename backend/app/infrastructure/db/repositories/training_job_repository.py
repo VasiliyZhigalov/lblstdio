@@ -25,6 +25,8 @@ def _to_row(job: TrainingJob) -> TrainingJobRow:
         device=job.device,
         base_weights=job.base_weights,
         patience=job.patience,
+        schedule_mode=job.schedule_mode,
+        not_before=job.not_before,
         metrics_history=list(job.metrics_history),
         test_metrics=job.test_metrics,
         current_epoch=job.current_epoch,
@@ -48,6 +50,8 @@ def _from_row(row: TrainingJobRow) -> TrainingJob:
         imgsz=row.imgsz,
         device=row.device,
         base_weights=row.base_weights,
+        schedule_mode=row.schedule_mode,
+        not_before=ensure_utc(row.not_before),
         patience=getattr(row, "patience", 20) or 20,
         metrics_history=list(row.metrics_history or []),
         test_metrics=getattr(row, "test_metrics", None),
@@ -107,6 +111,12 @@ class SqliteTrainingJobRepository(ITrainingJobRepository):
             select(TrainingJobRow).where(
                 TrainingJobRow.status.in_([item.value for item in statuses])
             )
+        )
+        return [_from_row(row) for row in result]
+
+    async def list_by_project(self, project_id: UUID) -> list[TrainingJob]:
+        result = await self._session.scalars(
+            select(TrainingJobRow).where(TrainingJobRow.project_id == str(project_id))
         )
         return [_from_row(row) for row in result]
 

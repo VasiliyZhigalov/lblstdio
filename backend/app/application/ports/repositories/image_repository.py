@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from uuid import UUID
 
 from app.domain.entities.image import Image
+from app.domain.enums import ImageListSort, ImageStatus, SplitType
 
 
 class IImageRepository(ABC):
@@ -16,6 +17,27 @@ class IImageRepository(ABC):
 
     @abstractmethod
     async def list_by_project(self, project_id: UUID) -> list[Image]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        project_id: UUID,
+        *,
+        split: SplitType | None = None,
+        status: ImageStatus | None = None,
+        offset: int = 0,
+        limit: int | None = None,
+        sort: ImageListSort | None = None,
+    ) -> list[Image]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def min_model_confidence(self, image_ids: Sequence[UUID]) -> dict[UUID, float]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_phashes(self, project_id: UUID) -> list[int]:
         raise NotImplementedError
 
     @abstractmethod

@@ -55,3 +55,31 @@ def test_invalid_config_mapping(tmp_path: Path) -> None:
     (tmp_path / "config.yaml").write_text("- just a list\n", encoding="utf-8")
     with pytest.raises(ValueError, match="mapping"):
         load_settings(backend_dir=tmp_path, environ={})
+
+
+def test_trusted_local_defaults_off(tmp_path: Path) -> None:
+    settings = load_settings(backend_dir=tmp_path, environ={})
+    assert settings.trusted_local is False
+    assert settings.allowed_roots == ()
+
+
+def test_trusted_local_and_roots_from_config(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    (tmp_path / "config.yaml").write_text(
+        "trusted_local: true\n"
+        "allowed_roots:\n"
+        f'  - "{media.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    settings = load_settings(backend_dir=tmp_path, environ={})
+    assert settings.trusted_local is True
+    assert settings.allowed_roots == (media.resolve(),)
+
+
+def test_env_overrides_trusted_local(tmp_path: Path) -> None:
+    (tmp_path / "config.yaml").write_text("trusted_local: true\n", encoding="utf-8")
+    settings = load_settings(
+        backend_dir=tmp_path,
+        environ={"LBLSTDIO_TRUSTED_LOCAL": "false"},
+    )
+    assert settings.trusted_local is False

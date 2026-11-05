@@ -31,13 +31,23 @@ class _FakeStorage:
 
 
 class _FakeMetadata:
-    def __init__(self, size: tuple[int, int] = (320, 240)) -> None:
+    def __init__(
+        self,
+        size: tuple[int, int] = (320, 240),
+        hashes: dict[bytes, int] | None = None,
+    ) -> None:
         self.size = size
         self.seen: list[bytes] = []
+        self.hashes = hashes or {}
 
     def read_size(self, data: bytes) -> tuple[int, int]:
         self.seen.append(data)
         return self.size
+
+    def perceptual_hash(self, data: bytes) -> int:
+        if data in self.hashes:
+            return self.hashes[data]
+        return int.from_bytes(data.ljust(8, b"\0")[:8], "big")
 
 
 class _FakeProjects:
@@ -54,12 +64,16 @@ class _FakeImages:
     def __init__(self) -> None:
         self.added: list[Image] = []
         self.updated: list[Image] = []
+        self.phashes: list[int] = []
 
     async def add_many(self, images: list[Image]) -> None:
         self.added.extend(images)
 
     async def update(self, image: Image) -> None:
         self.updated.append(image)
+
+    async def list_phashes(self, project_id: UUID) -> list[int]:
+        return list(self.phashes)
 
 
 class _FakeAnnotations:
@@ -127,7 +141,7 @@ class TestUploadImagesUseCase:
         assert all(item.status == ImageStatus.UNANNOTATED for item in result)
         assert all(item.width == 320 and item.height == 240 for item in result)
         assert metadata.seen == [item.content for item in files]
-        assert images.added == result
+        assert images.added == result.images
         assert uow.committed is True
 
     @pytest.mark.asyncio
@@ -324,7 +338,7 @@ class TestUploadImagesUseCase:
             [UploadedFile(filename="bundle.zip", content=payload)],
         )
         assert len(result) == 1
-        assert images.added == result
+        assert images.added == result.images
         assert uow.committed is True
 
     @pytest.mark.asyncio
@@ -351,7 +365,7 @@ class TestUploadImagesUseCase:
         )
         assert len(result) == 1
         assert metadata.seen == [b"from-disk"]
-        assert images.added == result
+        assert images.added == result.images
         assert uow.committed is True
 
     @pytest.mark.asyncio
@@ -406,5 +420,109 @@ class TestUploadImagesUseCase:
                     UploadedFile(filename="a.txt", content=b"3 0.5 0.5 0.1 0.1\n"),
                     UploadedFile(filename="classes.txt", content=b"only\n"),
                 ],
+            )
+        assert uow.committed is False
+
+    @pytest.mark.asyncio
+    async def test_dedup_skips_near_duplicates_and_keeps_diverse_first(self) -> None:
+        hashes = {
+            b"near-a": 0,
+            b"near-b": 1,
+            b"far": (1 << 64) - 1,
+        }
+        project = Project.create("Demo")
+        images = _FakeImages()
+        use_case = UploadImagesUseCase(
+            projects=_FakeProjects(project),
+            images=images,
+            storage=_FakeStorage(),
+            metadata=_FakeMetadata(hashes=hashes),
+            uow=_FakeUow(),
+            annotations=_FakeAnnotations(),
+            classes=_FakeClasses(),
+        )
+
+        result = await use_case.execute(
+            project.id,
+            [
+                UploadedFile(filename="near-a.png", content=b"near-a"),
+                UploadedFile(filename="near-b.png", content=b"near-b"),
+                UploadedFile(filename="far.png", content=b"far"),
+            ],
+            dedup=True,
+            similarity=0.9,
+        )
+
+        assert [item.file_name for item in result.images] == ["far.png", "near-a.png"]
+        assert result.skipped == 1
+
+    @pytest.mark.asyncio
+    async def test_dedup_compares_against_existing_project_hashes(self) -> None:
+        hashes = {b"clone": 1, b"other": (1 << 64) - 1}
+        project = Project.create("Demo")
+        images = _FakeImages()
+        images.phashes = [0]
+        use_case = UploadImagesUseCase(
+            projects=_FakeProjects(project),
+            images=images,
+            storage=_FakeStorage(),
+            metadata=_FakeMetadata(hashes=hashes),
+            uow=_FakeUow(),
+            annotations=_FakeAnnotations(),
+            classes=_FakeClasses(),
+        )
+
+        result = await use_case.execute(
+            project.id,
+            [
+                UploadedFile(filename="clone.png", content=b"clone"),
+                UploadedFile(filename="other.png", content=b"other"),
+            ],
+            dedup=True,
+            similarity=0.9,
+        )
+
+        assert [item.file_name for item in result.images] == ["other.png"]
+        assert result.skipped == 1
+
+    @pytest.mark.asyncio
+    async def test_dedup_keeps_labeled_near_duplicates(self) -> None:
+        hashes = {b"raw-img": 0, b"twin-img": 1}
+        project = Project.create("Demo")
+        use_case = UploadImagesUseCase(
+            projects=_FakeProjects(project),
+            images=_FakeImages(),
+            storage=_FakeStorage(),
+            metadata=_FakeMetadata(hashes=hashes),
+            uow=_FakeUow(),
+            annotations=_FakeAnnotations(),
+            classes=_FakeClasses(),
+        )
+
+        result = await use_case.execute(
+            project.id,
+            [
+                UploadedFile(filename="raw.png", content=b"raw-img"),
+                UploadedFile(filename="raw.txt", content=b"0 0.5 0.5 0.1 0.1\n"),
+                UploadedFile(filename="classes.txt", content=b"obj\n"),
+                UploadedFile(filename="twin.png", content=b"twin-img"),
+            ],
+            dedup=True,
+            similarity=0.9,
+        )
+
+        names = [item.file_name for item in result.images]
+        assert names == ["raw.png"]
+        assert result.skipped == 1
+
+    @pytest.mark.asyncio
+    async def test_rejects_similarity_outside_unit_interval(self) -> None:
+        use_case, _, _, uow, project, *_ = _use_case()
+        with pytest.raises(DomainValidationException, match="similarity"):
+            await use_case.execute(
+                project.id,
+                [UploadedFile(filename="a.png", content=b"one")],
+                dedup=True,
+                similarity=1.2,
             )
         assert uow.committed is False

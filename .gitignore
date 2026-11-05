@@ -1,4 +1,3 @@
-```gitignore
 # Dependencies
 node_modules/
 
@@ -7,6 +6,7 @@ dist/
 build/
 *.min.js
 *.bundle.js
+lblstdio.bundle
 
 # Logs and temp files
 *.log
@@ -42,10 +42,6 @@ htmlcov/
 !.coveragerc
 
 # Distribution / packaging
-.Python
-env/
-venv/
-.venv/
 .ENV
 .venv.bak
 env.bak
@@ -68,4 +64,8 @@ yarn-error.log*
 .Trashes
 ehthumbs.db
 Thumbs.db
-```
+
+# SQLite runtime files
+*.db-shm
+*.db-wal
+*.db-journal

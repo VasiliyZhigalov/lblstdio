@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from uuid import UUID, uuid4
 
@@ -12,18 +13,38 @@ from app.application.ports.repositories.stream_source_repository import (
     IStreamSourceRepository,
 )
 from app.application.ports.services.stream_runner import IStreamRunner
-from app.application.ports.storage.file_storage import IFileStorage
+from app.application.ports.storage.file_storage import (
+    IFileStorage,
+    save_upload,
+    upload_size,
+)
 from app.application.ports.unit_of_work import IUnitOfWork
 from app.application.use_cases.streaming.control_stream import allowed_class_indices_for
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
-from app.domain.services.image_folder import list_image_files
+from app.domain.services.image_folder import (
+    describe_folder_access_error,
+    list_image_files,
+)
 from app.domain.services.rtsp_url import validate_rtsp_url
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
 
 _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
 _MAX_VIDEO_BYTES = 500 * 1024 * 1024
+
+
+def _assert_within_roots(path: Path, roots: Sequence[Path]) -> None:
+    if any(path == root or path.is_relative_to(root) for root in roots):
+        return
+    raise DomainValidationException("Путь вне разрешённых каталогов")
+
+
+class _KeepModel:
+    """Sentinel: configure_triggers leaves model_version_id unchanged."""
+
+
+_KEEP_MODEL = _KeepModel()
 
 
 class ManageStreamSourceUseCase:
@@ -65,6 +86,22 @@ class ManageStreamSourceUseCase:
         await self._uow.commit()
         return stream
 
+    async def duplicate_for_project(
+        self, stream_id: UUID, project_id: UUID, name: str
+    ) -> StreamSource:
+        """Create a project-scoped source using an existing source's private URI."""
+        await self._require_project(project_id)
+        source = await self._require_stream(stream_id)
+        duplicate = StreamSource.create(
+            project_id=project_id,
+            name=name,
+            source_type=source.source_type,
+            source_uri=source.source_uri,
+        )
+        await self._streams.add(duplicate)
+        await self._uow.commit()
+        return duplicate
+
     async def create_device(
         self, project_id: UUID, name: str, device_index: int
     ) -> StreamSource:
@@ -82,18 +119,46 @@ class ManageStreamSourceUseCase:
         return stream
 
     async def create_image_folder(
-        self, project_id: UUID, name: str, folder_path: str
+        self,
+        project_id: UUID,
+        name: str,
+        folder_path: str,
+        *,
+        allowed_roots: Sequence[Path] | None = None,
     ) -> StreamSource:
         await self._require_project(project_id)
         raw = folder_path.strip().strip('"').strip("'")
         if not raw:
             raise DomainValidationException("Укажите путь к папке")
+        candidate = Path(raw).expanduser()
         try:
-            resolved = Path(raw).expanduser().resolve(strict=True)
+            resolved = candidate.resolve(strict=False)
         except OSError as exc:
             raise DomainValidationException(f"Папка не найдена: {raw}") from exc
-        if not resolved.is_dir():
-            raise DomainValidationException("Укажите путь к папке, а не к файлу")
+        if allowed_roots is not None:
+            _assert_within_roots(resolved, allowed_roots)
+        try:
+            is_directory = resolved.is_dir()
+        except OSError as exc:
+            raise DomainValidationException(
+                describe_folder_access_error(exc, raw)
+            ) from exc
+        if not is_directory:
+            try:
+                exists = resolved.exists()
+            except OSError as exc:
+                raise DomainValidationException(
+                    describe_folder_access_error(exc, raw)
+                ) from exc
+            if exists:
+                raise DomainValidationException("Укажите путь к папке, а не к файлу")
+            raise DomainValidationException(f"Папка не найдена: {raw}")
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise DomainValidationException(f"Папка не найдена: {raw}") from exc
+        if allowed_roots is not None:
+            _assert_within_roots(resolved, allowed_roots)
         if not list_image_files(resolved):
             raise DomainValidationException(
                 "В папке нет изображений jpg, png или webp"
@@ -113,7 +178,10 @@ class ManageStreamSourceUseCase:
         project_id: UUID,
         name: str,
         filename: str,
-        data: bytes,
+        data: bytes | None = None,
+        *,
+        source_path: Path | None = None,
+        allowed_roots: Sequence[Path] | None = None,
     ) -> StreamSource:
         await self._require_project(project_id)
         ext = PurePosixPath(filename).suffix.lower()
@@ -121,16 +189,32 @@ class ManageStreamSourceUseCase:
             raise DomainValidationException(
                 f"unsupported video format {ext!r}; allowed: {sorted(_VIDEO_EXTENSIONS)}"
             )
-        if not data:
+        size = upload_size(data, source_path)
+        if size <= 0:
             raise DomainValidationException("video file is empty")
-        if len(data) > _MAX_VIDEO_BYTES:
+        if size > _MAX_VIDEO_BYTES:
             raise DomainValidationException(
                 f"video file exceeds {_MAX_VIDEO_BYTES // (1024 * 1024)} MB limit"
             )
         video_id = uuid4()
         relative_dir = f"projects/{project_id}/videos"
         stored_name = f"{video_id}{ext}"
-        relative_path = await self._storage.save(relative_dir, stored_name, data)
+        relative_path = await save_upload(
+            self._storage,
+            relative_dir,
+            stored_name,
+            data=data,
+            source_path=source_path,
+        )
+        if allowed_roots is not None:
+            try:
+                absolute = Path(self._storage.get_absolute_path(relative_path))
+                _assert_within_roots(absolute, allowed_roots)
+            except (ValueError, DomainValidationException) as exc:
+                await self._storage.delete(relative_path)
+                if isinstance(exc, DomainValidationException):
+                    raise
+                raise DomainValidationException("Путь вне разрешённых каталогов") from exc
         stream = StreamSource.create(
             project_id=project_id,
             name=name or PurePosixPath(filename).stem,
@@ -149,10 +233,16 @@ class ManageStreamSourceUseCase:
         self,
         stream_id: UUID,
         config: StreamTriggerConfig,
-        model_version_id: UUID | None = None,
+        model_version_id: UUID | None | _KeepModel = _KEEP_MODEL,
     ) -> StreamSource:
         stream = await self._require_stream(stream_id)
-        if model_version_id is not None:
+        allowed = await self._allowed_classes(stream.project_id, config)
+        if model_version_id is _KEEP_MODEL:
+            if config.timer_enabled:
+                stream.set_model(None)
+        elif model_version_id is None:
+            stream.set_model(None)
+        else:
             model = await self._models.get_by_id(model_version_id)
             if model is None or model.project_id != stream.project_id:
                 raise ResourceNotFoundException(
@@ -164,14 +254,21 @@ class ManageStreamSourceUseCase:
         await self._uow.commit()
 
         if self._runner is not None and stream.is_active:
-            allowed: frozenset[int] | None = None
-            if self._classes is not None:
-                project_classes = await self._classes.list_by_project(stream.project_id)
-                allowed = allowed_class_indices_for(config, project_classes)
             self._runner.update_triggers(
                 stream_id, config, allowed_class_indices=allowed
             )
         return stream
+
+    async def _allowed_classes(
+        self, project_id: UUID, config: StreamTriggerConfig
+    ) -> frozenset[int] | None:
+        if self._classes is None:
+            if config.tripwire_classes:
+                joined = ", ".join(str(item) for item in config.tripwire_classes)
+                raise DomainValidationException(f"unknown class ids: {joined}")
+            return None
+        project_classes = await self._classes.list_by_project(project_id)
+        return allowed_class_indices_for(config, project_classes)
 
     async def delete(self, stream_id: UUID) -> None:
         stream = await self._require_stream(stream_id)

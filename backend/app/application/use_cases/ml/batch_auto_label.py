@@ -10,6 +10,7 @@ from uuid import UUID
 import anyio
 from PIL import Image as PILImage
 
+from app.application.ports.job_runner_scopes import AutoLabelScopeFactory
 from app.application.ports.repositories.annotation_repository import IAnnotationRepository
 from app.application.ports.repositories.auto_label_job_repository import (
     IAutoLabelJobRepository,
@@ -53,6 +54,7 @@ from app.domain.value_objects.bounding_box import BoundingBox
 
 _ORPHAN_MESSAGE = "interrupted by server restart"
 _CONSISTENCY_SCALE = 1.08
+_INFERENCE_CHUNK = 8
 
 
 def _inverse_center_scale(det: Detection) -> Detection:
@@ -149,6 +151,7 @@ class BatchAutoLabelUseCase:
         confidence_threshold: float = 0.05,
         iou_threshold: float = 0.7,
         consistency_iou_threshold: float = 0.8,
+        enqueue_for_annotation: bool = False,
     ) -> AutoLabelJob:
         model = await self._models.get_by_id(model_version_id)
         if model is None or model.project_id != project_id:
@@ -182,8 +185,10 @@ class BatchAutoLabelUseCase:
                 "provide image_ids or set all_unannotated=true"
             )
 
+        if enqueue_for_annotation:
+            selected = [image for image in selected if image.status == ImageStatus.UNANNOTATED]
         if not selected:
-            raise DomainValidationException("no images selected for auto-labeling")
+            raise DomainValidationException("no unannotated images selected for auto-labeling")
 
         job = AutoLabelJob.create(
             project_id=project_id,
@@ -193,6 +198,7 @@ class BatchAutoLabelUseCase:
             iou_threshold=iou_threshold,
             consistency_iou_threshold=consistency_iou_threshold,
         )
+        job.enqueue_for_annotation = enqueue_for_annotation
         await self._jobs.add(job)
         await self._uow.commit()
 
@@ -229,7 +235,7 @@ class BatchAutoLabelUseCase:
 
         project_images = await self._images.list_by_project(job.project_id)
         by_id = {item.id: item for item in project_images}
-        selected = [by_id[image_id] for image_id in job.image_ids if image_id in by_id]
+        selected = [by_id[image_id] for image_id in job.image_ids if image_id in by_id and (not job.enqueue_for_annotation or by_id[image_id].status == ImageStatus.UNANNOTATED)]
         if not selected:
             job.mark_failed("no images available for auto-labeling")
             await self._jobs.update(job)
@@ -252,100 +258,121 @@ class BatchAutoLabelUseCase:
                     job, model, selected, weights_abs
                 )
             classes = await self._classes.list_by_project(job.project_id)
-            class_by_index = {item.index_id: item for item in classes}
-            abs_paths = [
-                self._storage.get_absolute_path(item.file_path) for item in selected
-            ]
-            path_to_image = {
-                self._storage.get_absolute_path(item.file_path): item
-                for item in selected
-            }
+            from app.domain.services.model_classes import classes_for_model
+            class_by_index = {item.index_id: item for item in classes_for_model(classes, model)}
+            total_predictions = 0
+            chunk_size = max(1, _INFERENCE_CHUNK)
+            for start in range(0, len(selected), chunk_size):
+                chunk = selected[start : start + chunk_size]
+                abs_paths = [
+                    self._storage.get_absolute_path(item.file_path) for item in chunk
+                ]
+                path_to_image = {
+                    self._storage.get_absolute_path(item.file_path): item
+                    for item in chunk
+                }
 
-            predictions = await anyio.to_thread.run_sync(
-                self._predictor.predict,
-                weights_abs,
-                abs_paths,
-                job.confidence_threshold,
-                job.iou_threshold,
-            )
+                predictions = await anyio.to_thread.run_sync(
+                    self._predictor.predict,
+                    weights_abs,
+                    abs_paths,
+                    job.confidence_threshold,
+                    job.iou_threshold,
+                )
 
-            with tempfile.TemporaryDirectory(prefix="lblstdio-consistency-") as tmp:
-                augmented_paths: dict[UUID, tuple[str, str]] = {}
-                for image in selected:
-                    original_path = self._storage.get_absolute_path(image.file_path)
-                    raw = await self._storage.read(image.file_path)
-                    augmented_paths[image.id] = await anyio.to_thread.run_sync(
-                        _write_consistency_images,
-                        original_path,
-                        Path(tmp),
-                        raw,
+                with tempfile.TemporaryDirectory(prefix="lblstdio-consistency-") as tmp:
+                    augmented_paths: dict[UUID, tuple[str, str]] = {}
+                    for image in chunk:
+                        original_path = self._storage.get_absolute_path(image.file_path)
+                        raw = await self._storage.read(image.file_path)
+                        augmented_paths[image.id] = await anyio.to_thread.run_sync(
+                            _write_consistency_images,
+                            original_path,
+                            Path(tmp),
+                            raw,
+                        )
+
+                    flip_paths = [paths[0] for paths in augmented_paths.values()]
+                    stretch_paths = [paths[1] for paths in augmented_paths.values()]
+                    flip_predictions = await anyio.to_thread.run_sync(
+                        self._predictor.predict,
+                        weights_abs,
+                        flip_paths,
+                        job.confidence_threshold,
+                        job.iou_threshold,
+                    )
+                    stretch_predictions = await anyio.to_thread.run_sync(
+                        self._predictor.predict,
+                        weights_abs,
+                        stretch_paths,
+                        job.confidence_threshold,
+                        job.iou_threshold,
                     )
 
-                flip_paths = [paths[0] for paths in augmented_paths.values()]
-                stretch_paths = [paths[1] for paths in augmented_paths.values()]
-                flip_predictions = await anyio.to_thread.run_sync(
-                    self._predictor.predict,
-                    weights_abs,
-                    flip_paths,
-                    job.confidence_threshold,
-                    job.iou_threshold,
-                )
-                stretch_predictions = await anyio.to_thread.run_sync(
-                    self._predictor.predict,
-                    weights_abs,
-                    stretch_paths,
-                    job.confidence_threshold,
-                    job.iou_threshold,
-                )
-
-            total_predictions = 0
-            for abs_path, detections in predictions.items():
-                image = path_to_image.get(abs_path)
-                if image is None:
-                    continue
-                existing = await self._annotations.list_by_image(image.id)
-                kept = [
-                    box
-                    for box in existing
-                    if box.verification_status != VerificationStatus.PENDING_REVIEW
-                    or box.model_version_id != model.id
-                ]
-                created = self._detections_to_annotations(
-                    image.id, detections, class_by_index, model.id
-                )
-                flip_path, stretch_path = augmented_paths[image.id]
-                is_consistent = all_runs_are_consistent(
-                    detections,
-                    (
+                for abs_path, detections in predictions.items():
+                    image = path_to_image.get(abs_path)
+                    if image is None:
+                        continue
+                    existing = await self._annotations.list_by_image(image.id)
+                    kept = [
+                        box
+                        for box in existing
+                        if box.verification_status != VerificationStatus.PENDING_REVIEW
+                        or box.model_version_id != model.id
+                    ]
+                    created = self._detections_to_annotations(
+                        image.id, detections, class_by_index, model.id
+                    )
+                    flip_path, stretch_path = augmented_paths[image.id]
+                    is_consistent = all_runs_are_consistent(
+                        detections,
                         (
-                            flip_predictions.get(flip_path, []),
-                            transform_horizontal_flip,
+                            (
+                                flip_predictions.get(flip_path, []),
+                                transform_horizontal_flip,
+                            ),
+                            (
+                                stretch_predictions.get(stretch_path, []),
+                                _inverse_center_scale,
+                            ),
                         ),
-                        (
-                            stretch_predictions.get(stretch_path, []),
-                            _inverse_center_scale,
-                        ),
-                    ),
-                    confidence_threshold=job.confidence_threshold,
-                    iou_threshold=job.consistency_iou_threshold,
-                )
-                if is_consistent:
-                    for annotation in created:
-                        annotation.auto_verify()
-                merged = kept + created
-                await self._annotations.replace_for_image(image.id, merged)
-                image.recalculate_status(merged)
-                await self._images.update(image)
-                total_predictions += len(created)
+                        confidence_threshold=job.confidence_threshold,
+                        iou_threshold=job.consistency_iou_threshold,
+                    )
+                    if is_consistent and not job.enqueue_for_annotation:
+                        for annotation in created:
+                            annotation.auto_verify()
+                    merged = kept + created
+                    await self._annotations.replace_for_image(image.id, merged)
+                    image.recalculate_status(merged)
+                    await self._images.update(image)
+                    total_predictions += len(created)
+                job.total_images_processed = start + len(chunk)
+                job.total_predictions_generated = total_predictions
+                await self._jobs.update(job)
+                await self._uow.commit()
 
             job.mark_completed(len(selected), total_predictions)
             await self._jobs.update(job)
             await self._uow.commit()
             return job
         except Exception as exc:
-            job.mark_failed(str(exc))
-            await self._jobs.update(job)
-            await self._uow.commit()
+            message = str(exc)
+            try:
+                await self._uow.rollback()
+            except Exception:
+                pass
+            try:
+                fresh = await self._jobs.get_by_id(job_id)
+                if fresh is not None and fresh.status not in {
+                    AutoLabelJobStatus.COMPLETED,
+                    AutoLabelJobStatus.FAILED,
+                }:
+                    fresh.mark_failed(message)
+                    await self._jobs.update(fresh)
+                    await self._uow.commit()
+            except Exception:
+                pass
             raise
 
     def _detections_to_annotations(
@@ -394,7 +421,8 @@ class BatchAutoLabelUseCase:
             weights_abs,
         )
         model_folders = {str(name) for name in model_names.values()}
-        if model_folders != set(by_folder):
+        imported_mapping = (model.class_metadata or {}).get("class_mapping")
+        if not imported_mapping and model_folders != set(by_folder):
             raise DomainValidationException(
                 f"model classes {sorted(model_folders)} do not match "
                 f"project classes {sorted(by_folder)}"
@@ -418,46 +446,56 @@ class BatchAutoLabelUseCase:
             await self._uow.commit()
             return job
 
-        abs_paths = [
-            self._storage.get_absolute_path(item.file_path) for item in to_predict
-        ]
-        predictions = await anyio.to_thread.run_sync(
-            self._classification_predictor.predict,
-            weights_abs,
-            abs_paths,
-            job.confidence_threshold,
-        )
-
         total_predictions = 0
-        for image in to_predict:
-            abs_path = self._storage.get_absolute_path(image.file_path)
-            classification = predictions.get(abs_path)
-            if (
-                not isinstance(classification, Classification)
-                or classification.confidence < job.confidence_threshold
-            ):
-                if image.id in by_image:
-                    await self._labels.delete_by_image_id(image.id)
-                    image.recalculate_status_from_label(None)
-                    await self._images.update(image)
-                continue
-            folder = model_names.get(classification.class_index)
-            cls = by_folder.get(str(folder)) if folder is not None else None
-            if cls is None:
-                raise DomainValidationException(
-                    f"predicted class_index {classification.class_index} "
-                    "is not in the project"
-                )
-            label = ImageLabel.create_prediction(
-                image_id=image.id,
-                class_id=cls.id,
-                confidence=classification.confidence,
-                model_version_id=model.id,
+        chunk_size = max(1, _INFERENCE_CHUNK)
+        for start in range(0, len(to_predict), chunk_size):
+            batch = to_predict[start : start + chunk_size]
+            abs_paths = [
+                self._storage.get_absolute_path(item.file_path) for item in batch
+            ]
+            predictions = await anyio.to_thread.run_sync(
+                self._classification_predictor.predict,
+                weights_abs,
+                abs_paths,
+                job.confidence_threshold,
             )
-            await self._labels.upsert(label)
-            image.recalculate_status_from_label(label)
-            await self._images.update(image)
-            total_predictions += 1
+
+            for image in batch:
+                abs_path = self._storage.get_absolute_path(image.file_path)
+                classification = predictions.get(abs_path)
+                if (
+                    not isinstance(classification, Classification)
+                    or classification.confidence < job.confidence_threshold
+                ):
+                    if image.id in by_image:
+                        await self._labels.delete_by_image_id(image.id)
+                        image.recalculate_status_from_label(None)
+                        await self._images.update(image)
+                    continue
+                folder = model_names.get(classification.class_index)
+                cls = by_folder.get(str(folder)) if folder is not None else None
+                if imported_mapping:
+                    target = imported_mapping.get(str(classification.class_index))
+                    cls = next((c for c in classes if str(c.id) == target), None)
+                if cls is None:
+                    raise DomainValidationException(
+                        f"predicted class_index {classification.class_index} "
+                        "is not in the project"
+                    )
+                label = ImageLabel.create_prediction(
+                    image_id=image.id,
+                    class_id=cls.id,
+                    confidence=classification.confidence,
+                    model_version_id=model.id,
+                )
+                await self._labels.upsert(label)
+                image.recalculate_status_from_label(label)
+                await self._images.update(image)
+                total_predictions += 1
+            job.total_images_processed = start + len(batch)
+            job.total_predictions_generated = total_predictions
+            await self._jobs.update(job)
+            await self._uow.commit()
 
         job.mark_completed(len(to_predict), total_predictions)
         await self._jobs.update(job)
@@ -481,14 +519,14 @@ class AutoLabelJobRunner:
 
     def __init__(
         self,
-        session_factory,
+        scopes: AutoLabelScopeFactory,
         storage: IFileStorage,
         predictor: IModelPredictor,
         *,
         max_concurrent: int = 1,
         classification_predictor: IClassificationPredictor | None = None,
     ) -> None:
-        self._session_factory = session_factory
+        self._scopes = scopes
         self._storage = storage
         self._predictor = predictor
         self._classification_predictor = classification_predictor
@@ -503,69 +541,72 @@ class AutoLabelJobRunner:
     async def run_inline(self, job_id: UUID) -> None:
         await self._run(job_id)
 
-    async def fail_orphaned_jobs(self) -> int:
-        from app.infrastructure.db.repositories.auto_label_job_repository import (
-            SqliteAutoLabelJobRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
+    async def close(self) -> None:
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        async with self._session_factory() as session:
-            jobs = SqliteAutoLabelJobRepository(session)
-            uow = SqlAlchemyUnitOfWork(session)
-            orphans = await jobs.list_by_statuses(
+    async def fail_orphaned_jobs(self) -> int:
+        async with self._scopes() as scope:
+            orphans = await scope.jobs.list_by_statuses(
                 (AutoLabelJobStatus.PENDING, AutoLabelJobStatus.RUNNING)
             )
             for job in orphans:
                 job.mark_failed(_ORPHAN_MESSAGE)
-                await jobs.update(job)
+                await scope.jobs.update(job)
             if orphans:
-                await uow.commit()
+                await scope.uow.commit()
             return len(orphans)
 
     async def _run(self, job_id: UUID) -> None:
-        async with self._sem:
-            await self._run_locked(job_id)
+        try:
+            async with self._sem:
+                if getattr(self,"admission",None):
+                    async with self.admission(job_id): await self._run_locked(job_id)
+                else: await self._run_locked(job_id)
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._mark_failed(job_id, "cancelled during shutdown")
+            )
+            raise
+
+    async def _mark_failed(self, job_id: UUID, message: str) -> None:
+        async with self._scopes() as scope:
+            fresh = await scope.jobs.get_by_id(job_id)
+            if fresh is None or fresh.status in {
+                AutoLabelJobStatus.COMPLETED,
+                AutoLabelJobStatus.FAILED,
+            }:
+                return
+            fresh.mark_failed(message)
+            await scope.jobs.update(fresh)
+            await scope.uow.commit()
 
     async def _run_locked(self, job_id: UUID) -> None:
-        from app.infrastructure.db.repositories.annotation_repository import (
-            SqliteAnnotationRepository,
-        )
-        from app.infrastructure.db.repositories.auto_label_job_repository import (
-            SqliteAutoLabelJobRepository,
-        )
-        from app.infrastructure.db.repositories.class_repository import (
-            SqliteClassRepository,
-        )
-        from app.infrastructure.db.repositories.image_repository import (
-            SqliteImageRepository,
-        )
-        from app.infrastructure.db.repositories.image_label_repository import (
-            SqliteImageLabelRepository,
-        )
-        from app.infrastructure.db.repositories.model_version_repository import (
-            SqliteModelVersionRepository,
-        )
-        from app.infrastructure.db.repositories.project_repository import (
-            SqliteProjectRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
-        async with self._session_factory() as session:
+        failure: Exception | None = None
+        async with self._scopes() as scope:
             use_case = BatchAutoLabelUseCase(
-                SqliteModelVersionRepository(session),
-                SqliteImageRepository(session),
-                SqliteAnnotationRepository(session),
-                SqliteClassRepository(session),
-                SqliteAutoLabelJobRepository(session),
+                scope.models,
+                scope.images,
+                scope.annotations,
+                scope.classes,
+                scope.jobs,
                 self._storage,
                 self._predictor,
-                SqlAlchemyUnitOfWork(session),
-                projects=SqliteProjectRepository(session),
-                labels=SqliteImageLabelRepository(session),
+                scope.uow,
+                projects=scope.projects,
+                labels=scope.labels,
                 classification_predictor=self._classification_predictor,
             )
             try:
                 await use_case.process_job(job_id)
-            except Exception:
-                # process_job already marks FAILED when possible
-                pass
+            except Exception as exc:
+                failure = exc
+                try:
+                    await scope.uow.rollback()
+                except Exception:
+                    pass
+        if failure is not None:
+            await self._mark_failed(job_id, str(failure))

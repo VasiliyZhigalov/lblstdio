@@ -1,8 +1,10 @@
+from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from app.application.use_cases.classes.create_class import CreateClassUseCase, ListClassesUseCase
 from app.application.use_cases.classes.delete_class import DeleteClassUseCase
@@ -16,7 +18,9 @@ from app.application.use_cases.projects.create_project import (
     UpdateProjectUseCase,
 )
 from app.application.use_cases.projects.delete_project import DeleteProjectUseCase
+from app.infrastructure.db.project_annotators import list_annotators, replace_annotators, visible_project_ids
 from app.presentation.dependencies import (
+    get_session,
     get_create_class_use_case,
     get_create_project_use_case,
     get_delete_class_use_case,
@@ -29,10 +33,13 @@ from app.presentation.dependencies import (
     get_rename_class_use_case,
     get_update_project_use_case,
 )
+from app.presentation.streaming_io import discard_file
 from app.presentation.schemas import (
     ClassCreate,
     ClassRead,
     ClassRename,
+    ProjectAnnotatorAssign,
+    ProjectAnnotatorRead,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
@@ -52,10 +59,26 @@ async def create_project(
 
 @router.get("/projects", response_model=list[ProjectRead])
 async def list_projects(
+    request: Request,
     use_case: ListProjectsUseCase = Depends(get_list_projects_use_case),
+    session=Depends(get_session),
 ) -> list[ProjectRead]:
     projects = await use_case.execute()
+    user = getattr(request.state, "user", None)
+    if user and user.get("role") == "ANNOTATOR":
+        allowed = await visible_project_ids(session, user["id"])
+        projects = [item for item in projects if str(item.id) in allowed]
     return [ProjectRead.model_validate(item, from_attributes=True) for item in projects]
+
+
+@router.get("/projects/{project_id}/annotators", response_model=list[ProjectAnnotatorRead])
+async def get_project_annotators(project_id: UUID, session=Depends(get_session)) -> list[dict]:
+    return await list_annotators(session, project_id)
+
+
+@router.put("/projects/{project_id}/annotators", response_model=list[ProjectAnnotatorRead])
+async def set_project_annotators(project_id: UUID, payload: ProjectAnnotatorAssign, session=Depends(get_session)) -> list[dict]:
+    return await replace_annotators(session, project_id, payload.user_ids)
 
 
 @router.get("/projects/{project_id}", response_model=ProjectRead)
@@ -143,34 +166,29 @@ def _attachment(filename: str) -> str:
     return f"attachment; filename=\"crops.zip\"; filename*=UTF-8''{encoded}"
 
 
+def _zip_file(path: Path, disposition: str) -> FileResponse:
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        headers={"Content-Disposition": disposition},
+        background=BackgroundTask(discard_file, str(path)),
+    )
+
+
 @router.get("/projects/{project_id}/export-yolo")
 async def export_yolo(
     project_id: UUID,
     use_case: ExportYOLOUseCase = Depends(get_export_yolo_use_case),
-) -> Response:
-    payload = await use_case.execute(project_id)
-    return Response(
-        content=payload,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="project-{project_id}-yolo.zip"'
-        },
-    )
+) -> FileResponse:
+    path = await use_case.execute(project_id)
+    filename = f"project-{project_id}-yolo.zip"
+    return _zip_file(path, f'attachment; filename="{filename}"')
 
 
 @router.get("/projects/{project_id}/export-crops")
 async def export_crops(
     project_id: UUID,
     use_case: ExportCropsUseCase = Depends(get_export_crops_use_case),
-) -> StreamingResponse:
-    filename = await use_case.archive_filename(project_id)
-
-    async def chunks():
-        payload, _name = await use_case.execute(project_id)
-        yield payload
-
-    return StreamingResponse(
-        chunks(),
-        media_type="application/zip",
-        headers={"Content-Disposition": _attachment(filename)},
-    )
+) -> FileResponse:
+    path, filename = await use_case.execute(project_id)
+    return _zip_file(path, _attachment(filename))

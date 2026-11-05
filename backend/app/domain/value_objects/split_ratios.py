@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 
 from app.domain.exceptions import DomainValidationException
@@ -15,6 +16,8 @@ class SplitRatios:
             ("valid", self.valid),
             ("test", self.test),
         ):
+            if not math.isfinite(value):
+                raise DomainValidationException(f"{name} split ratio must be finite")
             if value < 0:
                 raise DomainValidationException(f"{name} split ratio cannot be negative")
         total = self.train + self.valid + self.test

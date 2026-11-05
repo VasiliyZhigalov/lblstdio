@@ -1,4 +1,5 @@
 import { store, isClassification } from "../store.js";
+import { sortByModelUncertainty } from "../utils/activeLearning.js";
 import { api } from "../api.js";
 import { escapeHtml } from "../utils/dom.js";
 import {
@@ -7,6 +8,7 @@ import {
   galleryFilterState,
   hasActiveGalleryFilters,
   matchesGalleryFilters,
+  parseBoxCountBound,
 } from "../utils/imageFilters.js";
 
 const FILTERS = [
@@ -29,8 +31,9 @@ const virtual = {
 };
 
 function statusMeta(image) {
+  if (image.status === "IN_PROGRESS") return { label: "Черновик · в разметке", className: "text-indigo-300" };
   if (image.status === "REQUIRES_RECHECK") {
-    return { label: "Подозрительное", className: "text-red-400" };
+    return { label: "На проверку", className: "text-red-400" };
   }
   if (image.status === "REQUIRES_REVIEW") {
     return { label: "На проверке", className: "text-amber-400" };
@@ -51,7 +54,10 @@ function filteredImages() {
   const query = (store.get("filmstripQuery") || "").trim().toLowerCase();
   const filter = store.get("filmstripFilter") || "all";
   const gallery = galleryFilterState(store);
-  return (store.get("images") || []).filter((image) => {
+  const images = store.get("images") || [];
+  const ordered =
+    store.get("queueSort") === "uncertainty" ? sortByModelUncertainty(images) : images;
+  return ordered.filter((image) => {
     if (!matchesGalleryFilters(image, gallery)) return false;
     if (query && !(image.file_name || "").toLowerCase().includes(query)) return false;
     if (filter === "review" &&
@@ -66,17 +72,51 @@ function filteredImages() {
   });
 }
 
+function hasLocalFilmstripFilters() {
+  const filter = store.get("filmstripFilter") || "all";
+  return filter !== "all" || Boolean((store.get("filmstripQuery") || "").trim());
+}
+
+function syncBoxCountInputs() {
+  const minEl = document.getElementById("filmstrip-box-count-min");
+  const maxEl = document.getElementById("filmstrip-box-count-max");
+  const min = store.get("galleryBoxCountMin");
+  const max = store.get("galleryBoxCountMax");
+  if (minEl && document.activeElement !== minEl) {
+    minEl.value = min == null ? "" : String(min);
+  }
+  if (maxEl && document.activeElement !== maxEl) {
+    maxEl.value = max == null ? "" : String(max);
+  }
+}
+
+function syncBoxCountFilterChrome() {
+  const root = document.getElementById("filmstrip-box-count-filter");
+  if (!root) return;
+  const on = store.get("galleryBoxCountMin") != null || store.get("galleryBoxCountMax") != null;
+  root.className = `flex min-w-0 flex-1 items-center gap-1 rounded-md border px-2 py-0.5 ${
+    on
+      ? "border-indigo-500/60 bg-indigo-950/50"
+      : "border-zinc-800 bg-zinc-950"
+  }${isClassification() ? " hidden" : ""}`;
+}
+
 function syncGalleryFilterBanner() {
   const root = document.getElementById("filmstrip-gallery-filter");
   const label = document.getElementById("filmstrip-gallery-filter-label");
-  if (!root || !label) return;
+  const clearBtn = document.getElementById("btn-clear-image-filters");
   const state = galleryFilterState(store);
-  const active = hasActiveGalleryFilters(state);
-  root.classList.toggle("hidden", !active);
-  if (active) {
-    const summary = describeGalleryFilters(state, store.get("classes") || []);
-    label.textContent = summary ? `Фильтр: ${summary}` : "Фильтр с вкладки «Данные»";
+  const galleryActive = hasActiveGalleryFilters(state);
+  if (root && label) {
+    root.classList.toggle("hidden", !galleryActive);
+    if (galleryActive) {
+      const summary = describeGalleryFilters(state, store.get("classes") || []);
+      label.textContent = summary ? `Фильтр: ${summary}` : "Фильтр с вкладки «Данные»";
+    }
   }
+  clearBtn?.classList.toggle("hidden", !galleryActive && !hasLocalFilmstripFilters());
+  syncBoxCountInputs();
+  syncBoxCountFilterChrome();
 }
 
 /** Filtered list for A/D; keeps the current frame reachable if the filter hides it. */
@@ -91,32 +131,41 @@ export function getFilmstripImages() {
 }
 
 function boxCountLabel(image) {
-  if (isClassification()) {
-    const label = image.label;
-    if (!label) return "без класса";
-    const cls = (store.get("classes") || []).find((item) => item.id === label.class_id);
-    const name = cls?.name || "класс";
-    if (label.verification_status === "PENDING_REVIEW") {
-      return `${name} ${Math.round(Number(label.confidence || 0) * 100)}%`;
-    }
-    return name;
-  }
   const counts = store.get("boxCounts") || {};
-  const known = Object.hasOwn(counts, image.id);
-  if (image.is_background && image.status === "VERIFIED") {
-    return "бэкграунд";
-  }
-  if (!known) {
-    if (image.status === "UNANNOTATED") return "0 боксов";
-    return "размечен";
-  }
-  const n = counts[image.id];
+  const current = store.get("currentImage");
+  const n = current?.id === image.id ? (store.get("annotations") || []).length : counts[image.id] ?? image.annotation_count;
+  if (n == null) return "— боксов";
   const mod10 = n % 10;
   const mod100 = n % 100;
   let word = "боксов";
   if (mod10 === 1 && mod100 !== 11) word = "бокс";
   else if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) word = "бокса";
   return `${n} ${word}`;
+}
+
+const SORTS = [
+  { id: "created", label: "По загрузке" },
+  { id: "uncertainty", label: "По неуверенности" },
+];
+
+function modelConfidenceLabel(image) {
+  if (store.get("queueSort") !== "uncertainty") return "";
+  const value = image.min_model_confidence;
+  if (value == null || Number.isNaN(Number(value))) return "";
+  return ` · модель ${Math.round(Number(value) * 100)}%`;
+}
+
+function renderSort() {
+  const root = document.getElementById("filmstrip-sort");
+  if (!root) return;
+  const current = store.get("queueSort") || "created";
+  root.innerHTML = SORTS.map((item) => {
+    const active = item.id === current;
+    return `<button type="button" data-queue-sort="${item.id}"
+      class="px-2 py-0.5 text-[10px] rounded ${
+        active ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+      }">${item.label}</button>`;
+  }).join("");
 }
 
 function renderFilters() {
@@ -133,7 +182,6 @@ function renderFilters() {
 
 function cardHtml(image, currentId) {
   const active = image.id === currentId;
-  const status = statusMeta(image);
   return `
     <button type="button" data-image-id="${image.id}" data-film-card
       class="w-full text-left rounded-lg overflow-hidden border transition ${
@@ -145,14 +193,7 @@ function cardHtml(image, currentId) {
         <img src="${api.imageFileUrl(image.id)}" alt="${escapeHtml(image.file_name)}"
           class="w-full h-full object-cover" loading="lazy" decoding="async" />
       </div>
-      <div class="p-2 space-y-1">
-        <div class="text-[11px] font-mono truncate ${active ? "text-white" : "text-zinc-300"}">${escapeHtml(image.file_name)}</div>
-        <div class="text-[10px] text-zinc-500">${image.width}×${image.height}</div>
-        <div class="flex items-center justify-between gap-1">
-          <span class="text-[10px] ${status.className}" data-status-label>${status.label}</span>
-        </div>
-        <div class="text-[10px] text-zinc-500" data-box-count>${boxCountLabel(image)}</div>
-      </div>
+      <div class="p-2 text-[11px] text-zinc-400" data-box-count>${boxCountLabel(image)}</div>
     </button>`;
 }
 
@@ -317,12 +358,17 @@ function onCurrentImageChange() {
 
 export function initFilmstrip({ onOpenImage }) {
   renderFilters();
+  renderSort();
   syncGalleryFilterBanner();
   rebuildList();
 
   document.getElementById("filmstrip-filters").addEventListener("click", (event) => {
     const btn = event.target.closest("[data-film-filter]");
     if (btn) store.set("filmstripFilter", btn.dataset.filmFilter);
+  });
+  document.getElementById("filmstrip-sort")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-queue-sort]");
+    if (btn) store.set("queueSort", btn.dataset.queueSort);
   });
   document.getElementById("filmstrip-search").addEventListener("input", (event) => {
     store.set("filmstripQuery", event.target.value);
@@ -331,8 +377,21 @@ export function initFilmstrip({ onOpenImage }) {
     const card = event.target.closest("[data-image-id]");
     if (card) onOpenImage(card.dataset.imageId);
   });
+  const onBoxCountInput = (key, event) => {
+    store.set(key, parseBoxCountBound(event.target.value));
+  };
+  document.getElementById("filmstrip-box-count-min")?.addEventListener("input", (event) => {
+    onBoxCountInput("galleryBoxCountMin", event);
+  });
+  document.getElementById("filmstrip-box-count-max")?.addEventListener("input", (event) => {
+    onBoxCountInput("galleryBoxCountMax", event);
+  });
   document.getElementById("btn-clear-image-filters")?.addEventListener("click", () => {
     clearGalleryFilters(store);
+    store.set("filmstripFilter", "all");
+    store.set("filmstripQuery", "");
+    const search = document.getElementById("filmstrip-search");
+    if (search) search.value = "";
   });
 
   const onGalleryFilterChange = () => {
@@ -355,10 +414,18 @@ export function initFilmstrip({ onOpenImage }) {
   store.addEventListener("change:imageClassIds", () => {
     if ((store.get("galleryClassFilter") || []).length) onImagesChange();
   });
-  store.addEventListener("change:filmstripQuery", () => rebuildList());
+  store.addEventListener("change:filmstripQuery", () => {
+    syncGalleryFilterBanner();
+    rebuildList();
+  });
   store.addEventListener("change:filmstripFilter", () => {
     renderFilters();
+    syncGalleryFilterBanner();
     rebuildList();
+  });
+  store.addEventListener("change:queueSort", () => {
+    renderSort();
+    rebuildList({ scrollToCurrent: true });
   });
   store.addEventListener("change:galleryQuery", onGalleryFilterChange);
   store.addEventListener("change:galleryClassFilter", onGalleryFilterChange);
@@ -368,6 +435,13 @@ export function initFilmstrip({ onOpenImage }) {
   store.addEventListener("change:projectTab", () => {
     if (store.get("projectTab") !== "annotate") return;
     syncGalleryFilterBanner();
+    requestAnimationFrame(() => {
+      virtual.measured = false;
+      paintVisible({ scrollToCurrent: true });
+    });
+  });
+  store.addEventListener("change:leftSidebarCollapsed", () => {
+    if (store.get("leftSidebarCollapsed") || store.get("projectTab") !== "annotate") return;
     requestAnimationFrame(() => {
       virtual.measured = false;
       paintVisible({ scrollToCurrent: true });

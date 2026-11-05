@@ -84,7 +84,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     db_path = (tmp_path / "app.db").as_posix()
     fake_predictor = _FakePredictor()
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{db_path}",
         storage_root=tmp_path / "storage",
         training_trainer=_FakeTrainer(),
@@ -145,7 +145,7 @@ class TestTrainingAndAutoLabelApi:
         project_id, version_id, raw_id = _seed_ready_dataset(client)
         start = client.post(
             f"/api/v1/projects/{project_id}/train",
-            json={"dataset_version_id": version_id, "epochs": 10},
+            json={"schedule_mode": "now", "dataset_version_id": version_id, "epochs": 10},
         )
         assert start.status_code == 202, start.text
         job_id = start.json()["id"]
@@ -212,7 +212,7 @@ class TestTrainingAndAutoLabelApi:
         project_id, version_id, _raw_id = _seed_ready_dataset(client)
         start = client.post(
             f"/api/v1/projects/{project_id}/train",
-            json={"dataset_version_id": version_id, "epochs": 3},
+            json={"schedule_mode": "now", "dataset_version_id": version_id, "epochs": 3},
         )
         assert start.status_code == 202, start.text
         job_id = start.json()["id"]

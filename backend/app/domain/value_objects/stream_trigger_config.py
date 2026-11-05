@@ -8,6 +8,31 @@ from app.domain.exceptions import DomainValidationException
 
 
 @dataclass(frozen=True)
+class SiemensWord:
+    host: str
+    db_number: int
+    byte_offset: int
+    rack: int = 0
+    slot: int = 1
+    port: int = 102
+    on_value: int = 1
+    off_value: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.host.strip() or len(self.host) > 253:
+            raise DomainValidationException("Siemens PLC host is required")
+        for name, minimum, maximum in (
+            ("db_number", 1, 65535), ("byte_offset", 0, 65534),
+            ("rack", 0, 7), ("slot", 0, 31), ("port", 1, 65535),
+            ("on_value", 0, 65535), ("off_value", 0, 65535),
+        ):
+            if not minimum <= getattr(self, name) <= maximum:
+                raise DomainValidationException(f"Invalid Siemens PLC {name}")
+        if self.on_value == self.off_value:
+            raise DomainValidationException("Siemens PLC on and off values must differ")
+
+
+@dataclass(frozen=True)
 class StreamTriggerConfig:
     """Capture triggers for a live stream.
 
@@ -30,8 +55,17 @@ class StreamTriggerConfig:
     tripwire_direction: TripwireDirection = TripwireDirection.ANY
     tripwire_debounce_seconds: float = 3.0
     cooldown_seconds: float = 3.0
+    # Normalized x, y, width, height rectangles. Each accepted frame is saved
+    # once per ROI as an independent crop; an empty list keeps full frames.
+    roi_regions: tuple[tuple[float, float, float, float], ...] = field(default_factory=tuple)
+
+    siemens_word: SiemensWord | None = None
 
     def __post_init__(self) -> None:
+        if self.siemens_word and (
+            not self.timer_enabled or self.track_stable_enabled or self.tripwire_enabled
+        ):
+            raise DomainValidationException("Siemens PLC requires interval capture without AI triggers")
         if self.track_stable_min_frames < 2:
             raise DomainValidationException("track_stable_min_frames must be >= 2")
         if self.track_stable_max_size_variation < 0:
@@ -65,3 +99,11 @@ class StreamTriggerConfig:
                     raise DomainValidationException(
                         "tripwire_line coordinates must be in [0, 1]"
                     )
+        if len(self.roi_regions) > 8:
+            raise DomainValidationException("at most 8 ROI regions are allowed")
+        for region in self.roi_regions:
+            if len(region) != 4:
+                raise DomainValidationException("each ROI must be (x, y, width, height)")
+            x, y, width, height = region
+            if width <= 0 or height <= 0 or x < 0 or y < 0 or x + width > 1 or y + height > 1:
+                raise DomainValidationException("ROI must be a non-empty rectangle inside the frame")

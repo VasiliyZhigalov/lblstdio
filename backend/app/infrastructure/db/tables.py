@@ -1,11 +1,55 @@
 from datetime import datetime
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class AnnotationTaskRow(Base):
+    __tablename__ = "annotation_tasks"
+    image_id: Mapped[str] = mapped_column(ForeignKey("images.id", ondelete="CASCADE"), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    state: Mapped[str] = mapped_column(String(16), default="QUEUED", index=True)
+    owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ImageDataRow(Base):
+    __tablename__ = "image_data"
+    image_id: Mapped[str] = mapped_column(ForeignKey("images.id", ondelete="CASCADE"), primary_key=True)
+    tags: Mapped[list] = mapped_column(JSON().with_variant(JSONB, "postgresql"), default=list)
+    brightness: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sharpness: Mapped[float | None] = mapped_column(Float, nullable=True)
+    import_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+
+
+class ProjectCameraRow(Base):
+    __tablename__ = "project_cameras"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    stream_id: Mapped[str] = mapped_column(ForeignKey("stream_sources.id", ondelete="CASCADE"), primary_key=True)
+
+
+class DataImportRow(Base):
+    __tablename__ = "data_imports"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="PREVIEW")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    processed: Mapped[int] = mapped_column(Integer, default=0)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ProjectRow(Base):
@@ -83,6 +127,8 @@ class ImageRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     stream_source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     is_background: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    phash: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     project: Mapped[ProjectRow] = relationship(back_populates="images")
     annotations: Mapped[list["AnnotationRow"]] = relationship(
@@ -151,6 +197,20 @@ class ImageLabelRow(Base):
     model_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
+class VersionSequenceRow(Base):
+    """Committed allocator so concurrent MAX+1 reads cannot share a number."""
+
+    __tablename__ = "version_sequences"
+
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class DatasetVersionRow(Base):
     __tablename__ = "dataset_versions"
     __table_args__ = (
@@ -205,11 +265,22 @@ class DatasetItemRow(Base):
     dataset_version: Mapped[DatasetVersionRow] = relationship(back_populates="items")
 
 
+class ComputePolicyRow(Base):
+    __tablename__ = "compute_policy"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    settings: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
 class TrainingJobRow(Base):
     __tablename__ = "training_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     dataset_version_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     epochs: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -217,6 +288,8 @@ class TrainingJobRow(Base):
     imgsz: Mapped[int] = mapped_column(Integer, nullable=False, default=640)
     device: Mapped[str] = mapped_column(String(32), nullable=False, default="auto")
     base_weights: Mapped[str] = mapped_column(String(255), nullable=False, default="yolov8n.pt")
+    schedule_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="night")
+    not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     patience: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     metrics_history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     test_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -231,6 +304,7 @@ class TrainingJobRow(Base):
 
 class ModelVersionRow(Base):
     __tablename__ = "model_versions"
+    class_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     __table_args__ = (
         UniqueConstraint(
             "project_id", "version_number", name="uq_model_version_project_number"
@@ -238,7 +312,12 @@ class ModelVersionRow(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     dataset_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     training_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -258,8 +337,14 @@ class AutoLabelJobRow(Base):
     __tablename__ = "auto_label_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     model_version_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    enqueue_for_annotation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False)
     iou_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
     consistency_iou_threshold: Mapped[float] = mapped_column(
@@ -280,7 +365,12 @@ class AnnotationAuditJobRow(Base):
     __tablename__ = "annotation_audit_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     model_version_id: Mapped[str] = mapped_column(String(36), nullable=False)
     image_ids_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False)
@@ -312,3 +402,32 @@ class StreamSourceRow(Base):
     config_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     captured_frames_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ProjectAnnotatorRow(Base):
+    __tablename__ = "project_annotators"
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UserRow(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    username: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LoginSessionRow(Base):
+    __tablename__ = "login_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AuthSetupRow(Base):
+    __tablename__ = "auth_setup"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)

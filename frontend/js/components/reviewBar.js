@@ -10,9 +10,21 @@ export function initReviewBar({ onApproveAll, onRejectAll, onDeleteImage }) {
   const countEl = document.getElementById("pending-count");
   const labelEl = document.getElementById("review-bar-label");
   const approveBtn = document.getElementById("btn-approve-all");
+  const approveLabel = document.getElementById("btn-approve-all-label") || approveBtn;
   const rejectBtn = document.getElementById("btn-reject-all");
   const deleteImageBtn = document.getElementById("btn-delete-image");
   if (!bar || !countEl || !approveBtn || !rejectBtn || !deleteImageBtn) return;
+
+  function setTone(recheck) {
+    bar.classList.toggle("border-red-700/50", recheck);
+    bar.classList.toggle("bg-red-950/40", recheck);
+    bar.classList.toggle("border-amber-500/30", !recheck);
+    bar.classList.toggle("bg-amber-900/20", !recheck);
+    if (labelEl) {
+      labelEl.classList.toggle("text-red-300", recheck);
+      labelEl.classList.toggle("text-amber-500/70", !recheck);
+    }
+  }
 
   function sync() {
     if (isClassification()) {
@@ -22,12 +34,9 @@ export function initReviewBar({ onApproveAll, onRejectAll, onDeleteImage }) {
       bar.classList.toggle("hidden", !pending);
       bar.classList.toggle("opacity-40", !pending);
       bar.classList.toggle("pointer-events-none", !pending);
-      bar.classList.toggle("border-red-700/50", false);
-      bar.classList.toggle("bg-red-950/40", false);
-      bar.classList.toggle("border-amber-700/50", true);
-      bar.classList.toggle("bg-amber-950/40", true);
+      setTone(false);
       if (labelEl) labelEl.textContent = "На проверке:";
-      approveBtn.textContent = "Подтвердить (Space)";
+      approveLabel.textContent = "Подтвердить (Space)";
       rejectBtn.textContent = "Сбросить (U)";
       rejectBtn.classList.toggle("hidden", !pending);
       return;
@@ -40,16 +49,13 @@ export function initReviewBar({ onApproveAll, onRejectAll, onDeleteImage }) {
     bar.classList.toggle("hidden", count === 0 && !recheck);
     bar.classList.toggle("opacity-40", count === 0 && !recheck);
     bar.classList.toggle("pointer-events-none", count === 0 && !recheck);
-    bar.classList.toggle("border-red-700/50", recheck);
-    bar.classList.toggle("bg-red-950/40", recheck);
-    bar.classList.toggle("border-amber-700/50", !recheck);
-    bar.classList.toggle("bg-amber-950/40", !recheck);
+    setTone(recheck);
     if (labelEl) {
       labelEl.textContent = recheck
         ? "Аудит: сплошные — разметка, пунктир — модель"
         : "На проверке:";
     }
-    approveBtn.textContent = recheck
+    approveLabel.textContent = recheck
       ? count
         ? "Принять модель (Space)"
         : "Разметка верна (Space)"

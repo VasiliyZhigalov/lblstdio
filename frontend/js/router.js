@@ -10,6 +10,9 @@ export function parseHash() {
   const parts = pathPart.split("/").filter(Boolean);
   const query = new URLSearchParams(queryPart || "");
 
+  if (parts[0] === "streams") return { name: "streams" };
+  if (parts[0] === "tasks") return { name: "tasks" };
+
   if (parts[0] !== "projects") return { name: "projects" };
   if (!parts[1]) return { name: "projects" };
 
@@ -28,7 +31,7 @@ export function parseHash() {
     return { name: "models", projectId, tab: "models" };
   }
   if (subTab === "stream") {
-    return { name: "stream", projectId, tab: "stream" };
+    return { name: "streams" };
   }
   return { name: "data", projectId, tab: "data" };
 }

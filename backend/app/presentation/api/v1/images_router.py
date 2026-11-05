@@ -2,7 +2,7 @@ import tempfile
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import FileResponse, Response
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
@@ -11,13 +11,15 @@ from starlette.formparsers import MultiPartException
 from app.application.dto import UploadedFile
 from app.application.use_cases.images.delete_image import DeleteImageUseCase
 from app.application.use_cases.images.get_image import GetImageUseCase, ListImagesUseCase
+from app.application.use_cases.images.get_images_summary import GetImagesSummaryUseCase
 from app.application.use_cases.images.set_test_holdout import SetImageTestHoldoutUseCase
 from app.application.use_cases.images.upload_images import (
+    DEFAULT_DEDUP_SIMILARITY,
     MAX_UPLOAD_FILES,
     MAX_UPLOAD_ZIP_BYTES,
     UploadImagesUseCase,
 )
-from app.domain.enums import ImageStatus, SplitType
+from app.domain.enums import ImageListSort, ImageStatus, SplitType
 from app.domain.exceptions import DomainValidationException
 from app.infrastructure.storage.local_storage import LocalFileStorage
 from app.infrastructure.db.repositories.image_label_repository import (
@@ -27,6 +29,7 @@ from app.presentation.dependencies import (
     get_delete_image_use_case,
     get_get_image_use_case,
     get_image_label_repo,
+    get_images_summary_use_case,
     get_list_images_use_case,
     get_set_image_holdout_use_case,
     get_storage,
@@ -38,9 +41,34 @@ from app.presentation.schemas import (
     ImageHoldoutRequest,
     ImageLabelRead,
     ImageRead,
+    ImageSummaryItem,
+    ImagesSummaryRead,
 )
 
 router = APIRouter(tags=["images"])
+
+
+def _form_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    token = str(value).strip().lower()
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off", ""}:
+        return False
+    raise DomainValidationException("dedup must be a boolean")
+
+
+def _form_similarity(value: object) -> float:
+    if value is None or value == "":
+        return DEFAULT_DEDUP_SIMILARITY
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise DomainValidationException("similarity must be a number") from exc
+
 
 _UPLOAD_OPENAPI = {
     "requestBody": {
@@ -60,6 +88,14 @@ _UPLOAD_OPENAPI = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Relative path for each file, same order as files",
+                        },
+                        "dedup": {
+                            "type": "boolean",
+                            "description": "Drop near-duplicate frames by perceptual hash",
+                        },
+                        "similarity": {
+                            "type": "number",
+                            "description": "Skip frames at least this similar (0–1)",
                         },
                     },
                 }
@@ -82,7 +118,7 @@ def _label_to_read(label) -> ImageLabelRead:
     )
 
 
-def _image_to_read(image, label=None) -> ImageRead:
+def _image_to_read(image, label=None, min_model_confidence=None) -> ImageRead:
     return ImageRead(
         id=image.id,
         project_id=image.project_id,
@@ -96,6 +132,7 @@ def _image_to_read(image, label=None) -> ImageRead:
         created_at=image.created_at,
         is_background=bool(getattr(image, "is_background", False)),
         label=_label_to_read(label) if label is not None else None,
+        min_model_confidence=min_model_confidence,
     )
 
 
@@ -126,6 +163,7 @@ def _annotation_to_read(annotation) -> AnnotationRead:
 async def upload_images(
     project_id: UUID,
     request: Request,
+    response: Response,
     use_case: UploadImagesUseCase = Depends(get_upload_images_use_case),
 ) -> list[ImageRead]:
     staging = tempfile.TemporaryDirectory()
@@ -164,8 +202,14 @@ async def upload_images(
                     handle.write(chunk)
             await item.close()
             uploaded.append(UploadedFile(filename=filename, body_path=str(dest)))
-        images = await use_case.execute(project_id, uploaded)
-        return [_image_to_read(item) for item in images]
+        result = await use_case.execute(
+            project_id,
+            uploaded,
+            dedup=_form_bool(form.get("dedup")),
+            similarity=_form_similarity(form.get("similarity")),
+        )
+        response.headers["X-Skipped-Duplicates"] = str(result.skipped)
+        return [_image_to_read(item) for item in result.images]
     finally:
         if form is not None:
             try:
@@ -175,6 +219,27 @@ async def upload_images(
         staging.cleanup()
 
 
+@router.get("/projects/{project_id}/images/summary", response_model=ImagesSummaryRead)
+async def get_images_summary(
+    project_id: UUID,
+    use_case: GetImagesSummaryUseCase = Depends(get_images_summary_use_case),
+) -> ImagesSummaryRead:
+    summary = await use_case.execute(project_id)
+    return ImagesSummaryRead(
+        class_counts=summary.class_counts,
+        label_counts=summary.label_counts,
+        images=[
+            ImageSummaryItem(
+                image_id=item.image_id,
+                box_count=item.box_count,
+                class_ids=item.class_ids,
+                annotations=[_annotation_to_read(box) for box in item.annotations],
+            )
+            for item in summary.images
+        ],
+    )
+
+
 @router.get("/projects/{project_id}/images", response_model=list[ImageRead])
 async def list_images(
     project_id: UUID,
@@ -182,11 +247,18 @@ async def list_images(
     status_filter: str | None = Query(default=None, alias="status"),
     offset: int = Query(default=0, ge=0),
     limit: int | None = Query(default=None, ge=1),
+    sort: str | None = Query(default=None),
     use_case: ListImagesUseCase = Depends(get_list_images_use_case),
     labels: SqliteImageLabelRepository = Depends(get_image_label_repo),
 ) -> list[ImageRead]:
     split_value: SplitType | None = None
     status_value: ImageStatus | None = None
+    sort_value: ImageListSort | None = None
+    if sort is not None:
+        try:
+            sort_value = ImageListSort(sort)
+        except ValueError as exc:
+            raise DomainValidationException(f"unknown sort '{sort}'") from exc
     if split is not None:
         try:
             split_value = SplitType(split)
@@ -203,12 +275,17 @@ async def list_images(
         status=status_value,
         offset=offset,
         limit=limit,
+        sort=sort_value,
     )
+    image_ids = [image.id for image in images]
     by_image = {
-        item.image_id: item
-        for item in await labels.list_by_image_ids([image.id for image in images])
+        item.image_id: item for item in await labels.list_by_image_ids(image_ids)
     }
-    return [_image_to_read(item, by_image.get(item.id)) for item in images]
+    confidences = await use_case.model_confidences(image_ids)
+    return [
+        _image_to_read(item, by_image.get(item.id), confidences.get(item.id))
+        for item in images
+    ]
 
 
 @router.get("/images/{image_id}", response_model=ImageDetailRead)
@@ -225,12 +302,20 @@ async def get_image(
 @router.get("/images/{image_id}/file")
 async def get_image_file(
     image_id: UUID,
+    request: Request,
     use_case: GetImageUseCase = Depends(get_get_image_use_case),
     storage: LocalFileStorage = Depends(get_storage),
 ) -> FileResponse:
     image, _, _ = await use_case.execute(image_id)
+    try:
+        absolute = Path(storage.get_absolute_path(image.file_path))
+    except ValueError as exc:
+        raise DomainValidationException("image path is outside allowed storage") from exc
+    storage_root = Path(request.app.state.storage_root).resolve()
+    if absolute != storage_root and not absolute.is_relative_to(storage_root):
+        raise DomainValidationException("image path is outside allowed storage")
     return FileResponse(
-        path=storage.get_absolute_path(image.file_path),
+        path=absolute,
         filename=image.file_name,
         content_disposition_type="inline",
     )

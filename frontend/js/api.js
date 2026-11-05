@@ -1,3 +1,4 @@
+import { annotationSession, annotationRevision, setAnnotationRevision } from "./annotationSession.js";
 const params = new URLSearchParams(window.location.search);
 const defaultBase =
   window.location.port === "8000" || window.location.port === ""
@@ -20,17 +21,25 @@ function filenameFromDisposition(disposition, fallback = "download.zip") {
 }
 
 async function request(path, options = {}) {
+  const imageId = /^\/images\/([^/]+)/.exec(path)?.[1];
+  const revision = imageId && annotationRevision(imageId);
   const response = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
     ...options,
     headers: {
+      "X-Annotation-Session": annotationSession,
+      ...(revision != null ? { "X-Annotation-Revision": String(revision) } : {}),
       ...(options.body && !(options.body instanceof FormData)
         ? { "Content-Type": "application/json" }
         : {}),
       ...options.headers,
     },
   });
+  const nextRevision = response.headers.get("X-Annotation-Revision");
+  if (response.ok && imageId && nextRevision != null) setAnnotationRevision(imageId, nextRevision);
   if (response.status === 204) return null;
   if (!response.ok) {
+    if(response.status===401&&!path.startsWith("/auth/"))window.dispatchEvent(new CustomEvent("auth-required"));
     let detail = `${response.status} ${response.statusText}`;
     try {
       const payload = await response.json();
@@ -47,7 +56,7 @@ async function request(path, options = {}) {
         /* keep status text */
       }
     }
-    throw new Error(detail);
+    const error = new Error(detail); error.status = response.status; throw error;
   }
   const type = response.headers.get("content-type") || "";
   if (type.includes("application/json")) return response.json();
@@ -55,6 +64,61 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  authStatus: () => request('/auth/status'),
+  authMe: () => request('/auth/me'),
+  authLogin: (body) => request('/auth/login',{method:'POST',body:JSON.stringify(body)}),
+  authSetup: (body) => request('/auth/setup',{method:'POST',body:JSON.stringify(body)}),
+  authLogout: () => request('/auth/logout',{method:'POST'}),
+  authUsers: () => request('/auth/users'),
+  authCreateUser: (body) => request('/auth/users',{method:'POST',body:JSON.stringify(body)}),
+  authUpdateUser: (id,body) => request(`/auth/users/${id}`,{method:'PATCH',body:JSON.stringify(body)}),
+
+  annotationQueue: (id, state = "all", offset = 0) => request(`/projects/${id}/annotation-queue?state=${encodeURIComponent(state)}&offset=${offset}&limit=48`),
+  enqueueAnnotations: (id, payload) => request(`/projects/${id}/annotation-queue/enqueue`, { method: "POST", body: JSON.stringify(payload) }),
+  claimAnnotation: async (id, imageId = null) => {
+    const result = await request(`/projects/${id}/annotation-queue/claim`, { method: "POST", body: JSON.stringify({ image_id: imageId }) });
+    if (result.image_id) setAnnotationRevision(result.image_id, result.revision);
+    return result;
+  },
+  annotationQueueAction: async (id, imageId, action, reason = "") => {
+    const result = await request(`/projects/${id}/annotation-queue/${imageId}/action`, { method: "POST", body: JSON.stringify({ action, reason, revision: annotationRevision(imageId) ?? 0 }) });
+    if (action !== "heartbeat") setAnnotationRevision(imageId, result.revision);
+    return result;
+  },
+  deleteUnusedDataClass: (id, classId) => request(`/projects/${id}/data/classes/${classId}`, { method: "DELETE" }),
+  analyzeProjectData: (id) => request(`/projects/${id}/data/analyze`, { method: "POST" }),
+  parseClassDictionary: (id, file) => { const body = new FormData(); body.append("file", file); return request(`/projects/${id}/data/dictionary/preview`, { method: "POST", body }); },
+  queryProjectData: (id, filters) => request(`/projects/${id}/data/query`, { method: "POST", body: JSON.stringify(filters) }),
+  projectDataStatistics: (id) => request(`/projects/${id}/data/statistics`),
+  projectCameras: (id) => request(`/projects/${id}/data/cameras`),
+  linkProjectCamera: (id, camera, linked = true) => request(`/projects/${id}/data/cameras/${camera}`, { method: "PUT", body: JSON.stringify({ linked }) }),
+  projectDataAction: (id, payload) => request(`/projects/${id}/data/actions`, { method: "POST", body: JSON.stringify(payload) }),
+  thumbnailUrl: (id) => `${API_BASE}/images/${id}/thumbnail`,
+  previewDataImport: (id, kind, files, onProgress) => {
+    const body = new FormData(); body.append("kind", kind);
+    for (const file of files) { body.append("files", file, file.name); body.append("relative_paths", file.webkitRelativePath || file.name); }
+    if (!onProgress) return request(`/projects/${id}/data/imports/preview`, { method: "POST", body });
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/projects/${id}/data/imports/preview?background=true`);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader("X-Annotation-Session", annotationSession);
+      xhr.upload.onprogress = event => onProgress({ stage: "upload", loaded: event.loaded, total: event.lengthComputable ? event.total : 0 });
+      xhr.upload.onload = () => onProgress({ stage: "receiving" });
+      xhr.onerror = () => reject(new Error("Не удалось передать файлы. Проверьте соединение."));
+      xhr.onabort = () => reject(new Error("Передача файлов прервана."));
+      xhr.onload = () => {
+        let data; try { data = JSON.parse(xhr.responseText); } catch { data = {}; }
+        if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+        else { if (xhr.status === 401) window.dispatchEvent(new CustomEvent("auth-required")); reject(new Error(typeof data.detail === "string" ? data.detail : `Ошибка загрузки: ${xhr.status}`)); }
+      };
+      xhr.send(body);
+    });
+  },
+  getDataImport: (id, job) => request(`/projects/${id}/data/imports/${job}`),
+  tasks: (offset = 0, limit = 100) => request(`/tasks?limit=${limit}&offset=${offset}`),
+  listDataImports: (id) => request(`/projects/${id}/data/imports`),
+  dataImportAction: (id, job, action, payload = {}) => request(`/projects/${id}/data/imports/${job}/${action}`, { method: "POST", body: JSON.stringify(payload) }),
   listProjects: () => request("/projects"),
   createProject: (name, description = null, task_type = "DETECTION") =>
     request("/projects", {
@@ -68,6 +132,8 @@ export const api = {
     }),
   getProject: (id) => request(`/projects/${id}`),
   deleteProject: (id) => request(`/projects/${id}`, { method: "DELETE" }),
+  listProjectAnnotators: (id) => request(`/projects/${id}/annotators`),
+  setProjectAnnotators: (id, userIds) => request(`/projects/${id}/annotators`, { method: "PUT", body: JSON.stringify({ user_ids: userIds }) }),
 
   listClasses: (projectId) => request(`/projects/${projectId}/classes`),
   createClass: (projectId, name, color_hex) =>
@@ -85,7 +151,16 @@ export const api = {
       method: "DELETE",
     }),
 
-  listImages: (projectId) => request(`/projects/${projectId}/images`),
+  listImages: (projectId, query = {}) => {
+    const params = new URLSearchParams();
+    if (query.offset != null) params.set("offset", String(query.offset));
+    if (query.limit != null) params.set("limit", String(query.limit));
+    if (query.split) params.set("split", query.split);
+    if (query.status) params.set("status", query.status);
+    const suffix = params.toString() ? `?${params}` : "";
+    return request(`/projects/${projectId}/images${suffix}`);
+  },
+  getImagesSummary: (projectId) => request(`/projects/${projectId}/images/summary`),
   getImage: (imageId) => request(`/images/${imageId}`),
   imageFileUrl: (imageId) => `${API_BASE}/images/${imageId}/file`,
 
@@ -116,40 +191,6 @@ export const api = {
           if (box.id) payload.id = box.id;
           return payload;
         }),
-      }),
-    }),
-
-  propagateBox: (sourceImageId, targetImageId, sourceBox) =>
-    request("/matching/propagate-box", {
-      method: "POST",
-      body: JSON.stringify({
-        source_image_id: sourceImageId,
-        target_image_id: targetImageId,
-        source_box: {
-          id: sourceBox.id,
-          class_id: sourceBox.class_id,
-          x_center: sourceBox.x_center,
-          y_center: sourceBox.y_center,
-          width: sourceBox.width,
-          height: sourceBox.height,
-        },
-      }),
-    }),
-
-  propagateBoxes: (sourceImageId, targetImageId, sourceBoxes) =>
-    request("/matching/propagate-boxes", {
-      method: "POST",
-      body: JSON.stringify({
-        source_image_id: sourceImageId,
-        target_image_id: targetImageId,
-        source_boxes: sourceBoxes.map((sourceBox) => ({
-          id: sourceBox.id,
-          class_id: sourceBox.class_id,
-          x_center: sourceBox.x_center,
-          y_center: sourceBox.y_center,
-          width: sourceBox.width,
-          height: sourceBox.height,
-        })),
       }),
     }),
 
@@ -194,7 +235,7 @@ export const api = {
       method: "DELETE",
     }),
 
-  uploadImages(projectId, files, onProgress) {
+  uploadImages(projectId, files, onProgress, options = {}) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const form = new FormData();
@@ -207,6 +248,12 @@ export const api = {
           (file.relativePath || file.webkitRelativePath || file.name || "").replace(/\\/g, "/")
         );
       }
+      form.append("dedup", options.dedup === false ? "false" : "true");
+      const similarity = Number(options.similarity);
+      form.append(
+        "similarity",
+        Number.isFinite(similarity) ? String(similarity) : "0.85"
+      );
       xhr.open("POST", `${API_BASE}/projects/${projectId}/images/upload`);
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && onProgress) {
@@ -216,7 +263,9 @@ export const api = {
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
-            resolve(JSON.parse(xhr.responseText));
+            const images = JSON.parse(xhr.responseText);
+            const skipped = Number(xhr.getResponseHeader("X-Skipped-Duplicates") || 0);
+            resolve({ images, skipped });
           } catch (err) {
             reject(err);
           }
@@ -279,6 +328,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body || {}),
     }),
+  createDatasetJob: (projectId, body) => request(`/projects/${projectId}/dataset-versions/jobs`, { method: 'POST', body: JSON.stringify(body) }),
 
   getDatasetVersion: (versionId) => request(`/dataset-versions/${versionId}`),
 
@@ -344,6 +394,14 @@ export const api = {
 
   getAutoLabelJob: (jobId) => request(`/auto-label-jobs/${jobId}`),
 
+  computeSchedule: () => request('/compute-schedule'),
+  saveComputeSchedule: (body) => request('/compute-schedule',{method:'PUT',body:JSON.stringify(body)}),
+  trainingQueue: (id) => request('/training-queue'+(id?'?project_id='+encodeURIComponent(id):'')),
+  cancelQueuedTraining: (id) => request(`/training-queue/${id}/cancel`,{method:'POST'}),
+  deleteTrainingTask: (id) => request(`/training-queue/${id}`,{method:'DELETE'}),
+  setModelActive: (pid,id,active) => request(`/projects/${pid}/models/${id}/active`,{method:'PUT',body:JSON.stringify({active})}),
+  previewModel: (pid,id,body) => request(`/projects/${pid}/models/${id}/preview`,{method:"POST",body:JSON.stringify(body)}),
+  modelDetails: (pid,id) => request(`/projects/${pid}/models/${id}/details`),
   listStreams: (projectId) => request(`/projects/${projectId}/streams`),
   createRtspStream: (projectId, body) =>
     request(`/projects/${projectId}/streams/rtsp`, {
@@ -355,6 +413,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  copyStreamToProject: (streamId, projectId, name) =>
+    request(`/streams/${streamId}/copy-to-project/${projectId}`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
   createImageFolderStream: (projectId, body) =>
     request(`/projects/${projectId}/streams/image-folder`, {
       method: "POST",
@@ -362,13 +425,27 @@ export const api = {
     }),
   pickImageFolderStream: (projectId) =>
     request(`/projects/${projectId}/streams/image-folder/pick`, { method: "POST" }),
-  uploadStreamVideo: (projectId, file, name = "") => {
+  uploadStreamVideo: (projectId, file, name = "", options = {}) => {
     const form = new FormData();
     form.append("file", file, file.name || "video.mp4");
     if (name) form.append("name", name);
-    return request(`/projects/${projectId}/streams/upload-video`, {
-      method: "POST",
-      body: form,
+    return new Promise((resolve, reject) => {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const task = {id, project_id:projectId, project_name:options.projectName || 'Проект', kind:'upload', destination:'streams', title:'Загрузка видео: ' + (name || file.name), status:'RUNNING', processed:0, total:0, unit:'байт', created_at:new Date().toISOString()};
+      const emit = value => window.dispatchEvent(new window.CustomEvent('lblstdio:upload-task',{detail:value}));
+      const warn = event => {event.preventDefault();event.returnValue='';};
+      const finish = () => { emit({id,remove:true}); window.removeEventListener('beforeunload',warn); };
+      emit(task); window.addEventListener('beforeunload',warn);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/projects/${projectId}/streams/upload-video`);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader('X-Annotation-Session',annotationSession);
+      xhr.upload.onprogress = event => { task.processed=event.loaded;task.total=event.lengthComputable?event.total:0;emit({...task});options.onProgress?.(task); };
+      xhr.upload.onload = () => {task.total=0;task.processed=0;task.stage='receiving';emit({...task});options.onProgress?.(task);};
+      xhr.onerror = () => {finish();reject(new Error('Ошибка сети при загрузке видео'));};
+      xhr.onabort = () => {finish();reject(new Error('Загрузка видео прервана'));};
+      xhr.onload = () => {finish();let data;try{data=JSON.parse(xhr.responseText);}catch{data={};}if(xhr.status>=200&&xhr.status<300)resolve(data);else{if(xhr.status===401)window.dispatchEvent(new window.CustomEvent('auth-required'));reject(new Error(typeof data.detail==='string'?data.detail:`Ошибка загрузки: ${xhr.status}`));}};
+      xhr.send(form);
     });
   },
   deleteStream: (streamId) =>

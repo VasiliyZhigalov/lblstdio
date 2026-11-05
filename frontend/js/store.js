@@ -71,6 +71,7 @@ export const store = new Store({
   projectQuery: "",
   images: [],
   currentImage: null,
+  annotationReadonly: false,
   annotations: [],
   boxCounts: {},
   classCounts: {}, // { [classId]: number } for Data Hub bars
@@ -87,6 +88,7 @@ export const store = new Store({
   classes: [],
   mode: "DRAW", // 'SELECT' | 'DRAW'
   filmstripFilter: "all", // 'all' | 'review' | 'unannotated' | 'auto_verified'
+  queueSort: "created", // 'created' | 'uncertainty'
   zoomLocked: false,
   filmstripQuery: "",
   galleryQuery: "",
@@ -95,10 +97,6 @@ export const store = new Store({
   hasUnsavedChanges: false,
   saveStatus: "idle", // 'idle' | 'saving' | 'saved' | 'error'
   spaceHeld: false,
-  clipboardBox: null,
-  matchingInProgress: false,
-  matchDebug: null,
-  showMatchDebug: false,
   boxOpacity: 0.2,
   hideAnnotations: false,
   leftSidebarCollapsed: false,

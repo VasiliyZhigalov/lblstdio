@@ -41,7 +41,7 @@ def test_predictor_matches_resolved_paths_only_not_basename(tmp_path, monkeypatc
         def __init__(self, _weights: str) -> None:
             pass
 
-        def predict(self, source, conf, iou=0.7, verbose=False):
+        def predict(self, source, conf, iou=0.7, verbose=False, **kwargs):
             return [result]
 
     ultralytics = MagicMock(YOLO=_YOLO)
@@ -75,13 +75,53 @@ def test_predictor_does_not_attach_unmatched_paths(tmp_path, monkeypatch) -> Non
         def __init__(self, _weights: str) -> None:
             pass
 
-        def predict(self, source, conf, iou=0.7, verbose=False):
+        def predict(self, source, conf, iou=0.7, verbose=False, **kwargs):
             return [result]
 
     monkeypatch.setitem(__import__("sys").modules, "ultralytics", MagicMock(YOLO=_YOLO))
 
     out = UltralyticsPredictor().predict("w.pt", [str(img)], 0.5)
     assert out[str(img)] == []
+
+def test_predictor_streams_results_and_limits_batch(tmp_path, monkeypatch) -> None:
+    img = tmp_path / "frame.jpg"
+    img.write_bytes(b"x")
+    calls: list[dict] = []
+
+    class _YOLO:
+        def __init__(self, _weights: str) -> None:
+            pass
+
+        def predict(self, source, conf, iou=0.7, verbose=False, **kwargs):
+            calls.append(kwargs)
+            return []
+
+    monkeypatch.setitem(__import__("sys").modules, "ultralytics", MagicMock(YOLO=_YOLO))
+
+    UltralyticsPredictor().predict("w.pt", [str(img)], 0.25)
+    assert calls[0]["stream"] is True
+    assert calls[0]["batch"] == 4
+
+
+def test_predictor_loads_weights_once(tmp_path, monkeypatch) -> None:
+    img = tmp_path / "frame.jpg"
+    img.write_bytes(b"x")
+    loads: list[str] = []
+
+    class _YOLO:
+        def __init__(self, weights: str) -> None:
+            loads.append(weights)
+
+        def predict(self, source, conf, iou=0.7, verbose=False, **kwargs):
+            return []
+
+    monkeypatch.setitem(__import__("sys").modules, "ultralytics", MagicMock(YOLO=_YOLO))
+
+    predictor = UltralyticsPredictor()
+    predictor.predict("w.pt", [str(img)], 0.5)
+    predictor.predict("w.pt", [str(img)], 0.5)
+    assert loads == ["w.pt"]
+
 
 def test_predictor_passes_iou_threshold_to_yolo(tmp_path, monkeypatch) -> None:
     img = tmp_path / "frame.jpg"
@@ -92,14 +132,31 @@ def test_predictor_passes_iou_threshold_to_yolo(tmp_path, monkeypatch) -> None:
         def __init__(self, _weights: str) -> None:
             pass
 
-        def predict(self, source, conf, iou=0.7, verbose=False):
-            calls.append({"source": source, "conf": conf, "iou": iou, "verbose": verbose})
+        def predict(self, source, conf, iou=0.7, verbose=False, **kwargs):
+            calls.append(
+                {
+                    "source": source,
+                    "conf": conf,
+                    "iou": iou,
+                    "verbose": verbose,
+                    **kwargs,
+                }
+            )
             return []
 
     monkeypatch.setitem(__import__("sys").modules, "ultralytics", MagicMock(YOLO=_YOLO))
 
     UltralyticsPredictor().predict("w.pt", [str(img)], 0.25, iou_threshold=0.4)
-    assert calls == [{"source": [str(img)], "conf": 0.25, "iou": 0.4, "verbose": False}]
+    assert calls == [
+        {
+            "source": [str(img)],
+            "conf": 0.25,
+            "iou": 0.4,
+            "verbose": False,
+            "batch": 4,
+            "stream": True,
+        }
+    ]
 
 
 def test_classification_predictor_returns_top1(tmp_path, monkeypatch) -> None:
@@ -117,7 +174,7 @@ def test_classification_predictor_returns_top1(tmp_path, monkeypatch) -> None:
         def __init__(self, _weights: str) -> None:
             pass
 
-        def predict(self, source, verbose=False):
+        def predict(self, source, verbose=False, **kwargs):
             return [result]
 
     monkeypatch.setitem(__import__("sys").modules, "ultralytics", MagicMock(YOLO=_YOLO))

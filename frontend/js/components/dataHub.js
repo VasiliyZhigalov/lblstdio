@@ -4,6 +4,7 @@ import { escapeHtml, refreshIcons } from "../utils/dom.js";
 import { firstReviewImage } from "../utils/activeLearning.js";
 import {
   BACKGROUND_FILTER,
+  clearGalleryFilters,
   emptyGalleryFilters,
   galleryFilterState,
   hasActiveGalleryFilters,
@@ -264,6 +265,12 @@ function syncFilterInputs() {
   }
 }
 
+function syncClearGalleryFiltersButton() {
+  const btn = document.getElementById("btn-clear-gallery-filters");
+  if (!btn) return;
+  btn.classList.toggle("hidden", !hasActiveGalleryFilters(galleryFilterState(store)));
+}
+
 function syncBoxCountFilterChrome() {
   const root = document.getElementById("gallery-box-count-filter");
   if (!root) return;
@@ -274,6 +281,7 @@ function syncBoxCountFilterChrome() {
       ? "border-indigo-500/60 bg-indigo-950/50"
       : "border-zinc-800 bg-zinc-950"
   }${isClassification() ? " hidden" : ""}`;
+  syncClearGalleryFiltersButton();
 }
 
 function renderStatusFilters() {
@@ -359,6 +367,8 @@ function syncSelectionBar() {
       filteredImages().length > 0 && visibleSelected === filteredImages().length;
     selectAllBtn.textContent = allVisibleSelected ? "Снять все" : "Выбрать все";
   }
+  const clearBtn = document.getElementById("btn-gallery-clear-annotations");
+  if (clearBtn) clearBtn.disabled = selected.length === 0;
 }
 
 function renderGallery({ onOpenImage }) {
@@ -455,7 +465,29 @@ function renderGallery({ onOpenImage }) {
   syncSelectionBar();
 }
 
-async function refreshClassCounts(images) {
+let refreshGeneration = 0;
+
+function applyClassCountPatch(images, { counts, nextImageClassIds, nextBoxCounts, nextGalleryAnnotations }) {
+  store.patch({
+    ...(nextBoxCounts
+      ? { boxCounts: { ...store.get("boxCounts"), ...nextBoxCounts } }
+      : {}),
+    classCounts: counts,
+    imageClassIds: nextImageClassIds,
+    galleryAnnotations: (() => {
+      if (!nextGalleryAnnotations) return {};
+      const merged = { ...(store.get("galleryAnnotations") || {}) };
+      for (const image of images || []) {
+        if (image.status === "UNANNOTATED") delete merged[image.id];
+      }
+      return { ...merged, ...nextGalleryAnnotations };
+    })(),
+  });
+}
+
+async function refreshClassCounts(images, { projectId, isCurrent } = {}) {
+  const stale = () => (typeof isCurrent === "function" ? !isCurrent() : false);
+
   if (isClassification()) {
     const counts = {};
     const nextImageClassIds = {};
@@ -465,55 +497,123 @@ async function refreshClassCounts(images) {
       nextImageClassIds[image.id] = [label.class_id];
       counts[label.class_id] = (counts[label.class_id] || 0) + 1;
     }
-    store.patch({
-      classCounts: counts,
-      imageClassIds: nextImageClassIds,
-      galleryAnnotations: {},
-    });
-    return counts;
-  }
-  const targets = (images || []).filter((item) => item.status !== "UNANNOTATED");
-  const counts = {};
-  const nextBoxCounts = {};
-  const nextImageClassIds = {};
-  const nextGalleryAnnotations = {};
-  if (!targets.length) {
-    store.patch({
-      classCounts: counts,
-      imageClassIds: nextImageClassIds,
-      galleryAnnotations: nextGalleryAnnotations,
-    });
+    if (stale()) return store.get("classCounts") || {};
+    applyClassCountPatch(images, { counts, nextImageClassIds });
     return counts;
   }
 
-  await mapPool(targets, 6, async (image) => {
-    try {
-      const detail = await api.getImage(image.id);
-      const boxes = detail.annotations || [];
-      nextBoxCounts[image.id] = boxes.length;
-      nextGalleryAnnotations[image.id] = boxes;
-      const classIds = [...new Set(boxes.map((box) => box.class_id).filter(Boolean))];
-      nextImageClassIds[image.id] = classIds;
-      for (const box of boxes) {
-        counts[box.class_id] = (counts[box.class_id] || 0) + 1;
-      }
-    } catch {
-      /* skip failed frame */
-    }
-  });
-  store.patch({
-    boxCounts: { ...store.get("boxCounts"), ...nextBoxCounts },
-    classCounts: counts,
-    imageClassIds: nextImageClassIds,
-    galleryAnnotations: (() => {
-      const merged = { ...(store.get("galleryAnnotations") || {}) };
-      for (const image of images || []) {
-        if (image.status === "UNANNOTATED") delete merged[image.id];
-      }
-      return { ...merged, ...nextGalleryAnnotations };
-    })(),
+  if (!projectId) {
+    if (stale()) return store.get("classCounts") || {};
+    applyClassCountPatch(images, {
+      counts: {},
+      nextImageClassIds: {},
+      nextBoxCounts: {},
+      nextGalleryAnnotations: {},
+    });
+    return {};
+  }
+
+  const summary = await api.getImagesSummary(projectId);
+  if (stale()) return store.get("classCounts") || {};
+
+  const counts = { ...(summary.class_counts || {}) };
+  const nextBoxCounts = {};
+  const nextImageClassIds = {};
+  const nextGalleryAnnotations = {};
+  for (const item of summary.images || []) {
+    nextBoxCounts[item.image_id] = item.box_count;
+    nextImageClassIds[item.image_id] = item.class_ids || [];
+    nextGalleryAnnotations[item.image_id] = item.annotations || [];
+  }
+  applyClassCountPatch(images, {
+    counts,
+    nextImageClassIds,
+    nextBoxCounts,
+    nextGalleryAnnotations,
   });
   return counts;
+}
+
+function statusAfterClear(image) {
+  if (image.status === "REJECTED") return image.status;
+  if (!isClassification() && image.is_background) return "VERIFIED";
+  return "UNANNOTATED";
+}
+
+let clearInFlight = false;
+
+async function clearSelectedAnnotations({ onError, onCleared }) {
+  if (clearInFlight) return;
+  const ids = [...(store.get("gallerySelectedIds") || [])];
+  if (!ids.length) return;
+  const ok = window.confirm(
+    `Удалить аннотации у выбранных кадров (${ids.length})? Изображения останутся.`
+  );
+  if (!ok) return;
+
+  clearInFlight = true;
+  const classification = isClassification();
+  let cleared = 0;
+  const failed = [];
+  const clearedIds = [];
+  try {
+    await mapPool(ids, 4, async (id) => {
+      try {
+        if (classification) await api.deleteImageLabel(id);
+        else await api.saveAnnotations(id, []);
+        cleared += 1;
+        clearedIds.push(id);
+      } catch (err) {
+        failed.push(err.message || String(err));
+      }
+    });
+
+    const clearedSet = new Set(clearedIds);
+    const images = (store.get("images") || []).map((item) => {
+      if (!clearedSet.has(item.id)) return item;
+      const status = statusAfterClear(item);
+      return classification ? { ...item, status, label: null } : { ...item, status };
+    });
+    const boxCounts = { ...(store.get("boxCounts") || {}) };
+    const imageClassIds = { ...(store.get("imageClassIds") || {}) };
+    const galleryAnnotations = { ...(store.get("galleryAnnotations") || {}) };
+    for (const id of clearedSet) {
+      boxCounts[id] = 0;
+      delete imageClassIds[id];
+      delete galleryAnnotations[id];
+    }
+    const current = store.get("currentImage");
+    const currentCleared = Boolean(current && clearedSet.has(current.id));
+    store.patch({
+      images,
+      boxCounts,
+      imageClassIds,
+      galleryAnnotations,
+      ...(currentCleared
+        ? {
+            currentImage: images.find((item) => item.id === current.id) || current,
+            annotations: [],
+            selectedBoxId: null,
+            hoveredBoxId: null,
+            hasUnsavedChanges: false,
+            saveStatus: "saved",
+          }
+        : {}),
+    });
+
+    if (failed.length) onError?.(`Очищено ${cleared}, ошибок: ${failed.length}`);
+    else onCleared?.(cleared);
+
+    const projectId = store.get("currentProject")?.id;
+    const generation = ++refreshGeneration;
+    await refreshClassCounts(images, {
+      projectId,
+      isCurrent: () =>
+        generation === refreshGeneration && store.get("currentProject")?.id === projectId,
+    });
+  } finally {
+    clearInFlight = false;
+  }
 }
 
 async function deleteSelected({ onError, onDeleted }) {
@@ -565,10 +665,16 @@ async function deleteSelected({ onError, onDeleted }) {
   } else {
     onDeleted?.(deleted);
   }
-  await refreshClassCounts(remaining);
+  const projectId = store.get("currentProject")?.id;
+  const generation = ++refreshGeneration;
+  await refreshClassCounts(remaining, {
+    projectId,
+    isCurrent: () =>
+      generation === refreshGeneration && store.get("currentProject")?.id === projectId,
+  });
 }
 
-export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }) {
+export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted, onCleared }) {
   renderSplitFilters();
   syncClassBalanceCollapsed();
   syncFilterInputs();
@@ -591,6 +697,11 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
   });
   document.getElementById("gallery-box-count-max")?.addEventListener("input", (event) => {
     onBoxCountInput("galleryBoxCountMax", event);
+  });
+  document.getElementById("btn-clear-gallery-filters")?.addEventListener("click", () => {
+    clearGalleryFilters(store);
+    const search = document.getElementById("gallery-search");
+    if (search) search.value = "";
   });
 
   document.getElementById("gallery-split-filters")?.addEventListener("click", (event) => {
@@ -647,6 +758,10 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
     setSelectedIds([]);
   });
 
+  document.getElementById("btn-gallery-clear-annotations")?.addEventListener("click", () => {
+    clearSelectedAnnotations({ onError, onCleared }).catch((err) => onError?.(err.message));
+  });
+
   document.getElementById("btn-gallery-delete-selected")?.addEventListener("click", () => {
     deleteSelected({ onError, onDeleted }).catch((err) => onError?.(err.message));
   });
@@ -694,15 +809,18 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
   });
   store.addEventListener("change:galleryQuery", () => {
     syncFilterInputs();
+    syncClearGalleryFiltersButton();
     renderGallery({ onOpenImage });
     syncSelectionBar();
   });
   store.addEventListener("change:galleryClassFilter", () => {
     renderClassFilters();
+    syncClearGalleryFiltersButton();
     renderGallery({ onOpenImage });
   });
   store.addEventListener("change:galleryStatusFilter", () => {
     renderStatusFilters();
+    syncClearGalleryFiltersButton();
     renderGallery({ onOpenImage });
   });
   store.addEventListener("change:gallerySelectedIds", () => {
@@ -717,6 +835,10 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
 
   return {
     async refresh() {
+      const projectId = store.get("currentProject")?.id;
+      const generation = ++refreshGeneration;
+      const isCurrent = () =>
+        generation === refreshGeneration && store.get("currentProject")?.id === projectId;
       const images = store.get("images") || [];
       pruneSelection(images);
       renderStats(images);
@@ -725,11 +847,12 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError, onDeleted }
       syncFilterInputs();
       syncBoxCountFilterChrome();
       renderGallery({ onOpenImage });
-      await refreshClassCounts(images);
+      await refreshClassCounts(images, { projectId, isCurrent });
+      if (!isCurrent()) return;
       renderClassBars(
         store.get("classes") || [],
         store.get("classCounts") || {},
-        countBackgroundFrames(images)
+        countBackgroundFrames(store.get("images") || [])
       );
       renderStatusFilters();
       renderClassFilters();

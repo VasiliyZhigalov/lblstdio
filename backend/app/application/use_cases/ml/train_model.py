@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import queue
 import shutil
+from datetime import timezone
 from collections.abc import Callable
 from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
+from app.application.ports.job_runner_scopes import TrainingScopeFactory
 from app.application.ports.repositories.dataset_version_repository import (
     IDatasetVersionRepository,
 )
@@ -24,6 +26,12 @@ from app.application.ports.services.training_device import ITrainingDeviceResolv
 from app.application.ports.storage.file_storage import IFileStorage
 from app.application.ports.unit_of_work import IUnitOfWork
 from app.application.services.device_policy import normalize_device_request
+from app.application.services.version_staging import (
+    attempt_staging_dir,
+    cleanup_attempt,
+    publish_attempt,
+    published_version_dir,
+)
 from app.domain.entities.model_version import ModelVersion
 from app.domain.entities.training_job import TrainingJob
 from app.domain.enums import DatasetVersionStatus, ProjectTaskType, TrainingJobStatus
@@ -90,6 +98,8 @@ class TrainModelUseCase:
         base_weights: str | None = None,
         base_model_version_id: UUID | None = None,
         patience: int = 20,
+        schedule_mode: str = "night",
+        not_before=None,
     ) -> TrainingJob:
         project = await self._projects.get_by_id(project_id)
         if project is None:
@@ -130,6 +140,9 @@ class TrainModelUseCase:
             base_weights=resolved_weights,
             patience=patience,
         )
+        if schedule_mode not in {"night", "now"}: raise DomainValidationException("Неизвестный режим расписания")
+        job.schedule_mode = schedule_mode
+        job.not_before = not_before.astimezone(timezone.utc) if not_before is not None and not_before.tzinfo is not None else not_before
         await self._jobs.add(job)
         await self._uow.commit()
 
@@ -210,19 +223,41 @@ class TrainingJobRunner:
 
     def __init__(
         self,
-        session_factory,
+        scopes: TrainingScopeFactory,
         storage: IFileStorage,
         trainer: IModelTrainer,
         *,
         device_resolver: ITrainingDeviceResolver | Callable[[str], str] | None = None,
         max_concurrent: int = 1,
     ) -> None:
-        self._session_factory = session_factory
+        self._scopes = scopes
         self._storage = storage
         self._trainer = trainer
         self._device_resolver = device_resolver
         self._sem = asyncio.Semaphore(max(1, max_concurrent))
         self._tasks: set[asyncio.Task] = set()
+        self.admission = None
+
+    async def cancel(self, job_id: UUID) -> TrainingJobStatus:
+        """Cancel a queued job immediately or request a graceful stop at epoch end."""
+        async with self._scopes() as scope:
+            job = await scope.jobs.get_by_id(job_id)
+            if job is None:
+                raise ResourceNotFoundException(f"training job {job_id} not found")
+            if job.status == TrainingJobStatus.QUEUED:
+                job.mark_cancelled()
+            elif job.status in {TrainingJobStatus.RUNNING, TrainingJobStatus.CANCELLING}:
+                job.request_cancel()
+            else:
+                raise DomainValidationException("Задание уже завершено")
+            await scope.jobs.update(job)
+            await scope.uow.commit()
+            status = job.status
+        if status == TrainingJobStatus.CANCELLING:
+            cancel = getattr(self._trainer, "cancel", None)
+            if not callable(cancel) or not cancel(str(job_id)):
+                raise DomainValidationException("Текущий тренер не поддерживает остановку обучения")
+        return status
 
     def schedule(self, job_id: UUID) -> None:
         task = asyncio.create_task(self._run(job_id))
@@ -232,24 +267,29 @@ class TrainingJobRunner:
     async def run_inline(self, job_id: UUID) -> None:
         await self._run(job_id)
 
+    async def close(self) -> None:
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def fail_orphaned_jobs(self) -> int:
         """Mark QUEUED/RUNNING jobs as FAILED after process restart."""
-        from app.infrastructure.db.repositories.training_job_repository import (
-            SqliteTrainingJobRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
-
-        async with self._session_factory() as session:
-            jobs = SqliteTrainingJobRepository(session)
-            uow = SqlAlchemyUnitOfWork(session)
-            orphans = await jobs.list_by_statuses(
-                (TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING)
+        async with self._scopes() as scope:
+            orphans = await scope.jobs.list_by_statuses(
+                (TrainingJobStatus.RUNNING, TrainingJobStatus.CANCELLING)
             )
             for job in orphans:
-                job.mark_failed(_ORPHAN_MESSAGE)
-                await jobs.update(job)
+                if job.status == TrainingJobStatus.CANCELLING:
+                    job.mark_cancelled()
+                else:
+                    job.mark_failed(_ORPHAN_MESSAGE)
+                await scope.jobs.update(job)
             if orphans:
-                await uow.commit()
+                await scope.uow.commit()
+            queued = await scope.jobs.list_by_statuses((TrainingJobStatus.QUEUED,))
+            for job in sorted(queued, key=lambda j: j.created_at): self.schedule(job.id)
             return len(orphans)
 
     def _resolve_device(self, requested: str) -> str:
@@ -260,54 +300,55 @@ class TrainingJobRunner:
         return self._device_resolver(requested)  # type: ignore[operator]
 
     async def _run(self, job_id: UUID) -> None:
-        async with self._sem:
-            await self._run_locked(job_id)
+        try:
+            if self.admission:
+                async with self.admission(job_id):
+                    async with self._sem: await self._run_locked(job_id)
+            else:
+                async with self._sem: await self._run_locked(job_id)
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._mark_failed(job_id, "cancelled during shutdown")
+            )
+            raise
+        except Exception as exc:
+            await self._mark_failed(job_id, str(exc))
+
+    async def _mark_failed(self, job_id: UUID, message: str) -> None:
+        async with self._scopes() as scope:
+            fresh = await scope.jobs.get_by_id(job_id)
+            if fresh is None:
+                return
+            if fresh.status in {
+                TrainingJobStatus.COMPLETED,
+                TrainingJobStatus.FAILED,
+                TrainingJobStatus.CANCELLED,
+            }:
+                return
+            if fresh.status == TrainingJobStatus.QUEUED and message == "cancelled during shutdown": return
+            fresh.mark_failed(message)
+            await scope.jobs.update(fresh)
+            await scope.uow.commit()
 
     async def _run_locked(self, job_id: UUID) -> None:
-        from app.infrastructure.db.repositories.dataset_version_repository import (
-            SqliteDatasetVersionRepository,
-        )
-        from app.infrastructure.db.repositories.model_version_repository import (
-            SqliteModelVersionRepository,
-        )
-        from app.infrastructure.db.repositories.project_repository import (
-            SqliteProjectRepository,
-        )
-        from app.infrastructure.db.repositories.training_job_repository import (
-            SqliteTrainingJobRepository,
-        )
-        from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
         from app.domain.services.slugify import trained_model_name
 
         work_rel: str | None = None
 
         async def _fail(message: str) -> None:
-            async with self._session_factory() as session:
-                jobs = SqliteTrainingJobRepository(session)
-                uow = SqlAlchemyUnitOfWork(session)
-                fresh = await jobs.get_by_id(job_id)
-                if fresh is None:
-                    return
-                if fresh.status in {
-                    TrainingJobStatus.COMPLETED,
-                    TrainingJobStatus.FAILED,
-                }:
-                    return
-                fresh.mark_failed(message)
-                await jobs.update(fresh)
-                await uow.commit()
+            await self._mark_failed(job_id, message)
 
         try:
-            async with self._session_factory() as session:
-                jobs = SqliteTrainingJobRepository(session)
-                versions = SqliteDatasetVersionRepository(session)
-                projects_repo = SqliteProjectRepository(session)
-                uow = SqlAlchemyUnitOfWork(session)
+            async with self._scopes() as scope:
+                jobs = scope.jobs
+                versions = scope.datasets
+                projects_repo = scope.projects
+                uow = scope.uow
 
                 job = await jobs.get_by_id(job_id)
                 if job is None:
                     return
-                if job.status in {TrainingJobStatus.COMPLETED, TrainingJobStatus.FAILED}:
+                if job.status != TrainingJobStatus.QUEUED:
                     return
 
                 work_rel = f"projects/{job.project_id}/models/_train_{job.id}"
@@ -337,6 +378,7 @@ class TrainingJobRunner:
                     base_weights=job.base_weights,
                     patience=job.patience,
                     task=task,
+                    job_id=str(job.id),
                 )
                 project_id = job.project_id
                 dataset_version_id = job.dataset_version_id
@@ -362,9 +404,9 @@ class TrainingJobRunner:
                     except queue.Empty:
                         break
                 if batch:
-                    async with self._session_factory() as session:
-                        jobs = SqliteTrainingJobRepository(session)
-                        uow = SqlAlchemyUnitOfWork(session)
+                    async with self._scopes() as scope:
+                        jobs = scope.jobs
+                        uow = scope.uow
                         job = await jobs.get_by_id(job_id)
                         if job is not None:
                             for metrics in batch:
@@ -382,16 +424,26 @@ class TrainingJobRunner:
                 except queue.Empty:
                     break
 
+            async with self._scopes() as scope:
+                job = await scope.jobs.get_by_id(job_id)
+                if job is not None and (result.cancelled or job.status == TrainingJobStatus.CANCELLING):
+                    for metrics in leftover:
+                        job.append_epoch_metrics(metrics)
+                    job.mark_cancelled()
+                    await scope.jobs.update(job)
+                    await scope.uow.commit()
+                    return
+
             best_src = Path(result.best_weights_path)
             if not best_src.is_file():
                 await _fail(f"best.pt missing at {result.best_weights_path}")
                 return
 
-            async with self._session_factory() as session:
-                jobs = SqliteTrainingJobRepository(session)
-                models = SqliteModelVersionRepository(session)
-                projects = SqliteProjectRepository(session)
-                uow = SqlAlchemyUnitOfWork(session)
+            async with self._scopes() as scope:
+                jobs = scope.jobs
+                models = scope.models
+                projects = scope.projects
+                uow = scope.uow
 
                 job = await jobs.get_by_id(job_id)
                 if job is None:
@@ -414,41 +466,61 @@ class TrainingJobRunner:
                 await uow.commit()
 
                 model = None
+                published_for_commit: str | None = None
                 for attempt in range(_VERSION_ALLOC_ATTEMPTS):
-                    version_number = await models.next_version_number(project_id)
-                    dest_rel_dir = f"projects/{project_id}/models/v{version_number}"
-                    dest_abs_dir = Path(self._storage.get_absolute_path(dest_rel_dir))
-                    dest_abs_dir.mkdir(parents=True, exist_ok=True)
-                    dest_abs = dest_abs_dir / "best.pt"
-                    await asyncio.to_thread(shutil.copy2, best_src, dest_abs)
-                    weights_rel = f"{dest_rel_dir}/best.pt"
-
-                    await models.deactivate_stream_models(project_id)
-                    project = await projects.get_by_id(project_id)
-                    project_name = project.name if project is not None else "model"
-                    candidate = ModelVersion.create(
-                        project_id=project_id,
-                        dataset_version_id=dataset_version_id,
-                        training_job_id=job.id,
-                        version_number=version_number,
-                        weights_path=weights_rel,
-                        map50=result.map50,
-                        map50_95=result.map50_95,
-                        precision=result.precision,
-                        recall=result.recall,
-                        top1=result.top1,
-                        test_metrics=result.test_metrics,
-                        name=trained_model_name(project_name, version_number),
-                    )
+                    staging = attempt_staging_dir(project_id, "models")
+                    published: str | None = None
                     try:
+                        staging_abs = Path(self._storage.get_absolute_path(staging))
+                        staging_abs.mkdir(parents=True, exist_ok=True)
+                        await asyncio.to_thread(
+                            shutil.copy2, best_src, staging_abs / "best.pt"
+                        )
+                        version_number = await models.next_version_number(project_id)
+                        published_root = published_version_dir(
+                            project_id, "models", version_number
+                        )
+                        await publish_attempt(self._storage, staging, published_root)
+                        published = published_root
+                        weights_rel = f"{published_root}/best.pt"
+
+                        project = await projects.get_by_id(project_id)
+                        project_name = project.name if project is not None else "model"
+                        candidate = ModelVersion.create(
+                            project_id=project_id,
+                            dataset_version_id=dataset_version_id,
+                            training_job_id=job.id,
+                            version_number=version_number,
+                            weights_path=weights_rel,
+                            map50=result.map50,
+                            map50_95=result.map50_95,
+                            precision=result.precision,
+                            recall=result.recall,
+                            top1=result.top1,
+                            test_metrics=result.test_metrics,
+                            name=trained_model_name(project_name, version_number),
+                            is_active_for_stream=False,
+                        )
                         await models.add(candidate)
                         model = candidate
+                        published_for_commit = published
                         break
                     except IntegrityError:
-                        await session.rollback()
+                        await uow.rollback()
+                        await cleanup_attempt(self._storage, staging, published)
                         if attempt + 1 >= _VERSION_ALLOC_ATTEMPTS:
                             raise
                         continue
+                    except FileExistsError:
+                        await uow.rollback()
+                        await cleanup_attempt(self._storage, staging, published)
+                        if attempt + 1 >= _VERSION_ALLOC_ATTEMPTS:
+                            raise
+                        continue
+                    except Exception:
+                        await uow.rollback()
+                        await cleanup_attempt(self._storage, staging, published)
+                        raise
 
                 if model is None:
                     await _fail("failed to allocate model version number")
@@ -460,8 +532,18 @@ class TrainingJobRunner:
                     model.id,
                     stopped_early=bool(result.stopped_early),
                 )
-                await jobs.update(job)
-                await uow.commit()
+                try:
+                    await jobs.update(job)
+                    await uow.commit()
+                except Exception:
+                    try:
+                        await uow.rollback()
+                    except Exception:
+                        pass
+                    await cleanup_attempt(
+                        self._storage, staging, published_for_commit
+                    )
+                    raise
         except Exception as exc:
             try:
                 await _fail(str(exc))

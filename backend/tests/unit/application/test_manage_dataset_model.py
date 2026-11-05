@@ -2,6 +2,7 @@ import io
 import json
 import zipfile
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -276,10 +277,13 @@ async def test_rename_and_export_model() -> None:
         models, storage, ZipArchivePacker()
     ).execute(model.project_id, model.id)
     assert filename.startswith("model-")
-    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
-        assert "best.pt" in zf.namelist()
-        assert "metadata.json" in zf.namelist()
-        meta = json.loads(zf.read("metadata.json"))
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            assert "best.pt" in zf.namelist()
+            assert "metadata.json" in zf.namelist()
+            meta = json.loads(zf.read("metadata.json"))
+    finally:
+        Path(archive).unlink(missing_ok=True)
     assert meta["name"] == "best-detector"
     assert meta["map50"] == 0.8
 

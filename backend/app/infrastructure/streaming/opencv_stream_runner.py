@@ -17,6 +17,7 @@ from app.application.ports.services.model_predictor import Detection
 from app.application.ports.services.stream_runner import IngestJob, StreamStatus
 from app.domain.entities.stream_source import StreamSource
 from app.domain.enums import StreamSourceType
+from app.domain.services.image_folder import describe_folder_access_error
 from app.domain.services.stream_capture_rules import (
     TrackStableSample,
     class_is_allowed,
@@ -27,6 +28,7 @@ from app.domain.services.stream_capture_rules import (
 )
 from app.domain.services.tripwire import TripwireDebouncer
 from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
+from app.infrastructure.streaming.siemens_word_reader import SiemensWordReader
 from app.infrastructure.streaming.image_folder_capture import ImageFolderCapture
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,8 @@ logger = logging.getLogger(__name__)
 _VIDEO_FAIL_LIMIT = 30
 _VIDEO_FAIL_SLEEP_S = 0.05
 _IMAGE_FOLDER_FRAME_INTERVAL_S = 0.5
+_STREAM_MAX_PROCESS_FPS = 8.0
+_STREAM_PREVIEW_MAX_WIDTH = 960
 _INGEST_QUEUE_MAXSIZE = 64
 _RECONNECT_DELAY_INITIAL_S = 1.0
 _RECONNECT_DELAY_MAX_S = 30.0
@@ -52,7 +56,7 @@ class OpenCVStreamRunner:
         self._ready: dict[UUID, threading.Event] = {}
         self._latest_jpeg: dict[UUID, bytes] = {}
         self._status: dict[UUID, StreamStatus] = {}
-        self._project_streams: dict[UUID, UUID] = {}
+        self._project_streams: dict[UUID, set[UUID]] = {}
         self._live_config: dict[UUID, StreamTriggerConfig] = {}
         self._allowed_classes: dict[UUID, frozenset[int] | None] = {}
         self._ingest_acks: dict[UUID, list[tuple[bool, float]]] = {}
@@ -64,7 +68,10 @@ class OpenCVStreamRunner:
         *,
         allowed_class_indices: frozenset[int] | None = None,
     ) -> None:
-        self.stop_project(stream.project_id)
+        with self._lock:
+            already_running = stream.id in self._threads
+        if already_running:
+            self.stop(stream.id)
         stop_event = threading.Event()
         ready_event = threading.Event()
         with self._lock:
@@ -77,7 +84,7 @@ class OpenCVStreamRunner:
                 state="starting",
                 captured_count=stream.captured_frames_count,
             )
-            self._project_streams[stream.project_id] = stream.id
+            self._project_streams.setdefault(stream.project_id, set()).add(stream.id)
             thread = threading.Thread(
                 target=self._run,
                 args=(stream, weights_abs_path, stop_event, ready_event),
@@ -118,7 +125,9 @@ class OpenCVStreamRunner:
         if ready is not None:
             ready.set()
         if thread is not None and thread.is_alive():
-            thread.join(timeout=5.0)
+            thread.join(timeout=45.0)
+            if thread.is_alive():
+                raise RuntimeError("Источник не завершил обработку: GPU ещё занят. Повторите запуск обучения после остановки источника.")
         with self._lock:
             self._threads.pop(stream_id, None)
             self._stops.pop(stream_id, None)
@@ -137,14 +146,15 @@ class OpenCVStreamRunner:
                     last_capture_at=status.last_capture_at,
                     error_message=status.error_message,
                 )
-            for project_id, sid in list(self._project_streams.items()):
-                if sid == stream_id:
+            for project_id, stream_ids in list(self._project_streams.items()):
+                stream_ids.discard(stream_id)
+                if not stream_ids:
                     self._project_streams.pop(project_id, None)
 
     def stop_project(self, project_id: UUID) -> None:
         with self._lock:
-            stream_id = self._project_streams.get(project_id)
-        if stream_id is not None:
+            stream_ids = tuple(self._project_streams.get(project_id, ()))
+        for stream_id in stream_ids:
             self.stop(stream_id)
 
     def stop_all(self) -> None:
@@ -199,6 +209,7 @@ class OpenCVStreamRunner:
                 "captured_count": current.captured_count,
                 "last_capture_at": current.last_capture_at,
                 "error_message": current.error_message,
+                "plc_state": current.plc_state,
             }
             data.update(kwargs)
             self._status[stream_id] = StreamStatus(**data)
@@ -294,7 +305,18 @@ class OpenCVStreamRunner:
                 self._fail_ready(stream.id, ready_event, f"failed to load model: {exc}")
                 return
 
-        cap = self._open_capture(stream)
+        try:
+            cap = self._open_capture(stream)
+        except OSError as exc:
+            if stream.source_type == StreamSourceType.IMAGE_FOLDER:
+                message = describe_folder_access_error(exc, stream.source_uri)
+            else:
+                message = str(exc)
+            self._fail_ready(stream.id, ready_event, message)
+            return
+        except Exception as exc:
+            self._fail_ready(stream.id, ready_event, str(exc))
+            return
         if not cap.isOpened():
             if stream.source_type == StreamSourceType.RTSP:
                 message = (
@@ -321,6 +343,7 @@ class OpenCVStreamRunner:
         pending_stable_track: int | None = None
         pending_stable_at: float | None = None
         last_timer_capture_at: float | None = None
+        plc_reader: SiemensWordReader | None = None
         ingest_in_flight = False
         frames = 0
         t0 = time.monotonic()
@@ -330,6 +353,7 @@ class OpenCVStreamRunner:
 
         try:
             while not stop_event.is_set():
+                frame_started_at = time.monotonic()
                 for success, captured_at in self._pop_ingest_acks(stream.id):
                     ingest_in_flight = False
                     if success:
@@ -383,6 +407,13 @@ class OpenCVStreamRunner:
                 reconnect_delay = _RECONNECT_DELAY_INITIAL_S
                 now = time.monotonic()
                 config, allowed = self._get_live(stream.id)
+                if (plc_reader.address if plc_reader else None) != config.siemens_word:
+                    if plc_reader:
+                        plc_reader.close()
+                    plc_reader = SiemensWordReader(config.siemens_word) if config.siemens_word else None
+                plc_state = plc_reader.state if plc_reader else None
+                if plc_state is not None and plc_state != "on":
+                    last_timer_capture_at = None
                 debouncer.set_debounce_seconds(config.tripwire_debounce_seconds)
                 h, w = frame.shape[:2]
                 if config.timer_enabled or model is None:
@@ -394,6 +425,11 @@ class OpenCVStreamRunner:
                     detections, track_meta, box_xyxy = self._parse_results(
                         results, w, h
                     )
+                    if stream.class_index_mapping is not None:
+                        from dataclasses import replace
+                        mapping = stream.class_index_mapping
+                        detections = [replace(d, class_index=mapping[d.class_index]) for d in detections if d.class_index in mapping]
+                        track_meta = {tid: (sample[0], mapping[sample[1]], sample[2], sample[3]) for tid, sample in track_meta.items() if sample[1] in mapping}
                     detections, track_meta = self._apply_confidence_band(
                         detections, track_meta, config
                     )
@@ -402,13 +438,15 @@ class OpenCVStreamRunner:
 
                 if (
                     config.timer_enabled
+                    and plc_state in (None, "on")
                     and not ingest_in_flight
                     and (
                         last_timer_capture_at is None
                         or now - last_timer_capture_at >= config.timer_interval_seconds
                     )
                 ):
-                    if self._enqueue_ingest(stream.id, frame, [], "timer", now):
+                    reason = "siemens_word" if plc_reader else "timer"
+                    if self._enqueue_ingest(stream.id, frame, [], reason, now, config=config):
                         last_timer_capture_at = now
                         ingest_in_flight = True
                         captured = True
@@ -416,7 +454,7 @@ class OpenCVStreamRunner:
                 if folder_stills and not config.timer_enabled and not ingest_in_flight:
                     matched = detections_matching_classes(detections, allowed)
                     if matched and self._enqueue_ingest(
-                        stream.id, frame, matched, "class_filter", now
+                        stream.id, frame, matched, "class_filter", now, config=config
                     ):
                         ingest_in_flight = True
                         captured = True
@@ -431,7 +469,7 @@ class OpenCVStreamRunner:
                         prev_centers[track_id] = center
                         if ingest_in_flight or prev is None:
                             continue
-                        class_ok = allowed is None or class_index in allowed
+                        class_ok = class_is_allowed(class_index, allowed)
                         if should_capture_tripwire(
                             track_id=track_id,
                             p_prev=prev,
@@ -445,7 +483,7 @@ class OpenCVStreamRunner:
                             cooldown=config.cooldown_seconds,
                         ):
                             if self._enqueue_ingest(
-                                stream.id, frame, detections, "tripwire", now
+                                stream.id, frame, detections, "tripwire", now, config=config
                             ):
                                 ingest_in_flight = True
                                 captured = True
@@ -507,6 +545,7 @@ class OpenCVStreamRunner:
                             "track_stable",
                             now,
                             jpeg_bytes=best_jpeg,
+                            config=config,
                         ):
                             pending_stable_track = track_id
                             pending_stable_at = now
@@ -516,7 +555,16 @@ class OpenCVStreamRunner:
 
                 overlay = frame.copy()
                 self._draw_overlay(overlay, track_meta, box_xyxy, config, w, h)
-                ok_enc, buf = cv2.imencode(".jpg", overlay)
+                if w > _STREAM_PREVIEW_MAX_WIDTH:
+                    preview_height = max(1, int(h * _STREAM_PREVIEW_MAX_WIDTH / w))
+                    overlay = cv2.resize(
+                        overlay,
+                        (_STREAM_PREVIEW_MAX_WIDTH, preview_height),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                ok_enc, buf = cv2.imencode(
+                    ".jpg", overlay, [cv2.IMWRITE_JPEG_QUALITY, 80]
+                )
                 if ok_enc:
                     with self._lock:
                         self._latest_jpeg[stream.id] = buf.tobytes()
@@ -528,6 +576,7 @@ class OpenCVStreamRunner:
                     "state": "running",
                     "fps": frames / elapsed,
                     "error_message": None,
+                    "plc_state": plc_state,
                 }
                 if captured:
                     status_kwargs["last_capture_at"] = datetime.now(UTC)
@@ -540,10 +589,18 @@ class OpenCVStreamRunner:
                 if stream.source_type == StreamSourceType.IMAGE_FOLDER:
                     if stop_event.wait(_IMAGE_FOLDER_FRAME_INTERVAL_S):
                         break
+                else:
+                    frame_delay = (1.0 / _STREAM_MAX_PROCESS_FPS) - (
+                        time.monotonic() - frame_started_at
+                    )
+                    if frame_delay > 0 and stop_event.wait(frame_delay):
+                        break
         except Exception as exc:
             logger.exception("stream runner crashed")
             self._fail_ready(stream.id, ready_event, str(exc))
         finally:
+            if plc_reader:
+                plc_reader.close()
             cap.release()
             if not ready_event.is_set():
                 ready_event.set()
@@ -560,25 +617,67 @@ class OpenCVStreamRunner:
         now: float,
         *,
         jpeg_bytes: bytes | None = None,
+        config: StreamTriggerConfig | None = None,
     ) -> bool:
         if jpeg_bytes is None:
             ok, buf = cv2.imencode(".jpg", frame)
             if not ok:
                 return False
             jpeg_bytes = buf.tobytes()
-        job = IngestJob(
-            stream_id=stream_id,
-            jpeg_bytes=jpeg_bytes,
-            detections=list(detections),
-            reason=reason,
-            captured_at=now,
-        )
+        regions = config.roi_regions if config else ()
+        if regions:
+            source = frame
+            if jpeg_bytes is not None:
+                decoded = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if decoded is None:
+                    return False
+                source = decoded
+            height, width = source.shape[:2]
+            jobs = []
+            for x, y, rw, rh in regions:
+                x0, y0 = max(0, int(x * width)), max(0, int(y * height))
+                x1, y1 = min(width, int((x + rw) * width)), min(height, int((y + rh) * height))
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                crop = source[y0:y1, x0:x1]
+                ok, encoded = cv2.imencode(".jpg", crop)
+                if not ok:
+                    continue
+                crop_w, crop_h = x1 - x0, y1 - y0
+                crop_detections = []
+                for detection in detections:
+                    cx = detection.x_center * width
+                    cy = detection.y_center * height
+                    if not (x0 <= cx <= x1 and y0 <= cy <= y1):
+                        continue
+                    left = max(x0, (detection.x_center - detection.width / 2) * width)
+                    top = max(y0, (detection.y_center - detection.height / 2) * height)
+                    right = min(x1, (detection.x_center + detection.width / 2) * width)
+                    bottom = min(y1, (detection.y_center + detection.height / 2) * height)
+                    if right <= left or bottom <= top:
+                        continue
+                    crop_detections.append(Detection(
+                        class_index=detection.class_index,
+                        confidence=detection.confidence,
+                        x_center=((left + right) / 2 - x0) / crop_w,
+                        y_center=((top + bottom) / 2 - y0) / crop_h,
+                        width=(right - left) / crop_w,
+                        height=(bottom - top) / crop_h,
+                    ))
+                jobs.append(IngestJob(stream_id, encoded.tobytes(), crop_detections, reason, now))
+            if not jobs:
+                return False
+        else:
+            jobs = [IngestJob(stream_id, jpeg_bytes, list(detections), reason, now)]
+        enqueued = 0
         try:
-            self.ingest_queue.put_nowait(job)
+            for job in jobs:
+                self.ingest_queue.put_nowait(job)
+                enqueued += 1
             return True
         except queue.Full:
             logger.warning("ingest queue full; dropping %s frame for %s", reason, stream_id)
-            return False
+            return enqueued > 0
 
     def _parse_results(self, results, width: int, height: int):
         detections: list[Detection] = []
@@ -674,7 +773,7 @@ class FakeStreamRunner:
     def __init__(self) -> None:
         self.ingest_queue: queue.Queue[IngestJob] = queue.Queue(maxsize=_INGEST_QUEUE_MAXSIZE)
         self._running: dict[UUID, StreamSource] = {}
-        self._project: dict[UUID, UUID] = {}
+        self._project: dict[UUID, set[UUID]] = {}
         self._jpeg: dict[UUID, bytes] = {}
         self._status: dict[UUID, StreamStatus] = {}
         self._live_config: dict[UUID, StreamTriggerConfig] = {}
@@ -689,7 +788,8 @@ class FakeStreamRunner:
         *,
         allowed_class_indices: frozenset[int] | None = None,
     ) -> None:
-        self.stop_project(stream.project_id)
+        if stream.id in self._running:
+            self.stop(stream.id)
         if self.fail_start_message:
             self._status[stream.id] = StreamStatus(
                 is_running=False,
@@ -698,7 +798,7 @@ class FakeStreamRunner:
             )
             return
         self._running[stream.id] = stream
-        self._project[stream.project_id] = stream.id
+        self._project.setdefault(stream.project_id, set()).add(stream.id)
         self._jpeg[stream.id] = b"\xff\xd8\xff\xd9"
         self._live_config[stream.id] = stream.config
         self._allowed[stream.id] = allowed_class_indices
@@ -728,9 +828,10 @@ class FakeStreamRunner:
         self._live_config.pop(stream_id, None)
         self._allowed.pop(stream_id, None)
         self._jpeg.pop(stream_id, None)
-        for pid, sid in list(self._project.items()):
-            if sid == stream_id:
-                self._project.pop(pid, None)
+        for project_id, stream_ids in list(self._project.items()):
+            stream_ids.discard(stream_id)
+            if not stream_ids:
+                self._project.pop(project_id, None)
         prev = self._status.get(stream_id)
         self._status[stream_id] = StreamStatus(
             is_running=False,
@@ -742,9 +843,8 @@ class FakeStreamRunner:
         )
 
     def stop_project(self, project_id: UUID) -> None:
-        sid = self._project.get(project_id)
-        if sid:
-            self.stop(sid)
+        for stream_id in tuple(self._project.get(project_id, ())):
+            self.stop(stream_id)
 
     def stop_all(self) -> None:
         for sid in list(self._running.keys()):

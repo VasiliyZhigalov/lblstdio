@@ -11,8 +11,11 @@ from app.application.ports.repositories.class_repository import IClassRepository
 from app.application.ports.repositories.image_label_repository import IImageLabelRepository
 from app.application.ports.repositories.image_repository import IImageRepository
 from app.application.ports.repositories.project_repository import IProjectRepository
-from app.application.ports.storage.archive_packer import IArchivePacker
-from app.application.ports.storage.file_storage import IFileStorage
+from app.application.ports.storage.archive_packer import (
+    IArchivePacker,
+    allocate_archive_path,
+)
+from app.application.ports.storage.file_storage import IFileStorage, read_member
 from app.domain.entities.image import Image
 from app.domain.enums import ProjectTaskType, SplitType, VerificationStatus
 from app.domain.exceptions import ResourceNotFoundException
@@ -47,7 +50,16 @@ class ExportYOLOUseCase:
         self._packer = packer
         self._labels = labels
 
-    async def execute(self, project_id: UUID) -> bytes:
+    async def _pack(self, members: list[tuple[str, bytes | Path]]) -> Path:
+        dest = allocate_archive_path()
+        try:
+            await self._packer.pack_to_path(dest, members)
+        except Exception:
+            dest.unlink(missing_ok=True)
+            raise
+        return dest
+
+    async def execute(self, project_id: UUID) -> Path:
         project = await self._projects.get_by_id(project_id)
         if project is None:
             raise ResourceNotFoundException(f"project {project_id} not found")
@@ -79,18 +91,27 @@ class ExportYOLOUseCase:
             "names": names,
         }
 
-        entries: dict[str, bytes] = {}
+        members: list[tuple[str, bytes | Path]] = []
         for split in SplitType:
-            entries[f"{split.value}/images/"] = b""
-            entries[f"{split.value}/labels/"] = b""
-        entries["data.yaml"] = yaml.safe_dump(
-            yaml_payload, sort_keys=False, allow_unicode=True
-        ).encode("utf-8")
+            members.append((f"{split.value}/images/", b""))
+            members.append((f"{split.value}/labels/", b""))
+        members.append(
+            (
+                "data.yaml",
+                yaml.safe_dump(yaml_payload, sort_keys=False, allow_unicode=True).encode(
+                    "utf-8"
+                ),
+            )
+        )
 
         for image in exportable:
             split = image.split.value
-            payload = await self._storage.read(image.file_path)
-            entries[f"{split}/images/{yolo_image_name(image)}"] = payload
+            members.append(
+                (
+                    f"{split}/images/{yolo_image_name(image)}",
+                    await read_member(self._storage, image.file_path),
+                )
+            )
             lines = []
             for annotation in by_image.get(image.id, []):
                 annotation_class = class_by_id[annotation.class_id]
@@ -98,11 +119,13 @@ class ExportYOLOUseCase:
                     f"{annotation_class.index_id} {annotation.bbox.to_yolo_coords()}"
                 )
             body = "\n".join(lines)
-            entries[f"{split}/labels/{yolo_label_name(image)}"] = body.encode("utf-8")
+            members.append(
+                (f"{split}/labels/{yolo_label_name(image)}", body.encode("utf-8"))
+            )
 
-        return self._packer.pack(entries)
+        return await self._pack(members)
 
-    async def _execute_classification(self, project_id: UUID) -> bytes:
+    async def _execute_classification(self, project_id: UUID) -> Path:
         classes = sorted(
             await self._classes.list_by_project(project_id),
             key=lambda item: item.index_id,
@@ -115,7 +138,7 @@ class ExportYOLOUseCase:
         if self._labels is not None:
             labels = await self._labels.list_by_image_ids([item.id for item in exportable])
         by_image = {item.image_id: item for item in labels}
-        entries: dict[str, bytes] = {}
+        members: list[tuple[str, bytes | Path]] = []
         for image in exportable:
             label = by_image.get(image.id)
             if label is None:
@@ -130,6 +153,10 @@ class ExportYOLOUseCase:
                 continue
             folder = class_dir_name(annotation_class.name)
             disk_split = "val" if image.split == SplitType.VALID else image.split.value
-            payload = await self._storage.read(image.file_path)
-            entries[f"{disk_split}/{folder}/{yolo_image_name(image)}"] = payload
-        return self._packer.pack(entries)
+            members.append(
+                (
+                    f"{disk_split}/{folder}/{yolo_image_name(image)}",
+                    await read_member(self._storage, image.file_path),
+                )
+            )
+        return await self._pack(members)

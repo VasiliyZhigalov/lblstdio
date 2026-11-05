@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sqlalchemy import event
+from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -18,16 +18,21 @@ _DATASET_VERSION_COLUMNS = (
 )
 
 _TRAINING_JOB_COLUMNS = (
+    ("schedule_mode", "TEXT NOT NULL DEFAULT 'night'"),
+    ("not_before", "DATETIME"),
     ("patience", "INTEGER NOT NULL DEFAULT 20"),
     ("stopped_early", "INTEGER NOT NULL DEFAULT 0"),
     ("test_metrics", "TEXT"),
 )
 
 _IMAGE_COLUMNS = (
+    ("deleted_at", "DATETIME"),
     ("is_background", "INTEGER NOT NULL DEFAULT 0"),
+    ("phash", "VARCHAR(16)"),
 )
 
 _MODEL_VERSION_COLUMNS = (
+    ("class_metadata", "TEXT"),
     ("name", "TEXT NOT NULL DEFAULT ''"),
     ("top1", "FLOAT"),
     ("test_metrics", "TEXT"),
@@ -39,27 +44,30 @@ _PROJECT_COLUMNS = (
 
 _AUTO_LABEL_JOB_COLUMNS = (
     ("iou_threshold", "FLOAT NOT NULL DEFAULT 0.7"),
+    ("enqueue_for_annotation", "INTEGER NOT NULL DEFAULT 0"),
     ("consistency_iou_threshold", "FLOAT NOT NULL DEFAULT 0.8"),
 )
 
 
 def create_engine(database_url: str) -> AsyncEngine:
     kwargs: dict = {"echo": False}
-    if ":memory:" in database_url:
+    is_sqlite = database_url.startswith("sqlite")
+    if is_sqlite and ":memory:" in database_url:
         kwargs["connect_args"] = {"check_same_thread": False}
         kwargs["poolclass"] = StaticPool
-    else:
+    elif is_sqlite:
         db_path = database_url.split("///")[-1]
         if db_path and db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
     engine = create_async_engine(database_url, **kwargs)
 
-    @event.listens_for(engine.sync_engine, "connect")
-    def _enable_foreign_keys(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    if is_sqlite:
+        @event.listens_for(engine.sync_engine, "connect")
+        def _enable_foreign_keys(dbapi_connection, _connection_record) -> None:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
 
     return engine
 
@@ -72,6 +80,12 @@ def _ensure_sqlite_columns(connection) -> None:
     _ensure_table_columns(connection, "auto_label_jobs", _AUTO_LABEL_JOB_COLUMNS)
     _ensure_table_columns(connection, "projects", _PROJECT_COLUMNS)
     _ensure_model_versions_nullable_fks(connection)
+    connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_images_data_page ON images (project_id, deleted_at, created_at, id)")
+    connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_images_data_status ON images (project_id, status)")
+    connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_images_data_source ON images (project_id, stream_source_id)")
+    connection.exec_driver_sql("UPDATE images SET status='REQUIRES_REVIEW' WHERE status='REQUIRES_RECHECK'")
+    connection.exec_driver_sql("UPDATE annotation_tasks SET state='QUEUED', reason=NULL WHERE state='ISSUE'")
+    connection.exec_driver_sql("UPDATE images SET status='IN_PROGRESS' WHERE id IN (SELECT image_id FROM annotation_tasks WHERE state != 'DONE') AND status != 'IN_PROGRESS'")
 
 
 def _ensure_table_columns(connection, table: str, columns: tuple[tuple[str, str], ...]) -> None:
@@ -117,6 +131,7 @@ def _ensure_model_versions_nullable_fks(connection) -> None:
             recall FLOAT,
             top1 FLOAT,
             test_metrics TEXT,
+            class_metadata TEXT,
             is_active_for_stream INTEGER NOT NULL DEFAULT 0,
             created_at DATETIME NOT NULL,
             PRIMARY KEY (id),
@@ -130,12 +145,12 @@ def _ensure_model_versions_nullable_fks(connection) -> None:
         INSERT INTO model_versions__nullable (
             id, project_id, dataset_version_id, training_job_id, version_number,
             name, weights_path, map50, map50_95, precision, recall,
-            top1, test_metrics, is_active_for_stream, created_at
+            top1, test_metrics, class_metadata, is_active_for_stream, created_at
         )
         SELECT
             id, project_id, dataset_version_id, training_job_id, version_number,
             COALESCE(name, ''), weights_path, map50, map50_95, precision, recall,
-            NULL, NULL, is_active_for_stream, created_at
+            top1, test_metrics, class_metadata, is_active_for_stream, created_at
         FROM model_versions
         """
     )
@@ -150,10 +165,63 @@ def _ensure_model_versions_nullable_fks(connection) -> None:
     connection.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
+def _column_names(connection, table: str) -> set[str]:
+    if table not in inspect(connection).get_table_names():
+        return set()
+    return {column["name"] for column in inspect(connection).get_columns(table)}
+
+
+def _ensure_annotation_task_user(connection) -> None:
+    if "annotation_tasks" not in inspect(connection).get_table_names():
+        return
+    if "user_id" not in _column_names(connection, "annotation_tasks"):
+        connection.exec_driver_sql("ALTER TABLE annotation_tasks ADD COLUMN user_id VARCHAR(36)")
+
+
+def _ensure_project_assignments(connection) -> None:
+    """Add annotator links on existing SQLite and PostgreSQL databases."""
+    if connection.dialect.name == "postgresql":
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS project_annotators (
+                project_id VARCHAR(36) NOT NULL,
+                user_id VARCHAR(36) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (project_id, user_id),
+                CONSTRAINT fk_project_annotators_project
+                    FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+                CONSTRAINT fk_project_annotators_user
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_project_annotators_user_id ON project_annotators (user_id)"
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE annotation_tasks ADD COLUMN IF NOT EXISTS user_id VARCHAR(36)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_annotation_tasks_user_id ON annotation_tasks (user_id)"
+        )
+        return
+    _ensure_annotation_task_user(connection)
+    if "project_annotators" in inspect(connection).get_table_names():
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_project_annotators_user_id ON project_annotators (user_id)"
+        )
+    if "annotation_tasks" in inspect(connection).get_table_names():
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_annotation_tasks_user_id ON annotation_tasks (user_id)"
+        )
+
+
 async def init_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-        await connection.run_sync(_ensure_sqlite_columns)
+        await connection.run_sync(_ensure_project_assignments)
+        if connection.dialect.name == "sqlite":
+            await connection.run_sync(_ensure_sqlite_columns)
 
 
 async def create_session_factory(

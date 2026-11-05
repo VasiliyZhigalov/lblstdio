@@ -103,3 +103,11 @@ class SqliteAnnotationAuditJobRepository(IAnnotationAuditJobRepository):
             )
         )
         return [_from_row(row) for row in rows]
+
+    async def list_by_project(self, project_id: UUID) -> list[AnnotationAuditJob]:
+        rows = await self._session.scalars(
+            select(AnnotationAuditJobRow).where(
+                AnnotationAuditJobRow.project_id == str(project_id)
+            )
+        )
+        return [_from_row(row) for row in rows]

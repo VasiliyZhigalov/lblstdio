@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import inspect
+import os
 from collections.abc import Sequence
+
+os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 
 import albumentations as A
 import cv2
@@ -253,7 +256,9 @@ class AlbumentationsAugmentationService(IAugmentationService):
         seed: int | None = None,
     ) -> AugmentedSample:
         coords, labels = _boxes_to_albumentations(boxes)
-        if seed is not None:
+        if seed is not None and hasattr(pipeline, "set_random_seed"):
+            pipeline.set_random_seed(seed)
+        elif seed is not None:
             np.random.seed(seed)
         result = pipeline(image=image, bboxes=coords, class_labels=labels)
         out_boxes = _albumentations_to_boxes(result["bboxes"], result["class_labels"])

@@ -31,10 +31,12 @@ async def save_image_label(
 @router.delete("/images/{image_id}/label", status_code=status.HTTP_204_NO_CONTENT)
 async def clear_image_label(
     image_id: UUID,
+    response: Response,
     use_case: ClearImageLabelUseCase = Depends(get_clear_image_label_use_case),
 ) -> Response:
     await use_case.execute(image_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
 
 
 @router.post("/images/{image_id}/label/confirm", response_model=ImageLabelRead)
@@ -49,7 +51,9 @@ async def confirm_image_label(
 @router.post("/images/{image_id}/label/reject", status_code=status.HTTP_204_NO_CONTENT)
 async def reject_image_label(
     image_id: UUID,
+    response: Response,
     use_case: ClearImageLabelUseCase = Depends(get_clear_image_label_use_case),
 ) -> Response:
     await use_case.execute(image_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response

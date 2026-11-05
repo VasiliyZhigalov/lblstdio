@@ -1,5 +1,8 @@
+from pathlib import Path
 from random import Random
 from uuid import UUID
+
+import zipfile
 
 import pytest
 
@@ -13,7 +16,7 @@ from app.domain.entities.image import Image
 from app.domain.entities.image_label import ImageLabel
 from app.domain.entities.project import Project
 from app.domain.enums import ImageStatus, ProjectTaskType, SplitType
-from app.domain.exceptions import DomainValidationException, UnverifiedDataException
+from app.domain.exceptions import InsufficientVerifiedDataException, DomainValidationException, UnverifiedDataException
 from app.infrastructure.storage.zip_packer import ZipArchivePacker
 from tests.unit.application.test_create_dataset_version import (
     _FakeAnnotations,
@@ -27,8 +30,6 @@ from tests.unit.application.test_create_dataset_version import (
     _make_image,
 )
 from tests.unit.application.test_export_yolo import _FakeStorage as _ExportStorage
-import zipfile
-import io
 
 
 class _FakeLabels:
@@ -95,12 +96,14 @@ async def test_classification_dataset_skips_classes_without_images() -> None:
     project = Project.create("Cls", task_type=ProjectTaskType.CLASSIFICATION)
     good = AnnotationClass.create(project.id, "good", "#00FF00", 0)
     unused = AnnotationClass.create(project.id, "unused", "#0000FF", 1)
-    image, label = _verified_labeled(project.id, good.id, "a.png")
+    first, first_label = _verified_labeled(project.id, good.id, "a.png")
+    second, second_label = _verified_labeled(project.id, good.id, "b.png")
     storage = _FakeStorage()
-    storage.files[image.file_path] = b"img"
+    storage.files[first.file_path] = b"img"
+    storage.files[second.file_path] = b"img"
     version = await CreateDatasetVersionUseCase(
         _FakeProjects(project),
-        _FakeImages([image]),
+        _FakeImages([first, second]),
         _FakeAnnotations({}),
         _FakeClasses([good, unused]),
         _FakeVersions(),
@@ -108,7 +111,7 @@ async def test_classification_dataset_skips_classes_without_images() -> None:
         _FakeAugmentation(),
         _FakeUow(),
         min_verified_images=1,
-        labels=_FakeLabels({image.id: label}),
+        labels=_FakeLabels({first.id: first_label, second.id: second_label}),
     ).execute(project.id, rng=Random(0))
     written = [path for path in storage.files if path.startswith(version.yaml_path)]
     assert written
@@ -168,7 +171,7 @@ async def test_classification_dataset_blocks_pending_review() -> None:
         min_verified_images=1,
         labels=_FakeLabels({image.id: label}),
     )
-    with pytest.raises(UnverifiedDataException):
+    with pytest.raises(InsufficientVerifiedDataException):
         await use_case.execute(project.id)
 
 
@@ -195,6 +198,10 @@ async def test_classification_export_packs_class_folders() -> None:
         ZipArchivePacker(),
         labels=_FakeLabels({image.id: label}),
     ).execute(project.id)
-    names = zipfile.ZipFile(io.BytesIO(packed)).namelist()
+    try:
+        with zipfile.ZipFile(packed) as archive:
+            names = archive.namelist()
+    finally:
+        Path(packed).unlink(missing_ok=True)
     assert any(name.startswith(f"train/good/{image.id}") for name in names)
     assert "data.yaml" not in names

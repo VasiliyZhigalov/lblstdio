@@ -7,6 +7,9 @@ htmlcov/
 *.pyo
 /app.db
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 /storage/
 .mypy_cache/
 *.pt

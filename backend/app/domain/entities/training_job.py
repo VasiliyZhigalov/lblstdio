@@ -20,6 +20,8 @@ class TrainingJob:
     imgsz: int
     device: str
     base_weights: str
+    schedule_mode: str = "night"
+    not_before: datetime | None = None
     patience: int = 20
     metrics_history: list[dict[str, Any]] = field(default_factory=list)
     test_metrics: dict[str, Any] | None = None
@@ -89,6 +91,13 @@ class TrainingJob:
     def mark_failed(self, message: str) -> None:
         self.status = TrainingJobStatus.FAILED
         self.error_message = message
+        self.finished_at = datetime.now(UTC)
+
+    def request_cancel(self) -> None:
+        self.status = TrainingJobStatus.CANCELLING
+
+    def mark_cancelled(self) -> None:
+        self.status = TrainingJobStatus.CANCELLED
         self.finished_at = datetime.now(UTC)
 
     @property

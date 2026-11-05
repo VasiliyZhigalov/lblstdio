@@ -34,7 +34,7 @@ def _textured_pair() -> tuple[bytes, bytes]:
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
     db_path = (tmp_path / "app.db").as_posix()
-    app = create_app(
+    app = create_app(auth_enabled=False,
         database_url=f"sqlite+aiosqlite:///{db_path}",
         storage_root=tmp_path / "storage",
     )

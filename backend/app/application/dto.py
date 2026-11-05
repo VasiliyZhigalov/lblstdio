@@ -13,6 +13,21 @@ class UploadedFile:
     body_path: str | None = None
 
 
+@dataclass
+class UploadImagesResult:
+    images: list
+    skipped: int = 0
+
+    def __iter__(self):
+        return iter(self.images)
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, index):
+        return self.images[index]
+
+
 @dataclass(frozen=True)
 class BoxInput:
     class_id: UUID

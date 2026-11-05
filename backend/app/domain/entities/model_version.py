@@ -25,6 +25,7 @@ class ModelVersion:
     name: str = ""
     is_active_for_stream: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    class_metadata: dict | None = None
 
     def __post_init__(self) -> None:
         if self.version_number < 1:
@@ -51,7 +52,7 @@ class ModelVersion:
         test_metrics: dict[str, Any] | None = None,
         name: str | None = None,
         model_id: UUID | None = None,
-        is_active_for_stream: bool = True,
+        is_active_for_stream: bool = False,
     ) -> ModelVersion:
         return cls(
             id=model_id or uuid4(),

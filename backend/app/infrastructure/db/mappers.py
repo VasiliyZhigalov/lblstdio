@@ -24,7 +24,7 @@ from app.domain.enums import (
     VerificationStatus,
 )
 from app.domain.value_objects.bounding_box import BoundingBox
-from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
+from app.domain.value_objects.stream_trigger_config import SiemensWord, StreamTriggerConfig
 from app.domain.entities.stream_source import StreamSource
 from app.infrastructure.db.tables import (
     AnnotationRow,
@@ -89,6 +89,18 @@ def row_to_class(row: ClassRow) -> AnnotationClass:
     )
 
 
+def _phash_to_hex(value: int | None) -> str | None:
+    if value is None:
+        return None
+    return f"{value:016x}"
+
+
+def _hex_to_phash(value: str | None) -> int | None:
+    if not value:
+        return None
+    return int(value, 16)
+
+
 def image_to_row(image: Image) -> ImageRow:
     return ImageRow(
         id=str(image.id),
@@ -103,6 +115,7 @@ def image_to_row(image: Image) -> ImageRow:
         created_at=image.created_at,
         stream_source_id=str(image.stream_source_id) if image.stream_source_id else None,
         is_background=1 if image.is_background else 0,
+        phash=_phash_to_hex(image.phash),
     )
 
 
@@ -120,6 +133,7 @@ def row_to_image(row: ImageRow) -> Image:
         created_at=ensure_utc(row.created_at),
         stream_source_id=UUID(row.stream_source_id) if row.stream_source_id else None,
         is_background=bool(getattr(row, "is_background", 0)),
+        phash=_hex_to_phash(getattr(row, "phash", None)),
     )
 
 
@@ -320,6 +334,8 @@ def stream_trigger_config_to_dict(config: StreamTriggerConfig) -> dict:
         "timer_interval_seconds": config.timer_interval_seconds,
         "tripwire_enabled": config.tripwire_enabled,
         "tripwire_line": list(config.tripwire_line) if config.tripwire_line else None,
+        "siemens_word": vars(config.siemens_word) if config.siemens_word else None,
+        "roi_regions": [list(region) for region in config.roi_regions],
         "tripwire_classes": [str(item) for item in config.tripwire_classes],
         "tripwire_direction": config.tripwire_direction.value,
         "tripwire_debounce_seconds": config.tripwire_debounce_seconds,
@@ -351,6 +367,8 @@ def dict_to_stream_trigger_config(raw: dict) -> StreamTriggerConfig:
         timer_interval_seconds=float(raw.get("timer_interval_seconds", 5.0)),
         tripwire_enabled=bool(raw.get("tripwire_enabled", False)),
         tripwire_line=tuple(line) if line else None,
+        siemens_word=SiemensWord(**raw['siemens_word']) if raw.get('siemens_word') else None,
+        roi_regions=tuple(tuple(region) for region in (raw.get("roi_regions") or [])),
         tripwire_classes=tuple(UUID(item) for item in (raw.get("tripwire_classes") or [])),
         tripwire_direction=TripwireDirection(
             raw.get("tripwire_direction", TripwireDirection.ANY.value)
