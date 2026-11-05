@@ -20,7 +20,7 @@ from app.domain.entities.dataset_version import DatasetVersion
 from app.domain.enums import DatasetVersionStatus, TrainingJobStatus
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
 
-_ACTIVE_TRAINING = {TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING}
+_ACTIVE_TRAINING = {TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING, TrainingJobStatus.CANCELLING}
 logger = logging.getLogger(__name__)
 
 

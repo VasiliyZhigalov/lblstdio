@@ -54,20 +54,22 @@ def test_annotator_routes_and_last_admin_protection(auth):
     assert c.patch(f"/api/v1/auth/users/{admin['id']}",json={'role':'ANNOTATOR'}).status_code==409
     pid=c.post('/api/v1/projects',json={'name':'Project'}).json()['id']
     c.post(f'/api/v1/projects/{pid}/classes',json={'name':'Object','color_hex':'#123456'})
+    assert c.put(f'/api/v1/projects/{pid}/annotators',json={'user_ids':[worker['id']]}).status_code==200
     login(c,'worker')
     assert c.get('/api/v1/projects').status_code==200
     assert c.get(f'/api/v1/projects/{pid}').status_code==200
     assert c.get(f'/api/v1/projects/{pid}/classes').status_code==200
     headers={'X-Annotation-Session':str(uuid4())}
     assert c.get(f'/api/v1/projects/{pid}/annotation-queue',headers=headers).status_code==200
-    blocked=[('GET','/api/v1/auth/users'),('POST','/api/v1/auth/users'),('GET','/api/v1/training-queue'),('GET','/api/v1/compute-schedule'),('PUT','/api/v1/compute-schedule'),('GET',f'/api/v1/projects/{pid}/models'),('GET',f'/api/v1/projects/{pid}/images'),('GET',f'/api/v1/projects/{pid}/streams'),('POST',f'/api/v1/projects/{pid}/classes'),('POST',f'/api/v1/projects/{pid}/annotation-queue/enqueue'),('POST',f'/api/v1/projects/{pid}/data/query'),('POST',f'/api/v1/projects/{pid}/train'),('DELETE',f'/api/v1/projects/{pid}')]
+    blocked=[('GET','/api/v1/tasks'),('GET','/api/v1/auth/users'),('POST','/api/v1/auth/users'),('GET','/api/v1/training-queue'),('GET','/api/v1/compute-schedule'),('PUT','/api/v1/compute-schedule'),('GET',f'/api/v1/projects/{pid}/models'),('GET',f'/api/v1/projects/{pid}/images'),('GET',f'/api/v1/projects/{pid}/streams'),('POST',f'/api/v1/projects/{pid}/classes'),('POST',f'/api/v1/projects/{pid}/annotation-queue/enqueue'),('PUT',f'/api/v1/projects/{pid}/annotators'),('POST',f'/api/v1/projects/{pid}/data/query'),('POST',f'/api/v1/projects/{pid}/train'),('DELETE',f'/api/v1/projects/{pid}')]
     for method,path in blocked:
         response=c.request(method,path,json={})
         assert response.status_code==403,(method,path,response.text)
 
 def test_image_permissions_and_user_bound_queue_lease(auth):
-    c,_=auth;setup(c);annotator(c);annotator(c,'second')
+    c,_=auth;setup(c);worker=annotator(c);second=annotator(c,'second')
     pid=c.post('/api/v1/projects',json={'name':'Queue'}).json()['id']
+    assert c.put(f'/api/v1/projects/{pid}/annotators',json={'user_ids':[worker['id'],second['id']]}).status_code==200
     cid=c.post(f'/api/v1/projects/{pid}/classes',json={'name':'Object','color_hex':'#123456'}).json()['id']
     data=io.BytesIO();Image.new('RGB',(64,48)).save(data,'PNG')
     images=c.post(f'/api/v1/projects/{pid}/images/upload',files=[('files',(f'{i}.png',data.getvalue(),'image/png')) for i in range(2)]).json()
@@ -106,6 +108,43 @@ def test_disable_and_password_reset_revoke_sessions(auth):
     c.cookies.set('lblstdio_session',worker_cookie,domain='testserver.local',path='/')
     assert c.get('/api/v1/projects').status_code==401
     assert c.post('/api/v1/auth/login',json={'username':'worker','password':'new-worker-password'}).status_code==401
+
+def test_project_annotators_limit_visibility_and_allow_finishing_a_taken_frame(auth):
+    c,_=auth
+    admin=setup(c)
+    worker=annotator(c)
+    other=annotator(c,'other')
+    admin_cookie=c.cookies.get('lblstdio_session')
+    assigned=c.post('/api/v1/projects',json={'name':'Assigned'}).json()['id']
+    hidden=c.post('/api/v1/projects',json={'name':'Hidden'}).json()['id']
+    cid=c.post(f'/api/v1/projects/{assigned}/classes',json={'name':'Object','color_hex':'#123456'}).json()['id']
+    assert c.put(f'/api/v1/projects/{assigned}/annotators',json={'user_ids':[admin['id']]}).status_code==422
+    c.patch(f"/api/v1/auth/users/{other['id']}",json={'is_active':False})
+    assert c.put(f'/api/v1/projects/{assigned}/annotators',json={'user_ids':[other['id']]}).status_code==422
+    c.patch(f"/api/v1/auth/users/{other['id']}",json={'is_active':True})
+    assert c.put(f'/api/v1/projects/{assigned}/annotators',json={'user_ids':[worker['id'],other['id']]}).status_code==200
+    assert {item['username'] for item in c.get(f'/api/v1/projects/{assigned}/annotators').json()}=={'worker','other'}
+    data=io.BytesIO();Image.new('RGB',(64,48)).save(data,'PNG')
+    images=c.post(f'/api/v1/projects/{assigned}/images/upload',files=[('files',(f'{i}.png',data.getvalue(),'image/png')) for i in range(2)]).json()
+    first,second=images[0]['id'],images[1]['id']
+    c.post(f'/api/v1/projects/{assigned}/annotation-queue/enqueue',json={'ids':[first,second]})
+    login(c,'worker')
+    assert {item['name'] for item in c.get('/api/v1/projects').json()}=={'Assigned'}
+    assert c.get(f'/api/v1/projects/{hidden}').status_code==403
+    headers={'X-Annotation-Session':str(uuid4())}
+    assert c.post(f'/api/v1/projects/{assigned}/annotation-queue/claim',json={'image_id':first},headers=headers).status_code==200
+    c.cookies.set('lblstdio_session',admin_cookie,domain='testserver.local',path='/')
+    assert c.put(f'/api/v1/projects/{assigned}/annotators',json={'user_ids':[]}).status_code==200
+    login(c,'worker')
+    assert [item['id'] for item in c.get('/api/v1/projects').json()]==[assigned]
+    assert c.post(f'/api/v1/projects/{assigned}/annotation-queue/claim',json={'image_id':second},headers=headers).status_code==403
+    body={'boxes':[{'class_id':cid,'x_center':.5,'y_center':.5,'width':.2,'height':.2}]}
+    saved=c.put(f'/api/v1/images/{first}/annotations',json=body,headers={**headers,'X-Annotation-Revision':'0'})
+    assert saved.status_code==200,saved.text
+    assert c.post(f'/api/v1/projects/{assigned}/annotation-queue/{first}/action',json={'action':'finish','revision':1},headers=headers).status_code==200
+    assert c.get('/api/v1/projects').json()==[]
+    assert c.get(f'/api/v1/projects/{assigned}').status_code==403
+    assert c.get(f'/api/v1/images/{first}').status_code==403
 
 def test_cross_origin_writes_and_tampered_sessions_are_rejected(auth):
     c,_=auth

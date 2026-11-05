@@ -200,7 +200,7 @@ export function initUploadModal({ onUploaded, onError }) {
     setFiles(event.dataTransfer.files);
   });
 
-  document.getElementById("btn-open-upload").addEventListener("click", open);
+  document.getElementById("btn-open-upload")?.addEventListener("click", open);
   document.getElementById("btn-close-upload").addEventListener("click", close);
   document.getElementById("btn-cancel-upload").addEventListener("click", close);
 

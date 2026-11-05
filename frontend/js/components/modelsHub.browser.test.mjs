@@ -27,6 +27,6 @@ test("model workspace toggles activity, saves schedule, and sends auto-label par
  assert.equal(saved.collection_start,'08:00');assert.equal(saved.training_end,'07:00');
  click('[data-ml-tab="auto"]');click('[data-ml-preset="70"]');click('[data-ml="auto-start"]');await tick();
  assert.equal(autoBody.confidence_threshold,.7);assert.equal(autoBody.enqueue_for_annotation,true);assert.equal(autoBody.all_unannotated,true);
- assert.match(win.document.querySelector('#ml-auto-progress').textContent,/COMPLETED/);
+ assert.match(win.document.querySelector('#ml-auto-progress').textContent,/Готово/);
  win.happyDOM.abort();
 });

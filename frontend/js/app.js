@@ -1,20 +1,20 @@
 import {initAuth,isAnnotator} from "./auth.js?v=auth-20261023a";
 import { initAnnotationQueue } from "./components/annotationQueue.js?v=annotation-queue-20261022e";
 import { store, isClassification } from "./store.js";
-import { API_BASE, api } from "./api.js?v=annotation-queue-20261022e";
+import { api } from "./api.js?v=task-controls-20261029";
 import { AnnotationCanvas } from "./components/canvas.js?v=annotation-queue-20261022e";
-import { initProjectsHub, loadProjectsHub } from "./components/projectsHub.js";
+import { initProjectsHub, loadProjectsHub } from "./components/projectsHub.js?v=annotators-20261029";
 import { getFilmstripImages, initFilmstrip } from "./components/filmstrip.js?v=annotation-queue-20261022e";
 import { initSidebar, selectClassByHotkey } from "./components/sidebar.js?v=annotation-queue-20261022e";
 import { initReviewBar } from "./components/reviewBar.js";
 import { initUploadModal } from "./components/uploadModal.js";
 import { initDatasetVersionModal } from "./components/datasetVersionModal.js";
-import { initTrainingDrawer } from "./components/trainingDrawer.js";
+import { initTrainingDrawer } from "./components/trainingDrawer.js?v=train-options-20261029b";
 import { initAutoLabelModal } from "./components/autoLabelModal.js";
-import { initDataHub } from "./components/projectData.js?v=annotation-queue-20261022e";
-import { initTrainingNotifications } from "./components/trainingNotifications.js";
-import { initModelsHub } from "./components/modelsHub.js";
-import { initStreamHub } from "./components/streamHub.js?v=project-data-20261022d";
+import { initDataHub } from "./components/projectData.js?v=per-class-icons-20261029";
+import { initTaskCenter } from "./components/taskCenter.js?v=training-cancel-20261029";
+import { initModelsHub } from "./components/modelsHub.js?v=training-controls-20261029b";
+import { initStreamHub } from "./components/streamHub.js?v=siemens-word-values";
 import { initHotkeys } from "./hotkeys.js?v=annotation-queue-20261022e";
 import { ensureHash, navigate, parseHash, projectPath, replaceHash } from "./router.js?v=collection-center-20261022c";
 import { escapeHtml, refreshIcons, showModal } from "./utils/dom.js";
@@ -30,6 +30,7 @@ let canvas;
 let annotationQueue = null;
 let celebrateSave = false;
 let saveFlashTimer = 0;
+let taskCenter;
 let routeSeq = 0;
 let navToken = 0;
 let pendingClearImageId = null;
@@ -235,7 +236,6 @@ function syncClassifyChrome() {
   document.getElementById("tool-toggle-hide")?.classList.toggle("hidden", cls);
   document.getElementById("btn-clear-review-annotations")?.classList.toggle("hidden", cls);
   document.getElementById("btn-shell-toggle-hide")?.classList.toggle("hidden", cls);
-  document.getElementById("btn-export-crops")?.classList.toggle("hidden", cls);
   const opacityWrap = document.getElementById("tool-opacity")?.parentElement;
   opacityWrap?.classList.toggle("hidden", cls);
   const clearBtn = document.getElementById("btn-clear-annotations");
@@ -534,67 +534,6 @@ async function clearLabel() {
   }
 }
 
-async function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-async function exportDataset() {
-  const project = store.get("currentProject");
-  if (!project) {
-    toast("Нет выбранного проекта");
-    return;
-  }
-  try {
-    if (store.get("hasUnsavedChanges")) await saveCurrent({ silent: true });
-    const blob = await api.exportYolo(project.id);
-    await downloadBlob(blob, `project-${project.id}-yolo.zip`);
-  } catch (err) {
-    toast(err.message);
-  }
-}
-
-function cropDownloadName(projectName) {
-  const cleaned = String(projectName || "")
-    .trim()
-    .replace(/[\\/]/g, "_")
-    .replace(/\.\./g, "_");
-  return `${cleaned || "project"}_crop.zip`;
-}
-
-function exportCrops() {
-  const project = store.get("currentProject");
-  if (!project) {
-    toast("Нет выбранного проекта");
-    return;
-  }
-  const btn = document.getElementById("btn-export-crops");
-  if (btn?.dataset.busy === "1") return;
-  if (btn) {
-    btn.dataset.busy = "1";
-    btn.disabled = true;
-  }
-  const link = document.createElement("a");
-  link.href = `${API_BASE}/projects/${project.id}/export-crops`;
-  link.download = cropDownloadName(project.name);
-  link.rel = "noopener";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  toast("Собираем кропы… файл появится в загрузках браузера", 6000);
-  setTimeout(() => {
-    if (!btn) return;
-    btn.dataset.busy = "0";
-    btn.disabled = false;
-  }, 8000);
-}
-
 async function leaveStudio() {
   const projectId = store.get("currentProject")?.id;
   const tab = store.get("projectTab");
@@ -640,14 +579,16 @@ async function enterProject(route, seq) {
 async function onRoute() {
   const seq = ++routeSeq;
   const route = parseHash();
+  document.getElementById("view-tasks")?.classList.add("hidden");
   if(isAnnotator()){
+    if(route.name === "tasks"){navigate("/projects");return;}
     if(route.name==="streams"){navigate("/projects");return;}
     if(route.projectId&&route.tab!=="annotate"){navigate(projectPath(route.projectId,"annotate"));return;}
   }
   const previousProjectId = store.get("currentProject")?.id;
   const previousTab = store.get("projectTab");
 
-  if (route.name === "projects" || route.name === "streams") {
+  if (route.name === "projects" || route.name === "streams" || route.name === "tasks") {
     try {
       if (store.get("hasUnsavedChanges")) await saveCurrent({ silent: true });
     } catch {
@@ -662,6 +603,13 @@ async function onRoute() {
     if (seq !== routeSeq) return;
     if(previousTab === "annotate") await annotationQueue?.leave();
     showShell(false);
+    if (route.name === "tasks") {
+      document.getElementById("view-projects").classList.add("hidden");
+      document.getElementById("view-tasks")?.classList.remove("hidden");
+      store.set("view", "tasks");
+      taskCenter?.refresh();
+      return;
+    }
     if (route.name === "streams") {
       document.getElementById("view-projects").classList.add("hidden");
       document.getElementById("view-stream-center")?.classList.remove("hidden");
@@ -1466,7 +1414,7 @@ async function boot() {
     onError: toast,
   });
 
-  if(!isAnnotator())initTrainingNotifications();
+  if(!isAnnotator()) taskCenter = initTaskCenter({navigate});
   streamHub = initStreamHub({
     toast,
     navigate,
@@ -1581,11 +1529,6 @@ async function boot() {
   document.getElementById("btn-back-projects").addEventListener("click", leaveStudio);
   document.getElementById("btn-prev").addEventListener("click", () => go(-1));
   document.getElementById("btn-next").addEventListener("click", () => go(1));
-  document.getElementById("btn-export-studio").addEventListener("click", exportDataset);
-  document.getElementById("btn-export-crops")?.addEventListener("click", exportCrops);
-  document.getElementById("btn-create-dataset")?.addEventListener("click", () => {
-    datasetModal?.open();
-  });
   document.getElementById("btn-save-annotations").addEventListener("click", () => {
     saveCurrent({ force: true, celebrate: true }).catch(() => {});
   });

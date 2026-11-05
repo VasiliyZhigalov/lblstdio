@@ -3,11 +3,12 @@ from pathlib import Path
 from uuid import UUID
 from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select, update
+from sqlalchemy import select
 from app.presentation.dependencies import get_session
 from app.infrastructure.db.tables import TrainingJobRow, ModelVersionRow, ProjectRow, DatasetVersionRow
 from app.infrastructure.db.repositories.training_job_repository import _from_row
 from app.presentation.api.v1.training_router import _job_to_read
+from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
 
 router=APIRouter(tags=["model-lab"])
 
@@ -52,11 +53,24 @@ async def queue(project_id: UUID | None=None,session=Depends(get_session)):
     return [{**_job_to_read(_from_row(row)).model_dump(mode="json"),"project_name":name} for row,name in rows]
 
 @router.post("/training-queue/{job_id}/cancel")
-async def cancel(job_id: UUID,session=Depends(get_session)):
-    result=await session.execute(update(TrainingJobRow).where(TrainingJobRow.id==str(job_id),TrainingJobRow.status=="QUEUED").values(status="FAILED",error_message="Отменено пользователем до запуска",finished_at=datetime.now().astimezone()))
-    if not result.rowcount:raise HTTPException(409,"Можно отменить только ожидающее задание")
+async def cancel(job_id: UUID,request: Request):
+    try:
+        status=await request.app.state.training_runner.cancel(job_id)
+    except ResourceNotFoundException as exc:
+        raise HTTPException(404,str(exc)) from exc
+    except DomainValidationException as exc:
+        raise HTTPException(409,str(exc)) from exc
+    return {"cancelled":status.value in {"CANCELLED","CANCELLING"},"status":status.value}
+
+@router.delete("/training-queue/{job_id}")
+async def delete_training_task(job_id: UUID,session=Depends(get_session)):
+    row=await session.get(TrainingJobRow,str(job_id))
+    if row is None:raise HTTPException(404,"Задание не найдено")
+    if row.status in {"QUEUED","RUNNING","CANCELLING"}:
+        raise HTTPException(409,"Сначала остановите активное задание")
+    await session.delete(row)
     await session.commit()
-    return {"cancelled":True}
+    return {"deleted":True}
 
 @router.get("/projects/{project_id}/models/{model_id}/details")
 async def details(project_id: UUID,model_id: UUID,session=Depends(get_session)):

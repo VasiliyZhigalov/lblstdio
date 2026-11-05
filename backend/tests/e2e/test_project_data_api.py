@@ -186,3 +186,46 @@ def test_model_inspection_reads_real_checkpoint_names_without_download(tmp_path)
     assert manifest["names"] == ["car", "person"]
     from app.domain.exceptions import DomainValidationException
     with pytest.raises(DomainValidationException): inspect_model(target, "CLASSIFICATION")
+
+
+def test_background_preview_appears_in_task_center_and_resumes(client):
+    pid = project(client)
+    response = client.post(f"/api/v1/projects/{pid}/data/imports/preview?background=true", data={"kind": "images"}, files=[("files", ("one.png", png(), "image/png"))])
+    assert response.status_code == 200, response.text
+    job_id = response.json()["id"]
+    for _ in range(200):
+        job = client.get(f"/api/v1/projects/{pid}/data/imports/{job_id}").json()
+        if job["status"] != "CHECKING": break
+        time.sleep(.01)
+    assert job["status"] == "PREVIEW", job
+    assert job["summary"]["images"] == 1
+    task = next(item for item in client.get('/api/v1/tasks').json()['items'] if item['id'] == job_id)
+    assert task['kind'] == 'import' and task['status'] == 'ACTION_REQUIRED'
+    finish(client, pid, job_id)
+    task = next(item for item in client.get('/api/v1/tasks').json()['items'] if item['id'] == job_id)
+    assert task['status'] == 'COMPLETED'
+
+
+def test_background_preview_failure_is_visible(client):
+    pid = project(client)
+    response = client.post(f"/api/v1/projects/{pid}/data/imports/preview?background=true", data={"kind":"images"}, files=[("files", ("bad.png", b"not an image", "image/png"))])
+    job_id = response.json()['id']
+    for _ in range(200):
+        job = client.get(f"/api/v1/projects/{pid}/data/imports/{job_id}").json()
+        if job['status'] != 'CHECKING': break
+        time.sleep(.01)
+    assert job['status'] == 'FAILED'
+    assert job['error']
+    assert any(item['id'] == job_id and item['status'] == 'FAILED' for item in client.get('/api/v1/tasks').json()['items'])
+
+
+def test_tasks_pagination_keeps_distinct_results(client):
+    pid = project(client)
+    ids = []
+    for name in ('one.png', 'two.png'):
+        response = client.post(f'/api/v1/projects/{pid}/data/imports/preview?background=true', data={'kind':'images'}, files=[('files',(name,png(),'image/png'))])
+        ids.append(response.json()['id'])
+    first = client.get('/api/v1/tasks?limit=1&offset=0').json()
+    second = client.get('/api/v1/tasks?limit=1&offset=1').json()
+    assert first['has_more'] is True
+    assert {first['items'][0]['id'],second['items'][0]['id']} == set(ids)

@@ -238,6 +238,27 @@ class TrainingJobRunner:
         self._tasks: set[asyncio.Task] = set()
         self.admission = None
 
+    async def cancel(self, job_id: UUID) -> TrainingJobStatus:
+        """Cancel a queued job immediately or request a graceful stop at epoch end."""
+        async with self._scopes() as scope:
+            job = await scope.jobs.get_by_id(job_id)
+            if job is None:
+                raise ResourceNotFoundException(f"training job {job_id} not found")
+            if job.status == TrainingJobStatus.QUEUED:
+                job.mark_cancelled()
+            elif job.status in {TrainingJobStatus.RUNNING, TrainingJobStatus.CANCELLING}:
+                job.request_cancel()
+            else:
+                raise DomainValidationException("Задание уже завершено")
+            await scope.jobs.update(job)
+            await scope.uow.commit()
+            status = job.status
+        if status == TrainingJobStatus.CANCELLING:
+            cancel = getattr(self._trainer, "cancel", None)
+            if not callable(cancel) or not cancel(str(job_id)):
+                raise DomainValidationException("Текущий тренер не поддерживает остановку обучения")
+        return status
+
     def schedule(self, job_id: UUID) -> None:
         task = asyncio.create_task(self._run(job_id))
         self._tasks.add(task)
@@ -257,10 +278,13 @@ class TrainingJobRunner:
         """Mark QUEUED/RUNNING jobs as FAILED after process restart."""
         async with self._scopes() as scope:
             orphans = await scope.jobs.list_by_statuses(
-                (TrainingJobStatus.RUNNING,)
+                (TrainingJobStatus.RUNNING, TrainingJobStatus.CANCELLING)
             )
             for job in orphans:
-                job.mark_failed(_ORPHAN_MESSAGE)
+                if job.status == TrainingJobStatus.CANCELLING:
+                    job.mark_cancelled()
+                else:
+                    job.mark_failed(_ORPHAN_MESSAGE)
                 await scope.jobs.update(job)
             if orphans:
                 await scope.uow.commit()
@@ -298,6 +322,7 @@ class TrainingJobRunner:
             if fresh.status in {
                 TrainingJobStatus.COMPLETED,
                 TrainingJobStatus.FAILED,
+                TrainingJobStatus.CANCELLED,
             }:
                 return
             if fresh.status == TrainingJobStatus.QUEUED and message == "cancelled during shutdown": return
@@ -353,6 +378,7 @@ class TrainingJobRunner:
                     base_weights=job.base_weights,
                     patience=job.patience,
                     task=task,
+                    job_id=str(job.id),
                 )
                 project_id = job.project_id
                 dataset_version_id = job.dataset_version_id
@@ -397,6 +423,16 @@ class TrainingJobRunner:
                     leftover.append(epoch_queue.get_nowait())
                 except queue.Empty:
                     break
+
+            async with self._scopes() as scope:
+                job = await scope.jobs.get_by_id(job_id)
+                if job is not None and (result.cancelled or job.status == TrainingJobStatus.CANCELLING):
+                    for metrics in leftover:
+                        job.append_epoch_metrics(metrics)
+                    job.mark_cancelled()
+                    await scope.jobs.update(job)
+                    await scope.uow.commit()
+                    return
 
             best_src = Path(result.best_weights_path)
             if not best_src.is_file():

@@ -39,7 +39,7 @@ from app.domain.entities.model_version import ModelVersion
 from app.domain.enums import TrainingJobStatus
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
 
-_ACTIVE_TRAINING = {TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING}
+_ACTIVE_TRAINING = {TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING, TrainingJobStatus.CANCELLING}
 _VERSION_ALLOC_ATTEMPTS = 5
 MAX_MODEL_UPLOAD_BYTES = 512 * 1024 * 1024
 logger = logging.getLogger(__name__)

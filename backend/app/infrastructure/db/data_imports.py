@@ -36,18 +36,19 @@ class DataImportManager:
         self.root.mkdir(exist_ok=True)
         self.tasks = {}
         self.cancelled = set()
+        self.check_progress = {}
         self.lock = asyncio.Lock()
 
     async def recover(self):
         async with self.factory() as session:
-            await session.execute(update(Job).where(Job.status.in_(["RUNNING", "QUEUED"])).values(status="FAILED", error="Сервер был перезапущен. Уже импортированные изображения сохранены; можно отменить импорт."))
+            await session.execute(update(Job).where(Job.status.in_(["RUNNING", "QUEUED", "CHECKING"])).values(status="FAILED", error="Сервер был перезапущен. Уже импортированные изображения сохранены; проверьте результат и запустите операцию заново."))
             await session.commit()
 
     async def close(self):
         self.cancelled.update(self.tasks)
         if self.tasks: await asyncio.gather(*self.tasks.values(), return_exceptions=True)
 
-    async def prepare(self, project_id, kind, uploads, root):
+    async def prepare(self, project_id, kind, uploads, root, *, existing=False):
         async with self.factory() as session:
             await SqliteProjectDataRepository(session).require_project(project_id)
             project = await session.get(ProjectRow, str(project_id))
@@ -57,22 +58,103 @@ class DataImportManager:
                 if len(uploads) != 1 or not uploads[0][0].lower().endswith(".pt"): raise Invalid("Выберите один файл .pt")
                 manifest = await asyncio.to_thread(inspect_model, uploads[0][1], task)
             else:
-                manifest = await asyncio.to_thread(inspect_dataset, root, uploads, task, kind)
+                def report(done, total):
+                    self.check_progress[root.name] = (done, total)
+                manifest = await asyncio.to_thread(inspect_dataset, root, uploads, task, kind, report if existing else None)
         except Invalid: raise
         except Exception as exc: raise Invalid(f"Не удалось прочитать импорт: {exc}") from exc
         job_id = root.name
         await asyncio.to_thread((root / "manifest.json").write_text, json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
         summary = {"format": manifest["format"], "names": manifest["names"], "class_count": manifest.get("class_count"), "images": len(manifest["records"]), "objects": sum(len(r["boxes"]) for r in manifest["records"]), "backgrounds": sum(bool(r["background"]) for r in manifest["records"])}
         async with self.factory() as session:
-            row = Job(id=job_id, project_id=str(project_id), kind=kind, name=uploads[0][0] if len(uploads) == 1 else f"{len(uploads)} файлов", created_at=datetime.now(timezone.utc), summary=summary, total=len(manifest["records"]) or 1)
-            session.add(row)
+            row = await session.get(Job, job_id) if existing else None
+            if row is None:
+                row = Job(id=job_id, project_id=str(project_id), kind=kind, name=uploads[0][0] if len(uploads) == 1 else f"{len(uploads)} файлов", created_at=datetime.now(timezone.utc))
+                session.add(row)
+            row.status = "PREVIEW"
+            row.summary = summary
+            row.processed = 0
+            row.total = len(manifest["records"]) or 1
             await session.commit()
             return public_job(row)
 
+    def display_job(self, row):
+        result = public_job(row)
+        if row.status == "CHECKING" or (row.kind == "dataset_build" and row.status == "RUNNING"):
+            done, total = self.check_progress.get(row.id, (0, 0))
+            result.update(processed=done, total=total)
+        return result
+
+    async def prepare_background(self, project_id, kind, uploads, root):
+        async with self.factory() as session:
+            await SqliteProjectDataRepository(session).require_project(project_id)
+            row = Job(id=root.name, project_id=str(project_id), kind=kind, name=uploads[0][0] if len(uploads) == 1 else f"{len(uploads)} файлов", created_at=datetime.now(timezone.utc), status="CHECKING", summary={}, processed=0, total=0)
+            session.add(row)
+            await session.commit()
+            result = self.display_job(row)
+        async def worker():
+            try:
+                await self.prepare(project_id, kind, uploads, root, existing=True)
+            except Exception as exc:
+                async with self.factory() as session:
+                    row = await session.get(Job, root.name)
+                    if row:
+                        row.status, row.error = "FAILED", str(exc)[:2000]
+                        await session.commit()
+                await asyncio.to_thread(shutil.rmtree, root, True)
+            finally:
+                self.check_progress.pop(root.name, None)
+        task = asyncio.create_task(worker())
+        self.tasks[root.name] = task
+        task.add_done_callback(lambda _: self.tasks.pop(root.name, None))
+        return result
+
+    async def get(self, project_id, job_id):
+        async with self.factory() as session:
+            return self.display_job(await self.owned(session, project_id, job_id))
+
     async def list(self, project_id):
         async with self.factory() as session:
-            rows = (await session.scalars(select(Job).where(Job.project_id == str(project_id)).order_by(Job.created_at.desc()).limit(100))).all()
-            return [public_job(r) for r in rows]
+            rows = (await session.scalars(select(Job).where(Job.project_id == str(project_id), Job.kind != "dataset_build").order_by(Job.created_at.desc()).limit(100))).all()
+            return [self.display_job(r) for r in rows]
+
+    async def create_dataset(self, project_id, payload):
+        async with self.factory() as session:
+            await SqliteProjectDataRepository(session).require_project(project_id)
+            row = Job(id=str(uuid4()), project_id=str(project_id), kind="dataset_build", name=payload.name or "Новая версия", created_at=datetime.now(timezone.utc), status="QUEUED", summary={}, processed=0, total=0)
+            session.add(row)
+            await session.commit()
+            result = self.display_job(row)
+        job_id = row.id
+        async def worker():
+            try:
+                async with self.factory() as session:
+                    row = await session.get(Job, job_id)
+                    if not row: return
+                    row.status = "RUNNING"
+                    await session.commit()
+                    from app.presentation.dependencies import (get_project_repo, get_image_repo, get_annotation_repo, get_class_repo, get_dataset_version_repo, get_augmentation_service, get_uow, get_image_label_repo)
+                    from app.application.use_cases.dataset.create_dataset_version import CreateDatasetVersionUseCase
+                    from app.presentation.api.v1.dataset_versions_router import create_dataset_version
+                    uc = CreateDatasetVersionUseCase(get_project_repo(session), get_image_repo(session), get_annotation_repo(session), get_class_repo(session), get_dataset_version_repo(session), self.storage, get_augmentation_service(), get_uow(session), labels=get_image_label_repo(session), progress=lambda done, total: self.check_progress.__setitem__(job_id, (done, total)))
+                    version = await create_dataset_version(project_id, payload, uc)
+                    row = await session.get(Job, job_id)
+                    if row:
+                        row.status, row.summary = "COMPLETED", {"version": version.model_dump(mode="json")}
+                        row.processed = row.total = version.item_count
+                        await session.commit()
+            except Exception as exc:
+                async with self.factory() as session:
+                    row = await session.get(Job, job_id)
+                    if row:
+                        row.status, row.error = "FAILED", str(exc)[:2000]
+                        await session.commit()
+            finally:
+                self.check_progress.pop(job_id, None)
+        task = asyncio.create_task(worker())
+        self.tasks[job_id] = task
+        task.add_done_callback(lambda _: self.tasks.pop(job_id, None))
+        return result
 
     async def owned(self, session, project_id, job_id):
         row = await session.get(Job, str(job_id))

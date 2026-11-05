@@ -80,13 +80,13 @@ class SqliteAnnotationQueue:
         stamp = now()
         # Re-enqueue is explicit; live leases are preserved even for the caller.
         statement = dialect_insert(self.session, T).from_select(["image_id", "project_id", "state", "revision", "created_at", "updated_at"], targets.add_columns(literal(str(project_id)), literal("QUEUED"), literal(0), literal(stamp), literal(stamp)))
-        statement = statement.on_conflict_do_update(index_elements=["image_id"], set_={"state": "QUEUED", "owner": None, "lease_until": None, "reason": None, "revision": T.revision+1, "updated_at": stamp}, where=or_(T.state != "WORKING", T.lease_until <= stamp))
+        statement = statement.on_conflict_do_update(index_elements=["image_id"], set_={"state": "QUEUED", "owner": None, "user_id": None, "lease_until": None, "reason": None, "revision": T.revision+1, "updated_at": stamp}, where=or_(T.state != "WORKING", T.lease_until <= stamp))
         result = await self.session.execute(statement)
         await self.session.execute(update(I).where(I.id.in_(targets), I.id.in_(select(T.image_id).where(T.state == "QUEUED"))).values(status="IN_PROGRESS"))
         await self.session.commit()
         return {"updated": result.rowcount}
 
-    async def claim(self, project_id, owner, image_id=None):
+    async def claim(self, project_id, owner, image_id=None, user_id=None):
         await SqliteProjectDataRepository(self.session).require_project(project_id)
         stamp = now()
         if image_id is not None:
@@ -102,7 +102,7 @@ class SqliteAnnotationQueue:
         else:
             # Prefer the caller's current frame; repeated clicks cannot reserve a batch.
             target = select(T.image_id).join(I, I.id == T.image_id).where(T.project_id == str(project_id), I.deleted_at.is_(None), or_(T.state == "QUEUED", and_(T.state == "WORKING", or_(T.owner == owner, T.lease_until <= stamp)))).order_by((T.owner == owner).desc(), T.updated_at, T.image_id).limit(1).scalar_subquery()
-        result = await self.session.execute(update(T).execution_options(synchronize_session=False).where(T.image_id == target, or_(T.state == "QUEUED", and_(T.state == "WORKING", or_(T.owner == owner, T.lease_until <= stamp)))).values(state="WORKING", owner=owner, lease_until=stamp+timedelta(seconds=LEASE_SECONDS), updated_at=stamp).returning(T.image_id))
+        result = await self.session.execute(update(T).execution_options(synchronize_session=False).where(T.image_id == target, or_(T.state == "QUEUED", and_(T.state == "WORKING", or_(T.owner == owner, T.lease_until <= stamp)))).values(state="WORKING", owner=owner, user_id=user_id, lease_until=stamp+timedelta(seconds=LEASE_SECONDS), updated_at=stamp).returning(T.image_id))
         acquired = result.scalar_one_or_none()
         if acquired is None:
             if image_id is None:
@@ -111,7 +111,7 @@ class SqliteAnnotationQueue:
             raise QueueConflict("Кадр уже взял другой разметчик. Выберите следующий свободный.")
         target = acquired
         await self.session.execute(update(I).where(I.id == target).values(status="IN_PROGRESS"))
-        await self.session.execute(update(T).execution_options(synchronize_session=False).where(T.project_id == str(project_id), T.image_id != target, T.owner == owner, T.state == "WORKING").values(state="QUEUED", owner=None, lease_until=None, updated_at=stamp))
+        await self.session.execute(update(T).execution_options(synchronize_session=False).where(T.project_id == str(project_id), T.image_id != target, T.owner == owner, T.state == "WORKING").values(state="QUEUED", owner=None, user_id=None, lease_until=None, updated_at=stamp))
         await self.session.commit()
         task = await self.session.get(T, target, populate_existing=True)
         return {**public(task, owner), "readonly": False}
@@ -156,6 +156,6 @@ class SqliteAnnotationQueue:
                         box.verification_status = "VERIFIED"
                     if not boxes and not image.is_background: raise DomainValidationException("Нарисуйте объекты или отметьте отсутствие целевых объектов")
                 await self.session.execute(update(I).where(I.id == str(image_id)).values(status="VERIFIED"))
-            await self.session.execute(update(T).execution_options(synchronize_session=False).where(T.image_id == str(image_id)).values(state={"finish":"DONE", "skip":"QUEUED", "release":"QUEUED"}[action], owner=None, lease_until=None, reason=None, updated_at=now()))
+            await self.session.execute(update(T).execution_options(synchronize_session=False).where(T.image_id == str(image_id)).values(state={"finish":"DONE", "skip":"QUEUED", "release":"QUEUED"}[action], owner=None, user_id=None, lease_until=None, reason=None, updated_at=now()))
         await self.session.commit()
         return public(await self.session.get(T, str(image_id), populate_existing=True), owner)

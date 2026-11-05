@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sqlalchemy import event
+from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -165,9 +165,61 @@ def _ensure_model_versions_nullable_fks(connection) -> None:
     connection.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
+def _column_names(connection, table: str) -> set[str]:
+    if table not in inspect(connection).get_table_names():
+        return set()
+    return {column["name"] for column in inspect(connection).get_columns(table)}
+
+
+def _ensure_annotation_task_user(connection) -> None:
+    if "annotation_tasks" not in inspect(connection).get_table_names():
+        return
+    if "user_id" not in _column_names(connection, "annotation_tasks"):
+        connection.exec_driver_sql("ALTER TABLE annotation_tasks ADD COLUMN user_id VARCHAR(36)")
+
+
+def _ensure_project_assignments(connection) -> None:
+    """Add annotator links on existing SQLite and PostgreSQL databases."""
+    if connection.dialect.name == "postgresql":
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS project_annotators (
+                project_id VARCHAR(36) NOT NULL,
+                user_id VARCHAR(36) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (project_id, user_id),
+                CONSTRAINT fk_project_annotators_project
+                    FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+                CONSTRAINT fk_project_annotators_user
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_project_annotators_user_id ON project_annotators (user_id)"
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE annotation_tasks ADD COLUMN IF NOT EXISTS user_id VARCHAR(36)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_annotation_tasks_user_id ON annotation_tasks (user_id)"
+        )
+        return
+    _ensure_annotation_task_user(connection)
+    if "project_annotators" in inspect(connection).get_table_names():
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_project_annotators_user_id ON project_annotators (user_id)"
+        )
+    if "annotation_tasks" in inspect(connection).get_table_names():
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_annotation_tasks_user_id ON annotation_tasks (user_id)"
+        )
+
+
 async def init_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        await connection.run_sync(_ensure_project_assignments)
         if connection.dialect.name == "sqlite":
             await connection.run_sync(_ensure_sqlite_columns)
 

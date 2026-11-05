@@ -14,7 +14,7 @@ from app.application.use_cases.streaming.manage_stream_source import ManageStrea
 from app.domain.enums import StreamSourceType
 from app.domain.exceptions import ResourceNotFoundException
 from app.domain.services.rtsp_url import redact_rtsp_uri
-from app.domain.value_objects.stream_trigger_config import StreamTriggerConfig
+from app.domain.value_objects.stream_trigger_config import SiemensWord, StreamTriggerConfig
 from app.presentation.dependencies import (
     get_manage_stream_source_use_case,
     get_start_stream_use_case,
@@ -77,6 +77,8 @@ def _config_to_payload(config: StreamTriggerConfig) -> StreamTriggerConfigPayloa
         timer_interval_seconds=config.timer_interval_seconds,
         tripwire_enabled=config.tripwire_enabled,
         tripwire_line=config.tripwire_line,
+        siemens_word=vars(config.siemens_word) if config.siemens_word else None,
+        roi_regions=list(config.roi_regions),
         tripwire_classes=list(config.tripwire_classes),
         tripwire_direction=config.tripwire_direction.value,
         tripwire_debounce_seconds=config.tripwire_debounce_seconds,
@@ -117,6 +119,8 @@ def _payload_to_config(payload: StreamTriggerConfigPayload) -> StreamTriggerConf
         timer_interval_seconds=payload.timer_interval_seconds,
         tripwire_enabled=payload.tripwire_enabled,
         tripwire_line=payload.tripwire_line,
+        siemens_word=SiemensWord(**payload.siemens_word.model_dump()) if payload.siemens_word else None,
+        roi_regions=tuple(payload.roi_regions),
         tripwire_classes=tuple(payload.tripwire_classes),
         tripwire_direction=payload.tripwire_direction,
         tripwire_debounce_seconds=payload.tripwire_debounce_seconds,
@@ -321,6 +325,7 @@ async def stream_status(
         captured_count=status_obj.captured_count,
         last_capture_at=status_obj.last_capture_at,
         error_message=status_obj.error_message,
+        plc_state=status_obj.plc_state,
     )
 
 

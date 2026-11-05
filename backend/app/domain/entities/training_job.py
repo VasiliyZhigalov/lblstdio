@@ -93,6 +93,13 @@ class TrainingJob:
         self.error_message = message
         self.finished_at = datetime.now(UTC)
 
+    def request_cancel(self) -> None:
+        self.status = TrainingJobStatus.CANCELLING
+
+    def mark_cancelled(self) -> None:
+        self.status = TrainingJobStatus.CANCELLED
+        self.finished_at = datetime.now(UTC)
+
     @property
     def progress_percent(self) -> float:
         if self.status == TrainingJobStatus.COMPLETED:

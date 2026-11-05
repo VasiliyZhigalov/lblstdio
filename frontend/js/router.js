@@ -11,6 +11,7 @@ export function parseHash() {
   const query = new URLSearchParams(queryPart || "");
 
   if (parts[0] === "streams") return { name: "streams" };
+  if (parts[0] === "tasks") return { name: "tasks" };
 
   if (parts[0] !== "projects") return { name: "projects" };
   if (!parts[1]) return { name: "projects" };

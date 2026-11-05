@@ -2,7 +2,7 @@ from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
@@ -18,7 +18,9 @@ from app.application.use_cases.projects.create_project import (
     UpdateProjectUseCase,
 )
 from app.application.use_cases.projects.delete_project import DeleteProjectUseCase
+from app.infrastructure.db.project_annotators import list_annotators, replace_annotators, visible_project_ids
 from app.presentation.dependencies import (
+    get_session,
     get_create_class_use_case,
     get_create_project_use_case,
     get_delete_class_use_case,
@@ -36,6 +38,8 @@ from app.presentation.schemas import (
     ClassCreate,
     ClassRead,
     ClassRename,
+    ProjectAnnotatorAssign,
+    ProjectAnnotatorRead,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
@@ -55,10 +59,26 @@ async def create_project(
 
 @router.get("/projects", response_model=list[ProjectRead])
 async def list_projects(
+    request: Request,
     use_case: ListProjectsUseCase = Depends(get_list_projects_use_case),
+    session=Depends(get_session),
 ) -> list[ProjectRead]:
     projects = await use_case.execute()
+    user = getattr(request.state, "user", None)
+    if user and user.get("role") == "ANNOTATOR":
+        allowed = await visible_project_ids(session, user["id"])
+        projects = [item for item in projects if str(item.id) in allowed]
     return [ProjectRead.model_validate(item, from_attributes=True) for item in projects]
+
+
+@router.get("/projects/{project_id}/annotators", response_model=list[ProjectAnnotatorRead])
+async def get_project_annotators(project_id: UUID, session=Depends(get_session)) -> list[dict]:
+    return await list_annotators(session, project_id)
+
+
+@router.put("/projects/{project_id}/annotators", response_model=list[ProjectAnnotatorRead])
+async def set_project_annotators(project_id: UUID, payload: ProjectAnnotatorAssign, session=Depends(get_session)) -> list[dict]:
+    return await replace_annotators(session, project_id, payload.user_ids)
 
 
 @router.get("/projects/{project_id}", response_model=ProjectRead)

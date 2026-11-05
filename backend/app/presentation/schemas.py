@@ -27,6 +27,15 @@ class ProjectRead(BaseModel):
     updated_at: datetime
 
 
+class ProjectAnnotatorRead(BaseModel):
+    id: UUID
+    username: str
+
+
+class ProjectAnnotatorAssign(BaseModel):
+    user_ids: list[UUID] = Field(default_factory=list, max_length=200)
+
+
 class ClassCreate(BaseModel):
     name: str = Field(min_length=1)
     color_hex: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
@@ -356,7 +365,19 @@ class AnnotationAuditTaskRead(BaseModel):
     finished_at: datetime | None = None
 
 
+class SiemensWordPayload(BaseModel):
+    host: str = Field(min_length=1, max_length=253, pattern=r"^[A-Za-z0-9_.:-]+$")
+    db_number: int = Field(ge=1, le=65535)
+    byte_offset: int = Field(ge=0, le=65534)
+    rack: int = Field(default=0, ge=0, le=7)
+    slot: int = Field(default=1, ge=0, le=31)
+    port: int = Field(default=102, ge=1, le=65535)
+    on_value: int = Field(default=1, ge=0, le=65535)
+    off_value: int = Field(default=0, ge=0, le=65535)
+
+
 class StreamTriggerConfigPayload(BaseModel):
+    siemens_word: SiemensWordPayload | None = None
     track_stable_enabled: bool = True
     track_stable_min_frames: int = Field(default=12, ge=2)
     track_stable_max_size_variation: float = Field(default=0.35, ge=0)
@@ -368,6 +389,7 @@ class StreamTriggerConfigPayload(BaseModel):
     timer_interval_seconds: float = Field(default=5.0, gt=0)
     tripwire_enabled: bool = False
     tripwire_line: tuple[float, float, float, float] | None = None
+    roi_regions: list[tuple[float, float, float, float]] = Field(default_factory=list, max_length=8)
     tripwire_classes: list[UUID] = Field(default_factory=list)
     tripwire_direction: TripwireDirection = TripwireDirection.ANY
     tripwire_debounce_seconds: float = Field(default=3.0, ge=0)
@@ -412,6 +434,7 @@ class StreamSourceRead(BaseModel):
 
 
 class StreamStatusRead(BaseModel):
+    plc_state: str | None = None
     is_running: bool
     state: str
     fps: float = 0.0

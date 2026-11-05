@@ -18,6 +18,7 @@ class StreamStatus:
     captured_count: int = 0
     last_capture_at: datetime | None = None
     error_message: str | None = None
+    plc_state: str | None = None
 
 
 @dataclass

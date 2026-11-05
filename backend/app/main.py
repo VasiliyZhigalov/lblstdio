@@ -166,6 +166,8 @@ def create_app(
     app.include_router(stream_router, prefix="/api/v1")
     app.include_router(project_data_router, prefix="/api/v1")
     app.include_router(annotation_queue_router, prefix="/api/v1")
+    from app.presentation.api.v1.tasks_router import router as tasks_router
+    app.include_router(tasks_router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

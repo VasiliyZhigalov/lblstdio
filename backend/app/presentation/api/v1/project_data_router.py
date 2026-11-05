@@ -41,6 +41,9 @@ class DataQuery(BaseModel):
     source_type: str | None = None
     stream_source_id: str | None = None
     class_id: str | None = None
+    class_mode: Literal["contains", "not_contains"] = "contains"
+    class_contains: str | None = None
+    class_not_contains: str | None = None
     annotation_source: str | None = None
     min_objects: int | None = Field(default=None, ge=0)
     max_objects: int | None = Field(default=None, ge=0)
@@ -64,7 +67,7 @@ class DataQuery(BaseModel):
 
 class DataAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    action: Literal["tag", "review", "trash", "restore"]
+    action: Literal["tag", "review", "clear_annotations", "trash", "restore"]
     filters: DataQuery = Field(default_factory=DataQuery)
     ids: list[UUID] = Field(default_factory=list, max_length=5000)
     all_matching: bool = False
@@ -127,6 +130,8 @@ async def preview_import(project_id: UUID, request: Request):
                         output.write(chunk)
                 staged.append((original, target))
             if not staged: raise HTTPException(422, "Выберите файлы")
+        if request.query_params.get("background") == "true":
+            return await manager.prepare_background(project_id, kind, staged, root)
         return await manager.prepare(project_id, kind, staged, root)
     except BaseException:
         await asyncio.to_thread(shutil.rmtree, root, True)
@@ -136,6 +141,11 @@ async def preview_import(project_id: UUID, request: Request):
 @router.get("/projects/{project_id}/data/imports")
 async def import_history(project_id: UUID, request: Request):
     return await request.app.state.data_imports.list(project_id)
+
+
+@router.get("/projects/{project_id}/data/imports/{job_id}")
+async def import_detail(project_id: UUID, job_id: UUID, request: Request):
+    return await request.app.state.data_imports.get(project_id, job_id)
 
 
 @router.post("/projects/{project_id}/data/imports/{job_id}/start")

@@ -1,6 +1,6 @@
 import {isAnnotator} from "../auth.js?v=auth-20261023a";
 import { store } from "../store.js";
-import { api } from "../api.js";
+import { api } from "../api.js?v=annotators-20261029";
 import { escapeHtml, formatRelative, refreshIcons, showModal } from "../utils/dom.js";
 
 function taskTypeLabel(taskType) {
@@ -50,6 +50,12 @@ function renderProjects() {
   const grid = document.getElementById("projects-grid");
   const empty = document.getElementById("projects-empty");
   const projects = filteredProjects();
+  const emptyText = empty.querySelector("p");
+  if (emptyText) {
+    emptyText.textContent = isAnnotator()
+      ? "Вам ещё не назначили проекты."
+      : "Нет проектов. Создайте первый, чтобы начать разметку.";
+  }
   if (!projects.length) {
     grid.innerHTML = "";
     empty.classList.remove("hidden");
@@ -74,10 +80,10 @@ function renderProjects() {
                 project.created_at === project.updated_at ? "Создан" : "Обновлено"
               }: ${escapeHtml(updated)}</p>
             </div>
-            <button type="button" data-project-menu="${project.id}"
+            ${isAnnotator() ? "" : `<button type="button" data-project-menu="${project.id}"
               class="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-200" title="Меню">
               <i data-lucide="more-vertical" class="w-4 h-4"></i>
-            </button>
+            </button>`}
           </div>
           <p class="text-xs text-zinc-400 line-clamp-2 min-h-[2rem]">${escapeHtml(project.description || "Без описания")}</p>
           <div class="text-[11px] text-zinc-400">
@@ -90,6 +96,10 @@ function renderProjects() {
           </button>
           <div data-menu-panel="${project.id}"
             class="hidden absolute right-3 top-10 z-10 w-40 rounded-md border border-zinc-700 bg-zinc-900 shadow-xl py-1">
+            <button type="button" data-assign-project="${project.id}"
+              class="w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
+              Разметчики
+            </button>
             <button type="button" data-edit-project="${project.id}"
               class="w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
               Редактировать
@@ -152,7 +162,58 @@ export function initProjectsHub({
     nameInput.select();
   };
 
-  document.getElementById("btn-new-project").addEventListener("click", openCreateModal);
+  const newProjectButton = document.getElementById("btn-new-project");
+  newProjectButton.classList.toggle("hidden", isAnnotator());
+  newProjectButton.addEventListener("click", openCreateModal);
+  const annotatorsModal = document.getElementById("annotators-modal");
+  const annotatorsList = document.getElementById("annotators-list");
+  const annotatorsError = document.getElementById("annotators-error");
+  const saveAnnotators = document.getElementById("btn-save-annotators");
+  let assigningProjectId = null;
+
+  const openAnnotators = async (project) => {
+    assigningProjectId = project.id;
+    document.getElementById("annotators-project").textContent = project.name || "";
+    annotatorsError.textContent = "";
+    annotatorsList.innerHTML = `<p class="text-xs text-zinc-500">Загрузка…</p>`;
+    saveAnnotators.disabled = true;
+    showModal(annotatorsModal, true);
+    try {
+      const [users, assigned] = await Promise.all([
+        api.authUsers(),
+        api.listProjectAnnotators(project.id),
+      ]);
+      const selected = new Set(assigned.map((item) => item.id));
+      const annotators = users.filter((item) => item.role === "ANNOTATOR" && item.is_active);
+      annotatorsList.innerHTML = annotators.length
+        ? annotators.map((item) => `<label class="flex items-center gap-2 text-xs text-zinc-200"><input type="checkbox" value="${escapeHtml(item.id)}" ${selected.has(item.id) ? "checked" : ""}>${escapeHtml(item.username)}</label>`).join("")
+        : `<p class="text-xs text-zinc-500">Нет активных разметчиков. Создайте их в разделе «Пользователи».</p>`;
+      saveAnnotators.disabled = !annotators.length;
+    } catch (error) {
+      annotatorsList.innerHTML = "";
+      annotatorsError.textContent = error.message || "Не удалось загрузить разметчиков";
+    }
+  };
+
+  document.getElementById("btn-cancel-annotators").addEventListener("click", () => {
+    assigningProjectId = null;
+    showModal(annotatorsModal, false);
+  });
+  document.getElementById("annotators-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!assigningProjectId || saveAnnotators.disabled) return;
+    const userIds = [...annotatorsList.querySelectorAll("input:checked")].map((input) => input.value);
+    saveAnnotators.disabled = true;
+    annotatorsError.textContent = "";
+    try {
+      await api.setProjectAnnotators(assigningProjectId, userIds);
+      assigningProjectId = null;
+      showModal(annotatorsModal, false);
+    } catch (error) {
+      annotatorsError.textContent = error.message || "Не удалось сохранить";
+      saveAnnotators.disabled = false;
+    }
+  });
   document.getElementById("btn-cancel-project").addEventListener("click", () => {
     editingProjectId = null;
     showModal(modal, false);
@@ -194,6 +255,13 @@ export function initProjectsHub({
       const wasHidden = panel.classList.contains("hidden");
       closeMenus();
       if (wasHidden) panel.classList.remove("hidden");
+      return;
+    }
+    const assign = event.target.closest("[data-assign-project]");
+    if (assign) {
+      const project = (store.get("projects") || []).find((item) => item.id === assign.dataset.assignProject);
+      closeMenus();
+      if (project) openAnnotators(project);
       return;
     }
     const edit = event.target.closest("[data-edit-project]");

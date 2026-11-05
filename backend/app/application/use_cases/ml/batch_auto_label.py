@@ -347,6 +347,9 @@ class BatchAutoLabelUseCase:
                     image.recalculate_status(merged)
                     await self._images.update(image)
                     total_predictions += len(created)
+                job.total_images_processed = start + len(chunk)
+                job.total_predictions_generated = total_predictions
+                await self._jobs.update(job)
                 await self._uow.commit()
 
             job.mark_completed(len(selected), total_predictions)
@@ -489,6 +492,9 @@ class BatchAutoLabelUseCase:
                 image.recalculate_status_from_label(label)
                 await self._images.update(image)
                 total_predictions += 1
+            job.total_images_processed = start + len(batch)
+            job.total_predictions_generated = total_predictions
+            await self._jobs.update(job)
             await self._uow.commit()
 
         job.mark_completed(len(to_predict), total_predictions)

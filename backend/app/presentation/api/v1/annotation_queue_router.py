@@ -11,7 +11,9 @@ from app.presentation.api.v1.project_data_router import DataQuery
 router = APIRouter(tags=["annotation-queue"])
 
 
-def owner(request: Request): return session_owner(request.headers.get("X-Annotation-Session"), getattr(request.state,"user",{}).get("id"))
+def owner(request: Request):
+    user = getattr(request.state, "user", None) or {}
+    return session_owner(request.headers.get("X-Annotation-Session"), user.get("id")), user.get("id")
 
 
 def use_case(session=Depends(get_session)): return AnnotationQueue(SqliteAnnotationQueue(session))
@@ -35,7 +37,7 @@ class ActionRequest(BaseModel):
 
 @router.get("/projects/{project_id}/annotation-queue")
 async def queue(project_id: UUID, state: Literal["all", "available", "mine", "DONE", "ISSUE"] = "all", offset: int = 0, limit: int = 48, actor=Depends(owner), uc=Depends(use_case)):
-    return await uc.list(project_id, actor, state, offset, limit)
+    return await uc.list(project_id, actor[0], state, offset, limit)
 
 
 @router.post("/projects/{project_id}/annotation-queue/enqueue")
@@ -45,12 +47,12 @@ async def enqueue(project_id: UUID, payload: EnqueueRequest, session=Depends(get
 
 @router.post("/projects/{project_id}/annotation-queue/claim")
 async def claim(project_id: UUID, payload: ClaimRequest, actor=Depends(owner), uc=Depends(use_case)):
-    return await uc.claim(project_id, actor, payload.image_id)
+    return await uc.claim(project_id, actor[0], payload.image_id, actor[1])
 
 
 @router.post("/projects/{project_id}/annotation-queue/{image_id}/action")
 async def action(project_id: UUID, image_id: UUID, payload: ActionRequest, actor=Depends(owner), uc=Depends(use_case)):
-    return await uc.action(project_id, image_id, actor, payload.action, payload.revision, payload.reason)
+    return await uc.action(project_id, image_id, actor[0], payload.action, payload.revision, payload.reason)
 
 
 async def guard_annotation_mutation(request: Request, response: Response, session=Depends(get_session)):

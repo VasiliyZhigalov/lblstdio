@@ -94,11 +94,29 @@ export const api = {
   linkProjectCamera: (id, camera, linked = true) => request(`/projects/${id}/data/cameras/${camera}`, { method: "PUT", body: JSON.stringify({ linked }) }),
   projectDataAction: (id, payload) => request(`/projects/${id}/data/actions`, { method: "POST", body: JSON.stringify(payload) }),
   thumbnailUrl: (id) => `${API_BASE}/images/${id}/thumbnail`,
-  previewDataImport: (id, kind, files) => {
+  previewDataImport: (id, kind, files, onProgress) => {
     const body = new FormData(); body.append("kind", kind);
     for (const file of files) { body.append("files", file, file.name); body.append("relative_paths", file.webkitRelativePath || file.name); }
-    return request(`/projects/${id}/data/imports/preview`, { method: "POST", body });
+    if (!onProgress) return request(`/projects/${id}/data/imports/preview`, { method: "POST", body });
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/projects/${id}/data/imports/preview?background=true`);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader("X-Annotation-Session", annotationSession);
+      xhr.upload.onprogress = event => onProgress({ stage: "upload", loaded: event.loaded, total: event.lengthComputable ? event.total : 0 });
+      xhr.upload.onload = () => onProgress({ stage: "receiving" });
+      xhr.onerror = () => reject(new Error("Не удалось передать файлы. Проверьте соединение."));
+      xhr.onabort = () => reject(new Error("Передача файлов прервана."));
+      xhr.onload = () => {
+        let data; try { data = JSON.parse(xhr.responseText); } catch { data = {}; }
+        if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+        else { if (xhr.status === 401) window.dispatchEvent(new CustomEvent("auth-required")); reject(new Error(typeof data.detail === "string" ? data.detail : `Ошибка загрузки: ${xhr.status}`)); }
+      };
+      xhr.send(body);
+    });
   },
+  getDataImport: (id, job) => request(`/projects/${id}/data/imports/${job}`),
+  tasks: (offset = 0, limit = 100) => request(`/tasks?limit=${limit}&offset=${offset}`),
   listDataImports: (id) => request(`/projects/${id}/data/imports`),
   dataImportAction: (id, job, action, payload = {}) => request(`/projects/${id}/data/imports/${job}/${action}`, { method: "POST", body: JSON.stringify(payload) }),
   listProjects: () => request("/projects"),
@@ -114,6 +132,8 @@ export const api = {
     }),
   getProject: (id) => request(`/projects/${id}`),
   deleteProject: (id) => request(`/projects/${id}`, { method: "DELETE" }),
+  listProjectAnnotators: (id) => request(`/projects/${id}/annotators`),
+  setProjectAnnotators: (id, userIds) => request(`/projects/${id}/annotators`, { method: "PUT", body: JSON.stringify({ user_ids: userIds }) }),
 
   listClasses: (projectId) => request(`/projects/${projectId}/classes`),
   createClass: (projectId, name, color_hex) =>
@@ -308,6 +328,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body || {}),
     }),
+  createDatasetJob: (projectId, body) => request(`/projects/${projectId}/dataset-versions/jobs`, { method: 'POST', body: JSON.stringify(body) }),
 
   getDatasetVersion: (versionId) => request(`/dataset-versions/${versionId}`),
 
@@ -377,6 +398,7 @@ export const api = {
   saveComputeSchedule: (body) => request('/compute-schedule',{method:'PUT',body:JSON.stringify(body)}),
   trainingQueue: (id) => request('/training-queue'+(id?'?project_id='+encodeURIComponent(id):'')),
   cancelQueuedTraining: (id) => request(`/training-queue/${id}/cancel`,{method:'POST'}),
+  deleteTrainingTask: (id) => request(`/training-queue/${id}`,{method:'DELETE'}),
   setModelActive: (pid,id,active) => request(`/projects/${pid}/models/${id}/active`,{method:'PUT',body:JSON.stringify({active})}),
   previewModel: (pid,id,body) => request(`/projects/${pid}/models/${id}/preview`,{method:"POST",body:JSON.stringify(body)}),
   modelDetails: (pid,id) => request(`/projects/${pid}/models/${id}/details`),
@@ -403,13 +425,27 @@ export const api = {
     }),
   pickImageFolderStream: (projectId) =>
     request(`/projects/${projectId}/streams/image-folder/pick`, { method: "POST" }),
-  uploadStreamVideo: (projectId, file, name = "") => {
+  uploadStreamVideo: (projectId, file, name = "", options = {}) => {
     const form = new FormData();
     form.append("file", file, file.name || "video.mp4");
     if (name) form.append("name", name);
-    return request(`/projects/${projectId}/streams/upload-video`, {
-      method: "POST",
-      body: form,
+    return new Promise((resolve, reject) => {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const task = {id, project_id:projectId, project_name:options.projectName || 'Проект', kind:'upload', destination:'streams', title:'Загрузка видео: ' + (name || file.name), status:'RUNNING', processed:0, total:0, unit:'байт', created_at:new Date().toISOString()};
+      const emit = value => window.dispatchEvent(new window.CustomEvent('lblstdio:upload-task',{detail:value}));
+      const warn = event => {event.preventDefault();event.returnValue='';};
+      const finish = () => { emit({id,remove:true}); window.removeEventListener('beforeunload',warn); };
+      emit(task); window.addEventListener('beforeunload',warn);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/projects/${projectId}/streams/upload-video`);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader('X-Annotation-Session',annotationSession);
+      xhr.upload.onprogress = event => { task.processed=event.loaded;task.total=event.lengthComputable?event.total:0;emit({...task});options.onProgress?.(task); };
+      xhr.upload.onload = () => {task.total=0;task.processed=0;task.stage='receiving';emit({...task});options.onProgress?.(task);};
+      xhr.onerror = () => {finish();reject(new Error('Ошибка сети при загрузке видео'));};
+      xhr.onabort = () => {finish();reject(new Error('Загрузка видео прервана'));};
+      xhr.onload = () => {finish();let data;try{data=JSON.parse(xhr.responseText);}catch{data={};}if(xhr.status>=200&&xhr.status<300)resolve(data);else{if(xhr.status===401)window.dispatchEvent(new window.CustomEvent('auth-required'));reject(new Error(typeof data.detail==='string'?data.detail:`Ошибка загрузки: ${xhr.status}`));}};
+      xhr.send(form);
     });
   },
   deleteStream: (streamId) =>

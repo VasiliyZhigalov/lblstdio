@@ -15,12 +15,14 @@
       };
     </script>
     <link rel="stylesheet" href="/css/styles.css" />
-    <link rel="stylesheet" href="/css/projectData.css?v=project-data-20261022d" />
+    <link rel="stylesheet" href="/css/taskCenter.css" />
+    <link rel="stylesheet" href="/css/projectData.css?v=per-class-icons-20261029" />
     <link rel="stylesheet" href="/css/annotationQueue.css?v=annotation-queue-20261022e" />
     <script src="/vendor/lucide.min.js"></script>
   <link rel="stylesheet" href="css/modelLab.css?v=model-lab-20261022a"><link rel="stylesheet" href="css/auth.css?v=auth-20261023a"></head>
   <body class="bg-zinc-950 text-zinc-100">
     <div id="app" class="h-screen w-screen overflow-hidden">
+      <section id="view-tasks" class="hidden h-full overflow-y-auto"></section>
       <!-- PROJECTS HUB -->
       <section id="view-projects" class="h-full flex flex-col">
         <header class="h-14 shrink-0 border-b border-zinc-800 bg-zinc-900/70 px-5 flex items-center justify-between">
@@ -128,40 +130,6 @@
           </div>
 
           <div id="shell-actions" class="flex items-center gap-2 shrink-0">
-            <div id="shell-actions-data" class="flex items-center gap-2">
-              <button
-                id="btn-open-upload"
-                class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border border-zinc-700 hover:bg-zinc-800"
-                title="Загрузить фото"
-              >
-                <i data-lucide="download" class="w-3.5 h-3.5"></i>
-                <span class="hidden sm:inline">Загрузить фото</span>
-              </button>
-              <button
-                id="btn-create-dataset"
-                class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-emerald-700 hover:bg-emerald-600 text-white"
-                title="Создать версию датасета"
-              >
-                <i data-lucide="database" class="w-3.5 h-3.5"></i>
-                <span class="hidden sm:inline">Создать датасет</span>
-              </button>
-              <button
-                id="btn-export-studio"
-                class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700"
-              >
-                <i data-lucide="upload" class="w-3.5 h-3.5"></i>
-                <span class="hidden sm:inline">Экспорт YOLO</span>
-              </button>
-              <button
-                type="button"
-                id="btn-export-crops"
-                class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700"
-                title="Скачать кропы подтверждённых боксов по классам"
-              >
-                <i data-lucide="image" class="w-3.5 h-3.5"></i>
-                <span class="hidden sm:inline">Кропы</span>
-              </button>
-            </div>
             <div id="shell-actions-annotate" class="hidden flex items-center gap-2">
               <button
                 id="btn-shell-toggle-hide"
@@ -1016,6 +984,19 @@
       </div>
     </div>
 
+    <div id="annotators-modal" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/70 p-4">
+      <form id="annotators-form" class="w-full max-w-sm rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-3">
+        <h2 class="text-sm font-semibold">Разметчики</h2>
+        <p id="annotators-project" class="text-xs text-zinc-400"></p>
+        <div id="annotators-list" class="max-h-64 overflow-y-auto space-y-2"></div>
+        <p id="annotators-error" class="text-xs text-red-300 min-h-[1rem]" role="alert"></p>
+        <div class="flex justify-end gap-2">
+          <button type="button" id="btn-cancel-annotators" class="px-3 py-1.5 text-xs rounded-md border border-zinc-700">Отмена</button>
+          <button type="submit" id="btn-save-annotators" class="px-3 py-1.5 text-xs rounded-md bg-indigo-600 hover:bg-indigo-500">Сохранить</button>
+        </div>
+      </form>
+    </div>
+
     <div id="project-modal" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/70 p-4">
       <form id="project-form" class="w-full max-w-sm rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-3">
         <h2 id="project-modal-title" class="text-sm font-semibold">Новый проект</h2>
@@ -1203,7 +1184,7 @@
             </div>
             <div id="dataset-building" class="hidden flex items-center gap-2 text-xs text-indigo-300">
               <i data-lucide="loader-circle" class="w-4 h-4 animate-spin"></i>
-              Сборка версии…
+              <span id="dataset-building-text">Сборка версии…</span><progress id="dataset-building-progress" class="hidden" max="100" value="0"></progress>
             </div>
           </div>
           <div class="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2">
@@ -1269,6 +1250,10 @@
               class="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm font-mono"
             />
           </label>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block space-y-1"><span class="text-[11px] uppercase tracking-wide text-zinc-500">Размер изображения</span><select id="train-imgsz" class="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm"><option value="320">320 · быстрее</option><option value="640" selected>640 · баланс</option><option value="1280">1280 · мелкие объекты</option></select></label>
+            <label class="block space-y-1"><span class="text-[11px] uppercase tracking-wide text-zinc-500">Batch</span><input id="train-batch-size" type="number" min="1" max="64" step="1" value="16" class="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm"><span class="block text-[10px] text-zinc-500">Меньше — экономнее по памяти GPU</span></label>
+          </div>
           <label class="block space-y-2">
             <div class="flex justify-between text-xs text-zinc-300">
               <span>Early stop (patience)</span>
@@ -1287,6 +1272,7 @@
           </button>
         </div>
         <div id="training-live" class="flex-1 overflow-y-auto p-4 space-y-4 hidden">
+          <button id="btn-cancel-training" type="button" class="hidden w-full px-3 py-2 text-xs rounded-md border border-rose-800 text-rose-200 hover:bg-rose-950/40">Остановить обучение</button>
           <div class="text-xs text-zinc-300 space-y-2">
             <div
               id="train-live-device"
@@ -1393,6 +1379,6 @@
       id="toast"
       class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-full bg-zinc-900 border border-zinc-700 text-xs shadow-xl"
     ></div>
-    <script type="module" src="/js/app.js?v=auth-20261023a"></script>
+    <script type="module" src="/js/app.js?v=siemens-word-values"></script>
   </body>
 </html>

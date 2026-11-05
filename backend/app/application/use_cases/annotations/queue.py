@@ -9,8 +9,8 @@ class AnnotationQueue:
     async def list(self, project_id, owner, state="all", offset=0, limit=48):
         return await self.repository.list(project_id, owner, state, max(0, offset), max(1, min(96, limit)))
 
-    async def claim(self, project_id, owner, image_id=None):
-        return await self.repository.claim(project_id, owner, image_id)
+    async def claim(self, project_id, owner, image_id=None, user_id=None):
+        return await self.repository.claim(project_id, owner, image_id, user_id)
 
     async def action(self, project_id, image_id, owner, action, revision, reason=""):
         if action not in {"heartbeat", "release", "finish", "skip", "clear", "trash", "background"}:

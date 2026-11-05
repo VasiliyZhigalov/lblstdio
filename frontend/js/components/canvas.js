@@ -1,5 +1,6 @@
 import { store } from "../store.js";
 import { beginAnnotationGesture, endAnnotationGesture } from "../annotationEdits.js";
+import { createUuid } from "../annotationSession.js";
 import {
   HANDLE_SIZE,
   MAX_ZOOM,
@@ -456,7 +457,7 @@ export class AnnotationCanvas {
         const classId = store.get("activeClassId");
         if (yolo && classId) {
           const newBox = {
-            id: crypto.randomUUID(),
+            id: createUuid(),
             class_id: classId,
             ...yolo,
             source: "MANUAL",

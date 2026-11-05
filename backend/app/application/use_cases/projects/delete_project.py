@@ -19,7 +19,7 @@ from app.domain.enums import (
 )
 from app.domain.exceptions import DomainValidationException, ResourceNotFoundException
 
-_ACTIVE_TRAINING = {TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING}
+_ACTIVE_TRAINING = {TrainingJobStatus.QUEUED, TrainingJobStatus.RUNNING, TrainingJobStatus.CANCELLING}
 _ACTIVE_AUTO_LABEL = {AutoLabelJobStatus.PENDING, AutoLabelJobStatus.RUNNING}
 _ACTIVE_AUDIT = {AnnotationAuditJobStatus.PENDING, AnnotationAuditJobStatus.RUNNING}
 

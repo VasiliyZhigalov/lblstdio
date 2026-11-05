@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.application.use_cases.dataset.create_dataset_version import (
     CreateDatasetVersionUseCase,
@@ -33,6 +33,11 @@ from app.presentation.schemas import (
 )
 
 router = APIRouter(tags=["dataset-versions"])
+
+
+@router.post("/projects/{project_id}/dataset-versions/jobs", status_code=status.HTTP_202_ACCEPTED)
+async def create_dataset_job(project_id: UUID, payload: CreateDatasetVersionRequest, request: Request):
+    return await request.app.state.data_imports.create_dataset(project_id, payload)
 
 
 def _aug_payload(version) -> AugmentationConfigPayload:

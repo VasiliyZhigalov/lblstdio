@@ -15,6 +15,7 @@ class AnnotationTaskRow(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     state: Mapped[str] = mapped_column(String(16), default="QUEUED", index=True)
     owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revision: Mapped[int] = mapped_column(Integer, default=0)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -400,6 +401,13 @@ class StreamSourceRow(Base):
     model_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     config_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     captured_frames_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ProjectAnnotatorRow(Base):
+    __tablename__ = "project_annotators"
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

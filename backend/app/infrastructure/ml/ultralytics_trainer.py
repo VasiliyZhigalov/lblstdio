@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import threading
 import traceback
 from multiprocessing import get_context
 from pathlib import Path
@@ -129,7 +130,7 @@ def _ultralytics_task(task: str | None) -> str:
     return "detect"
 
 
-def _training_worker(config: dict[str, Any], progress_queue, result_queue) -> None:
+def _training_worker(config: dict[str, Any], progress_queue, result_queue, cancel_event=None) -> None:
     try:
         from ultralytics import YOLO
 
@@ -141,13 +142,21 @@ def _training_worker(config: dict[str, Any], progress_queue, result_queue) -> No
                 f"project task '{expected_task}'"
             )
         history: list[dict[str, Any]] = []
+        is_cancelled = lambda: cancel_event is not None and cancel_event.is_set()
 
         def on_fit_epoch_end(trainer: Any) -> None:
             metrics = _extract_metrics(trainer)
             history.append(metrics)
             progress_queue.put(metrics)
+            if is_cancelled():
+                trainer.stop = True
+
+        def on_train_epoch_start(trainer: Any) -> None:
+            if is_cancelled():
+                trainer.stop = True
 
         model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
+        model.add_callback("on_train_epoch_start", on_train_epoch_start)
         results = model.train(
             data=config["data_yaml_path"],
             epochs=config["epochs"],
@@ -185,7 +194,8 @@ def _training_worker(config: dict[str, Any], progress_queue, result_queue) -> No
         epochs_trained = len(history)
         planned = int(config.get("epochs", epochs_trained) or epochs_trained)
         test_metrics = None
-        if best.is_file() and split_has_images(config["data_yaml_path"]):
+        cancelled = is_cancelled()
+        if not cancelled and best.is_file() and split_has_images(config["data_yaml_path"]):
             eval_model = YOLO(str(best), task=expected_task)
             val_metrics = eval_model.val(
                 data=config["data_yaml_path"],
@@ -210,6 +220,7 @@ def _training_worker(config: dict[str, Any], progress_queue, result_queue) -> No
                 "test_metrics": test_metrics,
                 "epochs_trained": epochs_trained,
                 "stopped_early": epochs_trained < planned,
+                "cancelled": cancelled,
             }
         )
     except Exception as exc:
@@ -224,6 +235,20 @@ def _training_worker(config: dict[str, Any], progress_queue, result_queue) -> No
 class ProcessUltralyticsTrainer(IModelTrainer):
     """Runs Ultralytics YOLO.train() in an isolated spawn process."""
 
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cancel_events: dict[str, Any] = {}
+        self._pending_cancels: set[str] = set()
+
+    def cancel(self, job_id: str) -> bool:
+        with self._lock:
+            event = self._cancel_events.get(job_id)
+            if event is None:
+                self._pending_cancels.add(job_id)
+            else:
+                event.set()
+        return True
+
     def train(
         self,
         config: TrainingConfig,
@@ -232,6 +257,13 @@ class ProcessUltralyticsTrainer(IModelTrainer):
         ctx = get_context("spawn")
         progress_queue = ctx.Queue()
         result_queue = ctx.Queue()
+        cancel_event = ctx.Event()
+        if config.job_id:
+            with self._lock:
+                self._cancel_events[config.job_id] = cancel_event
+                if config.job_id in self._pending_cancels:
+                    self._pending_cancels.remove(config.job_id)
+                    cancel_event.set()
         payload = {
             "data_yaml_path": config.data_yaml_path,
             "output_dir": config.output_dir,
@@ -245,7 +277,7 @@ class ProcessUltralyticsTrainer(IModelTrainer):
         }
         process = ctx.Process(
             target=_training_worker,
-            args=(payload, progress_queue, result_queue),
+            args=(payload, progress_queue, result_queue, cancel_event),
         )
         process.start()
         history: list[dict[str, Any]] = []
@@ -265,6 +297,9 @@ class ProcessUltralyticsTrainer(IModelTrainer):
                 if not process.is_alive():
                     break
         process.join(timeout=30)
+        if config.job_id:
+            with self._lock:
+                self._cancel_events.pop(config.job_id, None)
         if result is None:
             try:
                 result = result_queue.get(timeout=5)
@@ -285,4 +320,5 @@ class ProcessUltralyticsTrainer(IModelTrainer):
             test_metrics=result.get("test_metrics"),
             stopped_early=stopped_early,
             epochs_trained=epochs_trained,
+            cancelled=bool(result.get("cancelled", False)),
         )

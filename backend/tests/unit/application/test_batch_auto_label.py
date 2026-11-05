@@ -294,7 +294,13 @@ async def test_auto_label_infers_images_in_chunks(monkeypatch) -> None:
         2,
         raising=False,
     )
-    use_case, image, model, annotations, images, _, predictor = _setup()
+    use_case, image, model, annotations, images, jobs, predictor = _setup()
+    progress = []
+    original_update = jobs.update
+    async def capture(job):
+        progress.append((job.status, job.total_images_processed))
+        await original_update(job)
+    jobs.update = capture
     extra = []
     for name in ("b.jpg", "c.jpg"):
         item = Image.create(
@@ -327,6 +333,8 @@ async def test_auto_label_infers_images_in_chunks(monkeypatch) -> None:
     assert max(len(paths) for paths in original_calls) <= 2
     assert job.status == AutoLabelJobStatus.COMPLETED
     assert job.total_images_processed == 3
+    assert (AutoLabelJobStatus.RUNNING, 2) in progress
+    assert (AutoLabelJobStatus.RUNNING, 3) in progress
     for item in (image, *extra):
         assert annotations.store[item.id]
 

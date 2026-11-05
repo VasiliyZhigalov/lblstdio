@@ -15,7 +15,7 @@ from app.domain.services.yolo_label_import import (
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
-def inspect_dataset(root: Path, uploads: list, task: str, kind: str):
+def inspect_dataset(root: Path, uploads: list, task: str, kind: str, progress=None):
     files = {}
     expanded = root / "expanded"
     expanded.mkdir(exist_ok=True)
@@ -43,13 +43,15 @@ def inspect_dataset(root: Path, uploads: list, task: str, kind: str):
     if not images or len(images) > 5000: raise Invalid("Нужно от 1 до 5000 изображений")
     names, records = [], []
     dimensions = {}
-    for name, path in images.items():
+    if progress: progress(0, len(images))
+    for index, (name, path) in enumerate(images.items(), 1):
         try:
             with Image.open(path) as image:
                 w, h = image.size
                 if w * h > 100_000_000: raise Invalid(f"Слишком большое изображение: {name}")
                 image.verify()
             dimensions[name] = (w, h)
+            if progress: progress(index, len(images))
         except (OSError, ValueError) as exc: raise Invalid(f"Поврежденное изображение: {name}") from exc
     def record(name, boxes=None, label=None, background=False):
         parts = PurePosixPath(name).parts

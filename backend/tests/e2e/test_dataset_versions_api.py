@@ -253,3 +253,20 @@ def test_dataset_version_rename_export_delete(client: TestClient) -> None:
     assert yaml_path
     dataset_dir = Path(client.app.state.storage.get_absolute_path(yaml_path)).parent
     assert not dataset_dir.exists()
+
+
+def test_background_dataset_build_is_visible_and_returns_version(client):
+    import time
+    project_id = _seed_verified_triplet(client)
+    response = client.post(f"/api/v1/projects/{project_id}/dataset-versions/jobs", json={"name":"Background", "augmentation":{"multiplier":1}})
+    assert response.status_code == 202, response.text
+    job_id = response.json()['id']
+    for _ in range(500):
+        job = client.get(f"/api/v1/projects/{project_id}/data/imports/{job_id}").json()
+        if job['status'] not in {'QUEUED', 'RUNNING'}: break
+        time.sleep(.02)
+    assert job['status'] == 'COMPLETED', job
+    assert job['summary']['version']['name'] == 'Background'
+    task = next(item for item in client.get('/api/v1/tasks').json()['items'] if item['id'] == job_id)
+    assert task['kind'] == 'dataset' and task['status'] == 'COMPLETED'
+    assert job['id'] not in [item['id'] for item in client.get(f'/api/v1/projects/{project_id}/data/imports').json()]

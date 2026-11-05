@@ -77,6 +77,7 @@ export function initTrainingDrawer({
   const live = document.getElementById("training-live");
   let pollTimer = null;
   let lastModelId = null;
+  let currentJobId = null;
   let terminalNotifiedJobId = null;
   let startInFlight = false;
 
@@ -157,12 +158,13 @@ export function initTrainingDrawer({
   }
 
   function renderJob(job) {
+    currentJobId = job.id;
     live?.classList.remove("hidden");
     const liveDevice = document.getElementById("train-live-device");
     if (liveDevice) {
       const label = job.device_label || job.device || "—";
       const isGpu = String(job.device || "").toLowerCase() !== "cpu";
-      liveDevice.textContent = isGpu
+      liveDevice.textContent = job.status === "QUEUED" ? "В очереди · ожидает расписания и свободного устройства" : isGpu
         ? `Идёт обучение на GPU · ${label}`
         : `Идёт обучение на CPU · ${label}`;
       liveDevice.className = isGpu
@@ -171,6 +173,13 @@ export function initTrainingDrawer({
     }
     const epochText = document.getElementById("train-epoch-text");
     const patienceLive = document.getElementById("train-patience-live");
+    const cancelButton = document.getElementById("btn-cancel-training");
+    if (cancelButton) {
+      const stoppable = ["QUEUED", "RUNNING", "CANCELLING"].includes(job.status);
+      cancelButton.classList.toggle("hidden", !stoppable);
+      cancelButton.disabled = job.status === "CANCELLING";
+      cancelButton.textContent = job.status === "QUEUED" ? "Отменить обучение" : job.status === "CANCELLING" ? "Останавливается…" : "Остановить после текущей эпохи";
+    }
     const bar = document.getElementById("train-progress-bar");
     const patience = job.patience ?? 20;
     if (job.status === "COMPLETED" && job.stopped_early) {
@@ -205,6 +214,12 @@ export function initTrainingDrawer({
         terminalNotifiedJobId = job.id;
         onFailed?.(job);
       }
+    }
+    if (job.status === "CANCELLED") {
+      const notice = document.getElementById("train-error");
+      notice.classList.remove("hidden");
+      notice.className = "text-xs text-amber-300";
+      notice.textContent = "Обучение остановлено. Модель не публиковалась.";
     }
     if (job.status === "COMPLETED") {
       lastModelId = job.model_version_id;
@@ -249,6 +264,12 @@ export function initTrainingDrawer({
     document.getElementById("train-patience-label").textContent = event.target.value;
   });
   document.getElementById("btn-close-training")?.addEventListener("click", close);
+  document.getElementById("btn-cancel-training")?.addEventListener("click", async (event) => {
+    if (!currentJobId) return;
+    event.currentTarget.disabled = true;
+    try { await api.cancelQueuedTraining(currentJobId); }
+    catch (err) { onError?.(err.message); event.currentTarget.disabled = false; }
+  });
   document.getElementById("btn-start-training")?.addEventListener("click", async () => {
     if (startInFlight) return;
     const project = getProject();
@@ -256,8 +277,18 @@ export function initTrainingDrawer({
     const baseRaw = document.getElementById("train-base-model")?.value;
     const epochs = Number(document.getElementById("train-epochs")?.value || 100);
     const patience = Number(document.getElementById("train-patience")?.value || 20);
+    const imgsz = Number(document.getElementById("train-imgsz")?.value || 640);
+    const batchSize = Number(document.getElementById("train-batch-size")?.value || 16);
     if (!Number.isFinite(epochs) || epochs < 1 || epochs > 500) {
       onError?.("Эпохи: целое число от 1 до 500");
+      return;
+    }
+    if (![320, 640, 1280].includes(imgsz)) {
+      onError?.("Размер изображения должен быть 320, 640 или 1280");
+      return;
+    }
+    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64) {
+      onError?.("Batch: целое число от 1 до 64");
       return;
     }
     if (!project || !versionId) {
@@ -276,6 +307,8 @@ export function initTrainingDrawer({
         not_before: document.getElementById("train-not-before")?.value ? new Date(document.getElementById("train-not-before").value).toISOString() : null,
         epochs,
         patience,
+        imgsz,
+        batch_size: batchSize,
         ...parseBaseModelSelection(baseRaw, project.task_type === "CLASSIFICATION"),
       });
       terminalNotifiedJobId = null;
@@ -287,7 +320,7 @@ export function initTrainingDrawer({
         try {
           const next = await api.getTrainingJob(job.id);
           renderJob(next);
-          if (next.status === "COMPLETED" || next.status === "FAILED") {
+          if (["COMPLETED", "FAILED", "CANCELLED"].includes(next.status)) {
             clearInterval(pollTimer);
             pollTimer = null;
           }
@@ -295,8 +328,7 @@ export function initTrainingDrawer({
           onError?.(err.message);
         }
       }, 1500);
-      // Close drawer so labeling / other hubs stay usable; polling continues.
-      close();
+      // Keep the result visible at the place of launch; closing still leaves polling active.
       onStarted?.();
     } catch (err) {
       onError?.(err.message);

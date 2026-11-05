@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from pathlib import Path
 from random import Random
@@ -66,6 +67,7 @@ class CreateDatasetVersionUseCase:
         *,
         min_verified_images: int = DEFAULT_MIN_VERIFIED_IMAGES,
         labels: IImageLabelRepository | None = None,
+        progress=None,
     ) -> None:
         self._projects = projects
         self._images = images
@@ -77,6 +79,7 @@ class CreateDatasetVersionUseCase:
         self._uow = uow
         self._min_verified = min_verified_images
         self._labels = labels
+        self._progress = progress
 
     async def execute(
         self,
@@ -153,6 +156,8 @@ class CreateDatasetVersionUseCase:
                 valid_files = 0
                 test_files = 0
 
+                if self._progress: self._progress(0, len(ordered))
+
                 for image, split_type in zip(ordered, assigned_splits, strict=True):
                     verified_boxes = [
                         box
@@ -198,7 +203,8 @@ class CreateDatasetVersionUseCase:
                     ]
                     raw = await self._storage.read(image.file_path)
                     apply_aug = split_type == SplitType.TRAIN
-                    samples = self._augmentation.generate_samples(
+                    samples = await asyncio.to_thread(
+                        self._augmentation.generate_samples,
                         raw,
                         labeled,
                         config,
@@ -234,6 +240,7 @@ class CreateDatasetVersionUseCase:
                     else:
                         test_frames += 1
                         test_files += count
+                    if self._progress: self._progress(len(items), len(ordered))
 
                 version_number = await self._versions.next_version_number(project_id)
                 version = DatasetVersion.create(
@@ -371,6 +378,7 @@ class CreateDatasetVersionUseCase:
                 train_frames = 0
                 valid_frames = 0
                 test_frames = 0
+                if self._progress: self._progress(0, len(verified_pairs))
                 for (image, label), split_type in zip(
                     verified_pairs, assigned_splits, strict=True
                 ):
@@ -404,6 +412,7 @@ class CreateDatasetVersionUseCase:
                         valid_frames += 1
                     else:
                         test_frames += 1
+                    if self._progress: self._progress(len(items), len(verified_pairs))
 
                 version_number = await self._versions.next_version_number(project.id)
                 version = DatasetVersion.create(

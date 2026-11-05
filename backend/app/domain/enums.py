@@ -50,8 +50,10 @@ class DatasetVersionStatus(str, Enum):
 class TrainingJobStatus(str, Enum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    CANCELLING = "CANCELLING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class AutoLabelJobStatus(str, Enum):

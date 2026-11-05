@@ -14,9 +14,10 @@ export function initStreamHub({ toast, navigate, projectPath }) {
   let pollInFlight = false;
   let lastCaptured = 0;
   let liveBoundId = null;
-  let drawMode = false;
+  let drawMode = null;
   let pendingPoint = null;
   let line = null;
+  let roiRegions = [];
   let dragEndpoint = null;
   let saveTimer = null;
   const ui = { page: "overview", query: "", project: "", state: "all", cameraPage: 1, wizardSourcePage: 1, modelPage: 1, wizardStep: 0, selectedCameras: new Set(), collectionName: "", mode: "stable", timerSeconds: 5, confidence: 0.25, maxConfidence: 1, minFrames: 12, sizeVariation: 0.35, cooldown: 5, modelByProject: new Map(), classByProject: new Map(), classIds: new Set(), modelQuery: "", diagnostic: false };
@@ -190,6 +191,17 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       ctx.arc(content.x + pendingPoint[0] * content.w, content.y + pendingPoint[1] * content.h, 7, 0, Math.PI * 2);
       ctx.fill();
     }
+    ctx.strokeStyle = "#f59e0b";
+    ctx.fillStyle = "rgba(245,158,11,.12)";
+    ctx.lineWidth = 2;
+    for (const [x, y, w, h] of roiRegions) {
+      const rx = content.x + x * content.w;
+      const ry = content.y + y * content.h;
+      const rw = w * content.w;
+      const rh = h * content.h;
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.strokeRect(rx, ry, rw, rh);
+    }
   }
 
   function renderList() {
@@ -228,6 +240,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
         selectedId = btn.getAttribute("data-stream-id");
         const s = selected();
         line = s?.config?.tripwire_line || null;
+        roiRegions = (s?.config?.roi_regions || []).map((region) => [...region]);
         await loadSelectedProject();
         fillFormFromSelected();
         renderList();
@@ -383,7 +396,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     
     return {
       track_stable_enabled:
-        !isImageFolder() && isStable,
+        !timerEnabled && !isImageFolder() && isStable,
       track_stable_min_frames: Number(
         document.getElementById("stream-track-stable-n")?.value || 12
       ),
@@ -396,12 +409,14 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       confidence_min: Number(document.getElementById("stream-conf-min")?.value ?? 0.25),
       confidence_max: Number(document.getElementById("stream-conf-max")?.value ?? 1),
       timer_enabled: timerEnabled,
+      siemens_word: timerEnabled ? s?.config?.siemens_word ?? null : null,
       timer_interval_seconds: Number(
         document.getElementById("stream-timer-interval")?.value || 5
       ),
       tripwire_enabled:
-        !isImageFolder() && isLine,
+        !timerEnabled && !isImageFolder() && isLine,
       tripwire_line: line,
+      roi_regions: roiRegions,
       tripwire_classes: classBoxes.map((el) => el.value),
       tripwire_direction: document.getElementById("stream-tripwire-direction")?.value || "ANY",
       tripwire_debounce_seconds: Number(s?.config?.tripwire_debounce_seconds ?? 3),
@@ -432,16 +447,22 @@ export function initStreamHub({ toast, navigate, projectPath }) {
 
   async function saveTriggers({ quiet = false } = {}) {
     if (!selectedId) throw new Error("Сначала выберите источник");
-    const modelId =
-      els.captureMode()?.value === "TIMER" ? null : els.modelSelect()?.value || null;
+    const current = selected();
+    const detailEdit = ui.page === "detail";
+    const modelId = detailEdit
+      ? current?.model_version_id || null
+      : els.captureMode()?.value === "TIMER" ? null : els.modelSelect()?.value || null;
     const updated = await api.putStreamTriggers(selectedId, {
-      config: readConfigPayload(),
+      config: detailEdit
+        ? { ...current.config, tripwire_line: line, roi_regions: roiRegions }
+        : readConfigPayload(),
       model_version_id: modelId || null,
     });
     const idx = streams.findIndex((s) => s.id === selectedId);
     if (idx >= 0) streams[idx] = updated;
     fillFormFromSelected();
     line = updated.config?.tripwire_line || null;
+    roiRegions = (updated.config?.roi_regions || []).map((region) => [...region]);
     if (ui.page === "detail") {
       refreshDetailStatus();
       drawLineOverlay();
@@ -468,6 +489,10 @@ export function initStreamHub({ toast, navigate, projectPath }) {
 
   function configSummary(stream) {
     const cfg = stream.config || {};
+    if (cfg.siemens_word) {
+      const { host, db_number, byte_offset } = cfg.siemens_word;
+      return `Siemens · ${host} · DB${db_number}.DBW${byte_offset} · ${cfg.timer_interval_seconds} с`;
+    }
     if (cfg.timer_enabled) return `Каждые ${Number(cfg.timer_interval_seconds || 5)} с${stream.model_version_id?" · модель":" · без модели"}`;
     if (!cfg.track_stable_enabled && !cfg.tripwire_enabled) return "Только просмотр";
     if (cfg.tripwire_enabled) return "Пересечение линии";
@@ -612,8 +637,48 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     ui.classByProject = new Map(results.map(([id, , classes]) => [id, classes]));
   }
 
+  function usesInterval() {
+    return ui.mode === "timer" || ui.mode === "plc";
+  }
+
+  const plcDefaults = { host: "", db_number: 1, byte_offset: 0, rack: 0, slot: 1, port: 102, on_value: 1, off_value: 0 };
+  const plcStates = {
+    waiting: "ожидание ответа", on: "запись разрешена", off: "запись приостановлена",
+    invalid: "неизвестное значение слова", unavailable: "нет связи или не удалось прочитать слово",
+    missing_driver: "не установлен python-snap7",
+  };
+  const plcFields = [
+    ["host", "IP или имя контроллера"], ["db_number", "Номер DB", 1, 65535],
+    ["byte_offset", "Байтовое смещение DBW", 0, 65534], ["rack", "Rack", 0, 7],
+    ["slot", "Slot", 0, 31], ["port", "Порт TCP", 1, 65535],
+    ["on_value", "Значение для включения записи", 0, 65535],
+    ["off_value", "Значение для выключения записи", 0, 65535],
+  ];
+
+  function plcConfigValid() {
+    if (ui.mode !== "plc") return true;
+    const plc = ui.plc || plcDefaults;
+    return plc.on_value !== plc.off_value && /^[A-Za-z0-9_.:-]{1,253}$/.test(plc.host) &&
+      plcFields.slice(1).every(([key, , min, max]) =>
+        Number.isInteger(plc[key]) && plc[key] >= min && plc[key] <= max);
+  }
+
+  function renderPlcFields() {
+    if (ui.mode !== "plc") return "";
+    const plc = ui.plc || plcDefaults;
+    return `<div class="grid sm:grid-cols-2 gap-3 mt-4">${plcFields.map(([key, label, min, max]) =>
+      `<label class="text-xs text-zinc-300">${label}
+        <input data-plc-field="${key}" ${key === "host" ? 'type="text" maxlength="253"' : `type="number" min="${min}" max="${max}" step="1"`}
+          value="${escapeAttribute(plc[key] ?? "")}" class="block w-full mt-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2">
+      </label>`).join("")}</div><p class="mt-2 text-xs text-zinc-400">Например, для DB10.DBW4 укажите DB 10 и смещение 4.</p>`;
+  }
+
   function modeText() {
-    if (ui.mode === "timer") return `Сохранять один кадр с каждой камеры каждые ${Number(ui.timerSeconds)} секунд.`;
+    if (ui.mode === "plc") {
+      const { on_value, off_value } = ui.plc || plcDefaults;
+      return `При значении ${on_value ?? "…"} сохранять кадры каждые ${Number(ui.timerSeconds)} с. При ${off_value ?? "…"} запись приостанавливается. При другом значении или потере связи запись также приостанавливается.`;
+    }
+    if (usesInterval()) return `Сохранять один кадр с каждой камеры каждые ${Number(ui.timerSeconds)} секунд.`;
     if (ui.mode === "line") return `Сохранять кадр, когда объект выбранного класса пересекает линию. Минимальная уверенность ${Math.round(Number(ui.confidence) * 100)}%.`;
     return `Сохранять лучший кадр после ${Number(ui.minFrames)} последовательных кадров объекта. Минимальная уверенность ${Math.round(Number(ui.confidence) * 100)}%.`;
   }
@@ -639,7 +704,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     const cameraNames = [...ui.selectedCameras].map((id) => streams.find((stream) => stream.id === id)?.name).filter(Boolean);
     const project = projects.find((item) => item.id === ui.project);
     const model = modelById(ui.modelByProject.get(ui.project)?.find((item) => item.id === ui.selectedModel)?.id);
-    root.innerHTML = `<div class="divide-y divide-zinc-800"><div class="py-3 flex justify-between gap-3"><span class="text-zinc-500">Источники</span><strong class="text-right">${ui.selectedCameras.size} выбрано</strong></div><div class="py-3 flex justify-between gap-3"><span class="text-zinc-500">Куда сохранять</span><strong class="text-right">${escapeHtml(project?.name || "Не выбран")}</strong></div><div class="py-3 flex justify-between gap-3"><span class="text-zinc-500">Модель</span><strong class="text-right">${ui.mode === "timer" ? "Не требуется" : escapeHtml(model?.display_name || model?.name || "Не выбрана")}</strong></div></div><div class="mt-3 rounded-lg border border-indigo-900 bg-indigo-950/40 p-3"><div class="text-[10px] uppercase tracking-wider text-indigo-300 mb-2">Правило простыми словами</div><p class="text-xs leading-5 text-zinc-200">${escapeHtml(modeText())}</p></div><div class="mt-3 text-[11px] leading-5 text-zinc-500">Будет создано ${ui.selectedCameras.size} независимых сборов. Кадры сохраняются в выбранный проект назначения.</div>${ui.selectedCameras.size > 1 ? `<div class="mt-2 text-[10px] text-zinc-600 break-words">${cameraNames.map(escapeHtml).join(" · ")}</div>` : ""}`;
+    root.innerHTML = `<div class="divide-y divide-zinc-800"><div class="py-3 flex justify-between gap-3"><span class="text-zinc-500">Источники</span><strong class="text-right">${ui.selectedCameras.size} выбрано</strong></div><div class="py-3 flex justify-between gap-3"><span class="text-zinc-500">Куда сохранять</span><strong class="text-right">${escapeHtml(project?.name || "Не выбран")}</strong></div><div class="py-3 flex justify-between gap-3"><span class="text-zinc-500">Модель</span><strong class="text-right">${usesInterval() ? "Не требуется" : escapeHtml(model?.display_name || model?.name || "Не выбрана")}</strong></div></div><div class="mt-3 rounded-lg border border-indigo-900 bg-indigo-950/40 p-3"><div class="text-[10px] uppercase tracking-wider text-indigo-300 mb-2">Правило простыми словами</div><p class="text-xs leading-5 text-zinc-200">${escapeHtml(modeText())}</p></div><div class="mt-3 text-[11px] leading-5 text-zinc-500">Будет создано ${ui.selectedCameras.size} независимых сборов. Кадры сохраняются в выбранный проект назначения.</div>${ui.selectedCameras.size > 1 ? `<div class="mt-2 text-[10px] text-zinc-600 break-words">${cameraNames.map(escapeHtml).join(" · ")}</div>` : ""}`;
   }
 
   function renderWizard() {
@@ -655,7 +720,8 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     host.querySelector("#wizard-next").addEventListener("click", () => {
       if (ui.wizardStep === 3) launchCollection();
       else if (ui.wizardStep === 0 && !ui.selectedCameras.size) toast("Сначала выберите хотя бы один источник");
-      else if (ui.wizardStep === 2 && ui.mode !== "timer" && !ui.selectedModel) toast("В проекте назначения нет модели. Выберите другой проект или режим по интервалу.");
+      else if (ui.wizardStep === 2 && !plcConfigValid()) toast("Проверьте адрес и параметры Siemens. Значения включения и выключения должны отличаться.");
+      else if (ui.wizardStep === 2 && !usesInterval() && !ui.selectedModel) toast("В проекте назначения нет модели. Выберите другой проект или режим по интервалу.");
       else setWizardStep(ui.wizardStep + 1);
     });
   }
@@ -674,37 +740,39 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     const firstSelectedSource = streams.find((stream) => ui.selectedCameras.has(stream.id));
     const selectedProject = projects.find((item) => item.id === ui.project) || projects.find((item) => item.id === firstSelectedSource?.project_id) || projects[0];
     if (!ui.project && selectedProject) ui.project = selectedProject.id;
-    return `<h2 class="text-lg font-semibold">Куда складывать кадры?</h2><p class="text-xs text-zinc-400 mt-1">Камера может быть из одного проекта, а кадры — попадать в другой. Проверьте классы при выборе другого проекта.</p><div class="mt-5 max-w-xl"><label class="block text-xs font-medium text-zinc-300 mb-2">Проект назначения для выбранных сборов</label><select id="wizard-project" class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-xs">${projectOptions(ui.project)}</select><label class="block text-xs font-medium text-zinc-300 mt-5 mb-2">Название сбора</label><input id="wizard-name" value="${escapeAttribute(ui.collectionName)}" placeholder="Например: Слежение за паллетами" class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-xs"><h3 class="text-xs font-semibold text-zinc-300 mt-6">Выберите, когда сохранять кадр</h3><div class="grid md:grid-cols-3 gap-2 mt-3">${[["timer","◷","По интервалу","Кадр через заданное число секунд. Для таймлапса, модель не нужна."],["stable","◉","Когда объект стабилен","Модель следит за объектом и сохраняет лучший кадр после нескольких кадров."],["line","↗","При пересечении линии","Кадр сохраняется, когда объект пересекает линию. Линию можно задать после запуска."]].map(([key,icon,title,desc]) => `<button data-wizard-mode="${key}" class="rounded-xl border p-3 text-left ${ui.mode === key ? "border-indigo-500 bg-indigo-950/30" : "border-zinc-800 bg-zinc-950/40"}"><span class="text-lg text-indigo-300">${icon}</span><strong class="block text-xs mt-1">${title}</strong><span class="block text-[10px] text-zinc-500 mt-1 leading-4">${desc}</span></button>`).join("")}</div></div>`;
+    return `<h2 class="text-lg font-semibold">Куда складывать кадры?</h2><p class="text-xs text-zinc-400 mt-1">Камера может быть из одного проекта, а кадры — попадать в другой. Проверьте классы при выборе другого проекта.</p><div class="mt-5 max-w-xl"><label class="block text-xs font-medium text-zinc-300 mb-2">Проект назначения для выбранных сборов</label><select id="wizard-project" class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-xs">${projectOptions(ui.project)}</select><label class="block text-xs font-medium text-zinc-300 mt-5 mb-2">Название сбора</label><input id="wizard-name" value="${escapeAttribute(ui.collectionName)}" placeholder="Например: Слежение за паллетами" class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-xs"><h3 class="text-xs font-semibold text-zinc-300 mt-6">Выберите, когда сохранять кадр</h3><div class="grid md:grid-cols-3 gap-2 mt-3">${[["plc","⌁","Контроллер Siemens","Сохранять кадры, пока слово DB равно значению включения."],["timer","◷","По интервалу","Кадр через заданное число секунд. Для таймлапса, модель не нужна."],["stable","◉","Когда объект стабилен","Модель следит за объектом и сохраняет лучший кадр после нескольких кадров."],["line","↗","При пересечении линии","Кадр сохраняется, когда объект пересекает линию. Линию можно задать после запуска."]].map(([key,icon,title,desc]) => `<button data-wizard-mode="${key}" class="rounded-xl border p-3 text-left ${ui.mode === key ? "border-indigo-500 bg-indigo-950/30" : "border-zinc-800 bg-zinc-950/40"}"><span class="text-lg text-indigo-300">${icon}</span><strong class="block text-xs mt-1">${title}</strong><span class="block text-[10px] text-zinc-500 mt-1 leading-4">${desc}</span></button>`).join("")}</div></div>`;
   }
 
   function renderWizardConditions() {
-    if (ui.mode !== "timer" && !ui.selectedModel) ui.selectedModel = ui.modelByProject.get(ui.project)?.find(model=>model.is_active_for_stream)?.id || "";
+    if (!usesInterval() && !ui.selectedModel) ui.selectedModel = ui.modelByProject.get(ui.project)?.find(model=>model.is_active_for_stream)?.id || "";
     const projectModels = (ui.modelByProject.get(ui.project) || []).filter(model=>model.is_active_for_stream);
     const chosen = projectModels.find((model) => model.id === ui.selectedModel);
     const classRows = allClasses(ui.project);
-    const modeFields = ui.mode === "timer" ? `<div class="mt-4"><label class="block text-xs text-zinc-300 mb-2">Сохранять один кадр с каждой камеры каждые</label><div class="flex items-center gap-2"><input id="wizard-timer" type="number" min="0.5" step="0.5" value="${Number(ui.timerSeconds)}" class="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs"><span class="text-xs text-zinc-500">секунд</span></div><div class="mt-3 rounded-lg border border-zinc-800 p-3 text-[11px] text-zinc-400">За минуту будет до ${Math.round(60 / Math.max(0.5, Number(ui.timerSeconds)) * ui.selectedCameras.size)} кадров с выбранных камер. Модель не используется; кадры появятся среди неразмеченных.</div></div>` : `<div class="mt-4"><label class="block text-xs text-zinc-300 mb-2">Модель этого проекта</label><select id="wizard-model" class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs">${projectModels.map((model) => `<option value="${escapeAttribute(model.id)}" ${model.id === ui.selectedModel ? "selected" : ""}>${escapeHtml(model.display_name || model.name)} · v${model.version_number}${model.is_active_for_stream ? " · активная" : ""}</option>`).join("")}</select>${chosen ? `<div class="mt-2 rounded-lg border border-zinc-800 p-3 text-[11px] text-zinc-400">${escapeHtml(chosen.display_name || chosen.name)} · версия ${chosen.version_number}${chosen.map50 == null ? "" : ` · mAP50 ${(Number(chosen.map50) * 100).toFixed(1)}%`}<p class="text-[10px] text-zinc-500 mt-1">Показаны модели проекта назначения: их классы уже соответствуют проекту. Модели других проектов пока нельзя безопасно применить без сопоставления классов.</p></div>` : `<div class="mt-2 rounded-lg border border-amber-900/70 bg-amber-950/20 p-3 text-[11px] text-amber-200">В проекте нет модели. Переключитесь на «По интервалу» или сначала обучите/загрузите модель.</div>`}<div class="grid sm:grid-cols-2 gap-4 mt-4"><div><label class="block text-xs text-zinc-300 mb-2">Минимальная уверенность модели</label><div class="flex items-center gap-3"><input id="wizard-confidence" type="range" min="0" max="1" step="0.05" value="${Number(ui.confidence)}" class="flex-1"><span id="wizard-confidence-value" class="text-xs">${Math.round(ui.confidence * 100)}%</span></div></div><div><label class="block text-xs text-zinc-300 mb-2">Не собирать выше (сложные кадры)</label><div class="flex items-center gap-3"><input id="wizard-max-confidence" type="range" min="0" max="1" step="0.05" value="${Number(ui.maxConfidence)}" class="flex-1"><span id="wizard-max-confidence-value" class="text-xs">${Math.round(ui.maxConfidence * 100)}%</span></div></div></div><div class="mt-4"><div class="text-xs text-zinc-300 mb-2">Какие классы учитывать</div><div class="flex flex-wrap gap-2">${classRows.map((item) => `<label class="rounded-md border border-zinc-800 bg-zinc-950/40 px-2.5 py-1.5 text-xs"><input data-wizard-class="${escapeAttribute(item.id)}" type="checkbox" class="mr-1.5 accent-indigo-500" ${ui.classIds.has(item.id) ? "checked" : ""}>${escapeHtml(item.name)}</label>`).join("") || `<span class="text-[11px] text-zinc-500">У проекта пока нет классов</span>`}</div><p class="text-[10px] text-zinc-500 mt-1">Если не выбрать ни одного класса, учитываются все классы.</p></div>${ui.mode === "stable" ? `<div class="mt-4 grid sm:grid-cols-3 gap-3"><label class="text-[11px] text-zinc-400">Последовательных кадров<input id="wizard-frames" type="number" min="2" value="${Number(ui.minFrames)}" class="block mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs"></label><label class="text-[11px] text-zinc-400">Допустимое изменение размера, %<input id="wizard-size" type="number" min="0" value="${Math.round(ui.sizeVariation * 100)}" class="block mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs"></label><label class="text-[11px] text-zinc-400">Повтор для того же объекта, с<input id="wizard-cooldown" type="number" min="0" step="0.5" value="${Number(ui.cooldown)}" class="block mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs"></label></div>` : ""}<details class="mt-4 text-xs text-zinc-400"><summary class="cursor-pointer">Подробно про режим «${ui.mode === "line" ? "Пересечение линии" : "Стабильный объект"}»</summary><p class="mt-2 text-[11px] leading-5 text-zinc-500">${ui.mode === "line" ? "Условие запускается после того, как в настройках источника задана линия пересечения. Линия и направление настраиваются в подробностях сбора отдельно для каждой камеры." : "Число кадров определяет длину отслеживания. Допустимое изменение размера помогает дождаться замедления объекта. Повторный захват ограничен интервалом."}</p></details>`;
-    return `<h2 class="text-lg font-semibold">Когда считать кадр подходящим?</h2><p class="text-xs text-zinc-400 mt-1">Настройте условие сохранения и посмотрите, как оно звучит простыми словами.</p><div class="mt-5 rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">${modeFields}<div class="mt-4 rounded-lg border border-indigo-900/70 bg-indigo-950/30 p-3"><div class="text-[10px] uppercase tracking-wider text-indigo-300 mb-1">Ваше правило</div><p class="text-xs leading-5">${escapeHtml(modeText())}</p></div></div>`;
+    const modeFields = usesInterval() ? `<div class="mt-4"><label class="block text-xs text-zinc-300 mb-2">Сохранять один кадр с каждой камеры каждые</label><div class="flex items-center gap-2"><input id="wizard-timer" type="number" min="0.5" step="0.5" value="${Number(ui.timerSeconds)}" class="rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs"><span class="text-xs text-zinc-500">секунд</span></div><div class="mt-3 rounded-lg border border-zinc-800 p-3 text-[11px] text-zinc-400">За минуту будет до ${Math.round(60 / Math.max(0.5, Number(ui.timerSeconds)) * ui.selectedCameras.size)} кадров с выбранных камер. Модель не используется; кадры появятся среди неразмеченных.</div></div>` : `<div class="mt-4"><label class="block text-xs text-zinc-300 mb-2">Модель этого проекта</label><select id="wizard-model" class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs">${projectModels.map((model) => `<option value="${escapeAttribute(model.id)}" ${model.id === ui.selectedModel ? "selected" : ""}>${escapeHtml(model.display_name || model.name)} · v${model.version_number}${model.is_active_for_stream ? " · активная" : ""}</option>`).join("")}</select>${chosen ? `<div class="mt-2 rounded-lg border border-zinc-800 p-3 text-[11px] text-zinc-400">${escapeHtml(chosen.display_name || chosen.name)} · версия ${chosen.version_number}${chosen.map50 == null ? "" : ` · mAP50 ${(Number(chosen.map50) * 100).toFixed(1)}%`}<p class="text-[10px] text-zinc-500 mt-1">Показаны модели проекта назначения: их классы уже соответствуют проекту. Модели других проектов пока нельзя безопасно применить без сопоставления классов.</p></div>` : `<div class="mt-2 rounded-lg border border-amber-900/70 bg-amber-950/20 p-3 text-[11px] text-amber-200">В проекте нет модели. Переключитесь на «По интервалу» или сначала обучите/загрузите модель.</div>`}<div class="grid sm:grid-cols-2 gap-4 mt-4"><div><label class="block text-xs text-zinc-300 mb-2">Минимальная уверенность модели</label><div class="flex items-center gap-3"><input id="wizard-confidence" type="range" min="0" max="1" step="0.05" value="${Number(ui.confidence)}" class="flex-1"><span id="wizard-confidence-value" class="text-xs">${Math.round(ui.confidence * 100)}%</span></div></div><div><label class="block text-xs text-zinc-300 mb-2">Не собирать выше (сложные кадры)</label><div class="flex items-center gap-3"><input id="wizard-max-confidence" type="range" min="0" max="1" step="0.05" value="${Number(ui.maxConfidence)}" class="flex-1"><span id="wizard-max-confidence-value" class="text-xs">${Math.round(ui.maxConfidence * 100)}%</span></div></div></div><div class="mt-4"><div class="text-xs text-zinc-300 mb-2">Какие классы учитывать</div><div class="flex flex-wrap gap-2">${classRows.map((item) => `<label class="rounded-md border border-zinc-800 bg-zinc-950/40 px-2.5 py-1.5 text-xs"><input data-wizard-class="${escapeAttribute(item.id)}" type="checkbox" class="mr-1.5 accent-indigo-500" ${ui.classIds.has(item.id) ? "checked" : ""}>${escapeHtml(item.name)}</label>`).join("") || `<span class="text-[11px] text-zinc-500">У проекта пока нет классов</span>`}</div><p class="text-[10px] text-zinc-500 mt-1">Если не выбрать ни одного класса, учитываются все классы.</p></div>${ui.mode === "stable" ? `<div class="mt-4 grid sm:grid-cols-3 gap-3"><label class="text-[11px] text-zinc-400">Последовательных кадров<input id="wizard-frames" type="number" min="2" value="${Number(ui.minFrames)}" class="block mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs"></label><label class="text-[11px] text-zinc-400">Допустимое изменение размера, %<input id="wizard-size" type="number" min="0" value="${Math.round(ui.sizeVariation * 100)}" class="block mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs"></label><label class="text-[11px] text-zinc-400">Повтор для того же объекта, с<input id="wizard-cooldown" type="number" min="0" step="0.5" value="${Number(ui.cooldown)}" class="block mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs"></label></div>` : ""}<details class="mt-4 text-xs text-zinc-400"><summary class="cursor-pointer">Подробно про режим «${ui.mode === "line" ? "Пересечение линии" : "Стабильный объект"}»</summary><p class="mt-2 text-[11px] leading-5 text-zinc-500">${ui.mode === "line" ? "Условие запускается после того, как в настройках источника задана линия пересечения. Линия и направление настраиваются в подробностях сбора отдельно для каждой камеры." : "Число кадров определяет длину отслеживания. Допустимое изменение размера помогает дождаться замедления объекта. Повторный захват ограничен интервалом."}</p></details>`;
+    return `<h2 class="text-lg font-semibold">Когда считать кадр подходящим?</h2><p class="text-xs text-zinc-400 mt-1">Настройте условие сохранения и посмотрите, как оно звучит простыми словами.</p><div class="mt-5 rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">${renderPlcFields()}${modeFields}<div class="mt-4 rounded-lg border border-indigo-900/70 bg-indigo-950/30 p-3"><div class="text-[10px] uppercase tracking-wider text-indigo-300 mb-1">Ваше правило</div><p class="text-xs leading-5">${escapeHtml(modeText())}</p></div></div>`;
   }
 
   function renderWizardCheck() {
     const selected = [...ui.selectedCameras].map((id) => streams.find((stream) => stream.id === id)).filter(Boolean);
     const project = projects.find((item) => item.id === ui.project);
     const model = modelById(ui.selectedModel);
-    const ready = selected.length > 0 && selected.every((stream) => stateFor(stream) !== "error") && Boolean(project) && (ui.mode === "timer" || Boolean(model && model.project_id === ui.project));
-    const summary = selected.map((stream) => { const state = stateFor(stream); const compatible = stream.project_id === ui.project || ui.mode === "timer"; return `<div class="flex items-center gap-3 py-3 border-b border-zinc-800 last:border-0"><span class="rounded-full border px-2 py-1 text-[10px] ${badgeClass(state)}">${escapeHtml(stateLabel(state))}</span><span class="min-w-0 flex-1"><strong class="text-xs">${escapeHtml(stream.name)}</strong><span class="block text-[10px] text-zinc-500 mt-1">${escapeHtml(projects.find((item) => item.id === stream.project_id)?.name || "Проект удалён")}</span></span><span class="text-[10px] ${compatible ? "text-emerald-300" : "text-amber-300"}">${compatible ? "Назначение выбрано" : "Сверьте классы"}</span></div>`; }).join("");
-    return `<h2 class="text-lg font-semibold">Проверьте перед запуском</h2><p class="text-xs text-zinc-400 mt-1">Будет создано ${selected.length} сборов; у каждого свой источник, общий проект назначения и одинаковое правило.</p><div class="mt-5 rounded-xl border border-zinc-800 p-4"><h3 class="text-xs font-semibold">Источники и доступность</h3>${summary || `<p class="mt-3 text-xs text-rose-300">Не выбраны источники.</p>`}</div><div class="grid md:grid-cols-2 gap-3 mt-3"><div class="rounded-xl border border-zinc-800 p-4"><div class="text-[10px] uppercase text-zinc-500">Проект назначения</div><div class="text-sm font-medium mt-2">${escapeHtml(project?.name || "Не выбран")}</div></div><div class="rounded-xl border border-zinc-800 p-4"><div class="text-[10px] uppercase text-zinc-500">Модель и правило</div><div class="text-sm font-medium mt-2">${ui.mode === "timer" ? "Без модели · таймер" : escapeHtml(model?.display_name || "Модель не выбрана")}</div><p class="text-[11px] text-zinc-400 mt-2">${escapeHtml(modeText())}</p></div></div><div class="mt-4 rounded-lg border ${ready ? "border-emerald-900 bg-emerald-950/20 text-emerald-200" : "border-amber-900 bg-amber-950/20 text-amber-200"} p-3 text-xs">${ready ? "Проверки пройдены. Запуск создаст по одному сбору на камеру." : "Нужно выбрать доступные источники, проект назначения и модель для режима с нейросетью."}</div>${!ui.diagnostic ? `<button id="wizard-diagnose" class="mt-4 rounded-lg border border-zinc-700 px-3 py-2 text-xs">Проверить доступность и настройки</button>` : `<div class="mt-4 space-y-1 text-[11px] text-emerald-300">✓ Конфигурация проверена в браузере<br>✓ Модель и проект назначения совпадают<br>✓ Каждый сбор будет сохранять кадры в свой проект</div>`}<p class="mt-3 text-[10px] text-zinc-600">Фактическое подключение камеры проверяется сервером при запуске. Здесь заранее проверяются выбранные параметры и совместимость.</p>`;
+    const ready = selected.length > 0 && selected.every((stream) => stateFor(stream) !== "error") && Boolean(project) && (usesInterval() || Boolean(model && model.project_id === ui.project));
+    const summary = selected.map((stream) => { const state = stateFor(stream); const compatible = stream.project_id === ui.project || usesInterval(); return `<div class="flex items-center gap-3 py-3 border-b border-zinc-800 last:border-0"><span class="rounded-full border px-2 py-1 text-[10px] ${badgeClass(state)}">${escapeHtml(stateLabel(state))}</span><span class="min-w-0 flex-1"><strong class="text-xs">${escapeHtml(stream.name)}</strong><span class="block text-[10px] text-zinc-500 mt-1">${escapeHtml(projects.find((item) => item.id === stream.project_id)?.name || "Проект удалён")}</span></span><span class="text-[10px] ${compatible ? "text-emerald-300" : "text-amber-300"}">${compatible ? "Назначение выбрано" : "Сверьте классы"}</span></div>`; }).join("");
+    return `<h2 class="text-lg font-semibold">Проверьте перед запуском</h2><p class="text-xs text-zinc-400 mt-1">Будет создано ${selected.length} сборов; у каждого свой источник, общий проект назначения и одинаковое правило.</p><div class="mt-5 rounded-xl border border-zinc-800 p-4"><h3 class="text-xs font-semibold">Источники и доступность</h3>${summary || `<p class="mt-3 text-xs text-rose-300">Не выбраны источники.</p>`}</div><div class="grid md:grid-cols-2 gap-3 mt-3"><div class="rounded-xl border border-zinc-800 p-4"><div class="text-[10px] uppercase text-zinc-500">Проект назначения</div><div class="text-sm font-medium mt-2">${escapeHtml(project?.name || "Не выбран")}</div></div><div class="rounded-xl border border-zinc-800 p-4"><div class="text-[10px] uppercase text-zinc-500">Модель и правило</div><div class="text-sm font-medium mt-2">${usesInterval() ? (ui.mode === "plc" ? "Без модели · Siemens PLC" : "Без модели · таймер") : escapeHtml(model?.display_name || "Модель не выбрана")}</div><p class="text-[11px] text-zinc-400 mt-2">${escapeHtml(modeText())}</p></div></div><div class="mt-4 rounded-lg border ${ready ? "border-emerald-900 bg-emerald-950/20 text-emerald-200" : "border-amber-900 bg-amber-950/20 text-amber-200"} p-3 text-xs">${ready ? "Проверки пройдены. Запуск создаст по одному сбору на камеру." : "Нужно выбрать доступные источники, проект назначения и модель для режима с нейросетью."}</div>${!ui.diagnostic ? `<button id="wizard-diagnose" class="mt-4 rounded-lg border border-zinc-700 px-3 py-2 text-xs">Проверить доступность и настройки</button>` : `<div class="mt-4 space-y-1 text-[11px] text-emerald-300">✓ Конфигурация проверена в браузере<br>✓ Модель и проект назначения совпадают<br>✓ Каждый сбор будет сохранять кадры в свой проект</div>`}<p class="mt-3 text-[10px] text-zinc-600">Фактическое подключение камеры проверяется сервером при запуске. Здесь заранее проверяются выбранные параметры и совместимость.</p>`;
   }
 
   async function launchCollection() {
     const next = document.getElementById("wizard-next");
     const ids = [...ui.selectedCameras];
     if (!ids.length) { toast("Выберите хотя бы одну камеру"); return; }
+    if (!plcConfigValid()) { toast("Проверьте адрес и параметры Siemens. Значения включения и выключения должны отличаться."); return; }
     if (!ui.diagnostic) { toast("Сначала проверьте параметры на шаге проверки"); return; }
-    if (ui.mode !== "timer" && !ui.selectedModel) { toast("Выберите модель для проекта назначения"); return; }
+    if (!usesInterval() && !ui.selectedModel) { toast("Выберите модель для проекта назначения"); return; }
     next.disabled = true;
     next.textContent = "Создаём сборы…";
     const config = {
-      timer_enabled: ui.mode === "timer",
+      timer_enabled: usesInterval(),
+      siemens_word: ui.mode === "plc" ? ui.plc : null,
       timer_interval_seconds: Math.max(0.5, Number(ui.timerSeconds) || 5),
       track_stable_enabled: ui.mode === "stable",
       track_stable_min_frames: Math.max(2, Number(ui.minFrames) || 12),
@@ -729,7 +797,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
         const destinationProject = projects.find((item) => item.id === ui.project);
         const source = await duplicateSourceForProject(original, destinationProject);
         const configured = await api.putStreamTriggers(source.id, {
-          model_version_id: ui.mode === "timer" ? null : ui.selectedModel,
+          model_version_id: usesInterval() ? null : ui.selectedModel,
           config,
         });
         if (ui.mode === "line") { created.push(configured); continue; }
@@ -764,17 +832,26 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     const host = document.getElementById("stream-center-content");
     const stream = selected();
     if (!stream) { ui.page = "overview"; renderOverview(); return; }
+    line = stream.config?.tripwire_line || null;
+    roiRegions = (stream.config?.roi_regions || []).map((region) => [...region]);
     const project = projects.find((item) => item.id === stream.project_id);
     const model = modelById(stream.model_version_id);
     const status = statuses.get(stream.id) || {};
     const running = Boolean(stream.is_active || status.is_running);
     const error = status.error_message;
-    host.innerHTML = `<div class="p-5 md:p-7 max-w-[1500px] mx-auto space-y-5"><button data-detail-back class="text-xs text-zinc-500 hover:text-white">← Все сборы</button><div class="flex flex-wrap items-start justify-between gap-3"><div><div class="text-[11px] text-indigo-300">${escapeHtml(project?.name || "Проект удалён")}</div><h1 class="text-2xl font-semibold mt-1">${escapeHtml(stream.name)}</h1><p class="text-sm text-zinc-400 mt-1">${escapeHtml(configSummary(stream))}</p></div><div class="flex gap-2"><button data-detail-action="start" class="rounded-lg bg-emerald-700 px-3 py-2 text-xs text-white ${running ? "hidden" : ""}">Подключить для настройки</button><button data-detail-action="stop" class="rounded-lg border border-zinc-700 px-3 py-2 text-xs ${running ? "" : "hidden"}">Остановить этот сбор</button><button data-detail-action="remove" class="rounded-lg border border-rose-900 px-3 py-2 text-xs text-rose-300">Удалить источник</button></div></div>${error ? `<div class="rounded-lg border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-200">Нет кадров от источника. ${escapeHtml(error)}</div>` : ""}<div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_350px] gap-4"><section class="space-y-3"><div id="stream-detail-frame" class="relative aspect-video max-h-[65vh] rounded-xl border border-zinc-800 bg-black flex items-center justify-center overflow-hidden"><img id="stream-detail-live" class="max-h-full max-w-full object-contain ${running ? "" : "hidden"}" alt="Прямой поток"><div id="stream-detail-empty" class="text-center text-zinc-500 text-xs ${running ? "hidden" : ""}">${stream.config?.tripwire_enabled ? "Сначала подключите источник для предпросмотра" : "Источник остановлен"}<br><span class="text-[10px]">${stream.config?.tripwire_enabled ? "Без линии кадры пока не сохраняются" : "Запустите сбор, чтобы проверить изображение"}</span></div><canvas id="stream-detail-canvas" class="absolute inset-0 h-full w-full ${stream.config?.tripwire_enabled ? "pointer-events-auto cursor-crosshair" : "pointer-events-none"}"></canvas></div><div class="flex flex-wrap items-center gap-2 ${stream.config?.tripwire_enabled ? "" : "hidden"}"><button id="detail-draw-line" class="rounded-lg border border-cyan-800 px-3 py-2 text-xs text-cyan-200 ${running ? "" : "opacity-50"}" ${running ? "" : "disabled"}>${line ? "Нарисовать линию заново" : "Нарисовать линию на кадре"}</button><span id="detail-line-hint" class="text-[11px] text-zinc-400">${line ? "Линия задана · перетащите её концы, чтобы изменить" : running ? "Нажмите кнопку и укажите на кадре точки A и B" : "Сначала подключите источник для предпросмотра; без линии сбор не сохраняет кадры"}</span></div><div id="stream-detail-stats" class="grid md:grid-cols-3 gap-2">${[["Видео",running ? `Поступает · ${Number(status.fps || 0).toFixed(1)} FPS` : "Остановлено",error], ["Обработка",stream.config?.timer_enabled ? "Таймер активен" : model?.display_name || "Модель не выбрана",!stream.config?.timer_enabled && !model], ["Запись",`${Number(status.captured_count ?? stream.captured_frames_count ?? 0).toLocaleString("ru-RU")} кадров сохранено`,false]].map(([title,text,bad]) => `<div class="rounded-xl border ${bad ? "border-rose-900 bg-rose-950/20" : "border-zinc-800 bg-zinc-900/50"} p-3"><div class="text-[10px] uppercase text-zinc-500">${title}</div><div class="detail-stat-value mt-2 text-xs ${bad ? "text-rose-300" : "text-zinc-200"}">${escapeHtml(text)}</div></div>`).join("")}</div><div class="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4"><h2 class="text-sm font-semibold">Что происходит?</h2><p id="stream-detail-explanation" class="mt-2 text-xs leading-5 text-zinc-400">${error ? `Источник сообщил ошибку: ${escapeHtml(error)}. Другие потоки продолжают работать.` : stream.config?.tripwire_enabled && !line ? running ? "Поток подключён, но линия ещё не задана. Нажмите «Нарисовать линию на кадре»: до этого кадры не сохраняются." : "Условие пересечения выбрано, но линия не задана. Подключите источник для предпросмотра и отметьте на кадре точки A и B." : running ? status.last_capture_at ? `Последний сохранённый кадр: ${escapeHtml(new Date(status.last_capture_at).toLocaleString("ru-RU"))}. Если кадры не появляются, проверьте условие и классы модели.` : "Поток получает кадры. Если подходящий объект ещё не появился, сохранений может пока не быть." : "Сбор приостановлен. Чтобы начать, нажмите «Запустить сбор»."}</p></div></section><aside class="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 h-fit"><h2 class="text-sm font-semibold">Условия этого сбора</h2><div class="mt-3 space-y-3 text-xs"><div><div class="text-[10px] text-zinc-500">Источник</div><div class="mt-1">${escapeHtml(({RTSP:"RTSP-камера",DEVICE:"Веб-камера",VIDEO_FILE:"Видеофайл",IMAGE_FOLDER:"Папка кадров"})[stream.source_type] || stream.source_type)} · ${escapeHtml(project?.name || "")}</div></div><div><div class="text-[10px] text-zinc-500">Модель</div><div class="mt-1">${escapeHtml(stream.config?.timer_enabled ? "Не используется" : model?.display_name || "Не выбрана")}</div></div><div><div class="text-[10px] text-zinc-500">Правило</div><div class="mt-1 leading-5">${escapeHtml(configSummary(stream))}<br>Уверенность от ${Math.round(Number(stream.config?.confidence_min ?? 0.25) * 100)}%</div></div><div class="border-t border-zinc-800 pt-3"><button id="detail-edit-rules" class="w-full rounded-lg border border-zinc-700 px-3 py-2 text-xs hover:bg-zinc-800">Изменить условия</button></div><div><button id="detail-open-review" class="w-full text-left text-xs text-emerald-300">Перейти в проект назначения →</button></div></div></aside></div></div>`;
+    host.innerHTML = `<div class="p-5 md:p-7 max-w-[1500px] mx-auto space-y-5"><button data-detail-back class="text-xs text-zinc-500 hover:text-white">← Все сборы</button><div class="flex flex-wrap items-start justify-between gap-3"><div><div class="text-[11px] text-indigo-300">${escapeHtml(project?.name || "Проект удалён")}</div><h1 class="text-2xl font-semibold mt-1">${escapeHtml(stream.name)}</h1><p class="text-sm text-zinc-400 mt-1">${escapeHtml(configSummary(stream))}</p></div><div class="flex gap-2"><button data-detail-action="start" class="rounded-lg bg-emerald-700 px-3 py-2 text-xs text-white ${running ? "hidden" : ""}">Подключить для настройки</button><button data-detail-action="stop" class="rounded-lg border border-zinc-700 px-3 py-2 text-xs ${running ? "" : "hidden"}">Остановить этот сбор</button><button data-detail-action="remove" class="rounded-lg border border-rose-900 px-3 py-2 text-xs text-rose-300">Удалить источник</button></div></div>${error ? `<div class="rounded-lg border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-200">Нет кадров от источника. ${escapeHtml(error)}</div>` : ""}<div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_350px] gap-4"><section class="space-y-3"><div id="stream-detail-frame" class="relative aspect-video max-h-[65vh] rounded-xl border border-zinc-800 bg-black flex items-center justify-center overflow-hidden"><img id="stream-detail-live" class="max-h-full max-w-full object-contain ${running ? "" : "hidden"}" alt="Прямой поток"><div id="stream-detail-empty" class="text-center text-zinc-500 text-xs ${running ? "hidden" : ""}">${stream.config?.tripwire_enabled ? "Сначала подключите источник для предпросмотра" : "Источник остановлен"}<br><span class="text-[10px]">${stream.config?.tripwire_enabled ? "Без линии кадры пока не сохраняются" : "Запустите сбор, чтобы проверить изображение"}</span></div><canvas id="stream-detail-canvas" class="absolute inset-0 h-full w-full pointer-events-auto cursor-crosshair"></canvas></div><div class="flex flex-wrap items-center gap-2 ${stream.config?.tripwire_enabled ? "" : "hidden"}"><button id="detail-draw-line" class="rounded-lg border border-cyan-800 px-3 py-2 text-xs text-cyan-200 ${running ? "" : "opacity-50"}" ${running ? "" : "disabled"}>${line ? "Нарисовать линию заново" : "Нарисовать линию на кадре"}</button><span id="detail-line-hint" class="text-[11px] text-zinc-400">${line ? "Линия задана · перетащите её концы, чтобы изменить" : running ? "Нажмите кнопку и укажите на кадре точки A и B" : "Сначала подключите источник для предпросмотра; без линии сбор не сохраняет кадры"}</span></div><div class="flex flex-wrap items-center gap-2"><button id="detail-draw-roi" class="rounded-lg border border-amber-800 px-3 py-2 text-xs text-amber-200" ${running ? "" : "disabled"}>＋ Нарисовать ROI</button><button id="detail-clear-roi" class="rounded-lg border border-zinc-700 px-3 py-2 text-xs" ${roiRegions.length ? "" : "disabled"}>Очистить ROI (${roiRegions.length})</button><span id="detail-roi-hint" class="text-[11px] text-zinc-400">${roiRegions.length ? `${roiRegions.length} областей · каждый кадр сохраняется отдельными кропами` : "ROI не заданы · сохраняется полный кадр"}</span></div><div id="stream-detail-stats" class="grid md:grid-cols-3 gap-2">${[["Видео",running ? `Поступает · ${Number(status.fps || 0).toFixed(1)} FPS` : "Остановлено",error], ["Обработка",stream.config?.timer_enabled ? "Таймер активен" : model?.display_name || "Модель не выбрана",!stream.config?.timer_enabled && !model], ["Запись",`${Number(status.captured_count ?? stream.captured_frames_count ?? 0).toLocaleString("ru-RU")} кадров сохранено`,false]].map(([title,text,bad]) => `<div class="rounded-xl border ${bad ? "border-rose-900 bg-rose-950/20" : "border-zinc-800 bg-zinc-900/50"} p-3"><div class="text-[10px] uppercase text-zinc-500">${title}</div><div class="detail-stat-value mt-2 text-xs ${bad ? "text-rose-300" : "text-zinc-200"}">${escapeHtml(text)}</div></div>`).join("")}</div><div class="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4"><h2 class="text-sm font-semibold">Что происходит?</h2><p id="stream-detail-explanation" class="mt-2 text-xs leading-5 text-zinc-400">${error ? `Источник сообщил ошибку: ${escapeHtml(error)}. Другие потоки продолжают работать.` : stream.config?.tripwire_enabled && !line ? running ? "Поток подключён, но линия ещё не задана. Нажмите «Нарисовать линию на кадре»: до этого кадры не сохраняются." : "Условие пересечения выбрано, но линия не задана. Подключите источник для предпросмотра и отметьте на кадре точки A и B." : running ? status.last_capture_at ? `Последний сохранённый кадр: ${escapeHtml(new Date(status.last_capture_at).toLocaleString("ru-RU"))}. Если кадры не появляются, проверьте условие и классы модели.` : "Поток получает кадры. Если подходящий объект ещё не появился, сохранений может пока не быть." : "Сбор приостановлен. Чтобы начать, нажмите «Запустить сбор»."}</p></div></section><aside class="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 h-fit"><h2 class="text-sm font-semibold">Условия этого сбора</h2><div class="mt-3 space-y-3 text-xs"><div><div class="text-[10px] text-zinc-500">Источник</div><div class="mt-1">${escapeHtml(({RTSP:"RTSP-камера",DEVICE:"Веб-камера",VIDEO_FILE:"Видеофайл",IMAGE_FOLDER:"Папка кадров"})[stream.source_type] || stream.source_type)} · ${escapeHtml(project?.name || "")}</div></div><div><div class="text-[10px] text-zinc-500">Модель</div><div class="mt-1">${escapeHtml(stream.config?.timer_enabled ? "Не используется" : model?.display_name || "Не выбрана")}</div></div><div><div class="text-[10px] text-zinc-500">Правило</div><div class="mt-1 leading-5">${escapeHtml(configSummary(stream))}<br>Уверенность от ${Math.round(Number(stream.config?.confidence_min ?? 0.25) * 100)}%</div></div><div class="border-t border-zinc-800 pt-3"><button id="detail-edit-rules" class="w-full rounded-lg border border-zinc-700 px-3 py-2 text-xs hover:bg-zinc-800">Изменить условия</button></div><div><button id="detail-open-review" class="w-full text-left text-xs text-emerald-300">Перейти в проект назначения →</button></div></div></aside></div></div>`;
     if (running) { const img = host.querySelector("#stream-detail-live"); if (!img.getAttribute("src")) img.src = api.streamLiveUrl(stream.id); }
     host.querySelector("[data-detail-back]").addEventListener("click", () => setPage("overview"));
     host.querySelector("[data-detail-action='start']")?.addEventListener("click", (event) => runStreamAction(event.currentTarget, true));
     host.querySelector("[data-detail-action='stop']")?.addEventListener("click", (event) => runStreamAction(event.currentTarget, false));
-    host.querySelector("#detail-draw-line")?.addEventListener("click", () => { drawMode = true; pendingPoint = null; toast("На кадре укажите точку A, затем точку B"); });
+    host.querySelector("#detail-draw-line")?.addEventListener("click", () => { drawMode = "line"; pendingPoint = null; toast("На кадре укажите точку A, затем точку B"); });
+    host.querySelector("#detail-draw-roi")?.addEventListener("click", () => { drawMode = "roi"; pendingPoint = null; toast("На кадре отметьте два угла прямоугольника ROI"); });
+    host.querySelector("#detail-clear-roi")?.addEventListener("click", async () => {
+      roiRegions = [];
+      drawLineOverlay();
+      try { await saveTriggers({ quiet: true }); renderDetail(); toast("ROI очищены · снова сохраняется полный кадр"); }
+      catch (error) { toast(error.message); }
+    });
     const detailCanvas = host.querySelector("#stream-detail-canvas");
     detailCanvas?.addEventListener("click", handleLineCanvasClick);
     detailCanvas?.addEventListener("mousedown", handleLineCanvasMouseDown);
@@ -784,7 +861,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     host.querySelector("#stream-detail-live")?.addEventListener("load", drawLineOverlay);
     drawLineOverlay();
     host.querySelector("[data-detail-action='remove']")?.addEventListener("click", async (event) => { if (!window.confirm(`Удалить источник «${stream.name}»?`)) return; event.currentTarget.disabled = true; try { await api.deleteStream(stream.id); selectedId = null; await refresh(); setPage("overview"); toast("Источник удалён"); } catch (error) { toast(error.message); event.currentTarget.disabled = false; } });
-    host.querySelector("#detail-edit-rules").addEventListener("click", () => { ui.page = "new"; ui.wizardStep = 0; ui.selectedCameras = new Set([stream.id]); ui.project = stream.project_id; ui.mode = stream.config?.timer_enabled ? "timer" : stream.config?.tripwire_enabled ? "line" : "stable"; ui.selectedModel = stream.model_version_id || ""; renderCenter(); });
+    host.querySelector("#detail-edit-rules").addEventListener("click", () => { ui.page = "new"; ui.wizardStep = 0; ui.selectedCameras = new Set([stream.id]); ui.project = stream.project_id; ui.plc = stream.config?.siemens_word ? { ...plcDefaults, ...stream.config.siemens_word } : null; ui.timerSeconds = stream.config?.timer_interval_seconds ?? 5; ui.mode = stream.config?.siemens_word ? "plc" : stream.config?.timer_enabled ? "timer" : stream.config?.tripwire_enabled ? "line" : "stable"; ui.selectedModel = stream.model_version_id || ""; renderCenter(); });
     host.querySelector("#detail-open-review").addEventListener("click", () => { if (!project) return; const path = projectPath(project.id, "data"); navigate(path); });
   }
 
@@ -810,6 +887,8 @@ export function initStreamHub({ toast, navigate, projectPath }) {
       drawButton.disabled = !running;
       drawButton.classList.toggle("opacity-50", !running);
     }
+    const roiButton = root.querySelector("#detail-draw-roi");
+    if (roiButton) roiButton.disabled = !running;
     const hint = root.querySelector("#detail-line-hint");
     if (hint && stream.config?.tripwire_enabled && !drawMode) {
       hint.textContent = line ? "Линия задана · перетащите её концы, чтобы изменить" : running ? "Нажмите кнопку и укажите на кадре точки A и B" : "Сначала подключите источник для предпросмотра; без линии сбор не сохраняет кадры";
@@ -822,6 +901,7 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     }
     const values = root.querySelectorAll("#stream-detail-stats .detail-stat-value");
     if (values.length >= 3) {
+      if (stream.config?.siemens_word) values[1].textContent = running ? `Siemens · ${plcStates[status.plc_state] || plcStates.waiting}` : "Siemens · остановлено";
       values[0].textContent = running ? `Поступает · ${Number(status.fps || 0).toFixed(1)} FPS` : "Остановлено";
       values[2].textContent = `${Number(status.captured_count ?? stream.captured_frames_count ?? 0).toLocaleString("ru-RU")} кадров сохранено`;
     }
@@ -834,7 +914,27 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     if (!pendingPoint) {
       pendingPoint = [x, y];
       drawLineOverlay();
-      toast("Точка A задана. Теперь укажите точку B");
+      toast(drawMode === "roi" ? "Первый угол задан. Укажите противоположный угол" : "Точка A задана. Теперь укажите точку B");
+      return;
+    }
+    if (drawMode === "roi") {
+      const x0 = Math.min(pendingPoint[0], x);
+      const y0 = Math.min(pendingPoint[1], y);
+      const width = Math.abs(x - pendingPoint[0]);
+      const height = Math.abs(y - pendingPoint[1]);
+      if (width < 0.01 || height < 0.01) { pendingPoint = null; drawMode = null; drawLineOverlay(); toast("ROI слишком маленькая; нарисуйте прямоугольник больше"); return; }
+      if (roiRegions.length >= 8) { pendingPoint = null; drawMode = null; toast("Можно задать не больше 8 областей"); return; }
+      roiRegions.push([x0, y0, width, height]);
+      pendingPoint = null;
+      drawMode = null;
+      drawLineOverlay();
+      saveTriggers({ quiet: true }).then(() => {
+        const hint = document.getElementById("detail-roi-hint");
+        if (hint) hint.textContent = `${roiRegions.length} областей · каждый кадр сохраняется отдельными кропами`;
+        const clear = document.getElementById("detail-clear-roi");
+        if (clear) { clear.disabled = false; clear.textContent = `Очистить ROI (${roiRegions.length})`; }
+        toast("ROI сохранена");
+      }).catch((error) => toast(error.message));
       return;
     }
     line = [pendingPoint[0], pendingPoint[1], x, y];
@@ -883,12 +983,19 @@ export function initStreamHub({ toast, navigate, projectPath }) {
     host.querySelector("#wizard-name")?.addEventListener("input", (event) => { ui.collectionName = event.target.value; });
     host.querySelectorAll("[data-wizard-mode]").forEach((button) => button.addEventListener("click", () => { ui.mode = button.dataset.wizardMode; ui.diagnostic = false; renderWizard(); }));
     host.querySelector("#wizard-model")?.addEventListener("change", (event) => { ui.selectedModel = event.target.value; ui.diagnostic = false; updateWizardSummary(); });
-    host.querySelector("#wizard-timer")?.addEventListener("input", (event) => { ui.timerSeconds = Number(event.target.value); ui.diagnostic = false; renderWizard(); });
+    host.querySelectorAll("[data-plc-field]").forEach((input) => input.addEventListener("input", () => {
+      ui.plc ??= { ...plcDefaults };
+      const key = input.dataset.plcField;
+      ui.plc[key] = key === "host" ? input.value.trim() : input.value === "" ? null : Number(input.value);
+      ui.diagnostic = false;
+      updateWizardSummary();
+    }));
+    host.querySelector("#wizard-timer")?.addEventListener("input", (event) => { ui.timerSeconds = Math.max(0.5, Number(event.target.value) || 5); ui.diagnostic = false; updateWizardSummary(); });
     host.querySelector("#wizard-confidence")?.addEventListener("input", (event) => { ui.confidence = Number(event.target.value); ui.diagnostic = false; host.querySelector("#wizard-confidence-value").textContent = `${Math.round(ui.confidence * 100)}%`; updateWizardSummary(); });
     host.querySelector("#wizard-max-confidence")?.addEventListener("input", (event) => { ui.maxConfidence = Math.max(Number(event.target.value), ui.confidence); ui.diagnostic = false; host.querySelector("#wizard-max-confidence-value").textContent = `${Math.round(ui.maxConfidence * 100)}%`; });
     host.querySelectorAll("[data-wizard-class]").forEach((input) => input.addEventListener("change", () => { input.checked ? ui.classIds.add(input.dataset.wizardClass) : ui.classIds.delete(input.dataset.wizardClass); ui.diagnostic = false; }));
     for (const [id, key, convert = Number] of [["wizard-frames","minFrames"],["wizard-size","sizeVariation",(v) => Number(v) / 100],["wizard-cooldown","cooldown"]]) host.querySelector(`#${id}`)?.addEventListener("input", (event) => { ui[key] = convert(event.target.value); ui.diagnostic = false; updateWizardSummary(); });
-    host.querySelector("#wizard-diagnose")?.addEventListener("click", () => { const valid = ui.selectedCameras.size > 0 && projects.some((project) => project.id === ui.project) && [...ui.selectedCameras].every((id) => { const stream = streams.find((item) => item.id === id); return stream && stateFor(stream) !== "error"; }) && (ui.mode === "timer" || Boolean(modelById(ui.selectedModel)?.project_id === ui.project)); if (!valid) { toast("Проверьте источники, проект назначения и модель"); return; } ui.diagnostic = true; renderWizard(); });
+    host.querySelector("#wizard-diagnose")?.addEventListener("click", () => { const valid = ui.selectedCameras.size > 0 && projects.some((project) => project.id === ui.project) && [...ui.selectedCameras].every((id) => { const stream = streams.find((item) => item.id === id); return stream && stateFor(stream) !== "error"; }) && (usesInterval() || Boolean(modelById(ui.selectedModel)?.project_id === ui.project)); if (!valid) { toast("Проверьте источники, проект назначения и модель"); return; } ui.diagnostic = true; renderWizard(); });
   }
 
   function renderCameras() {
@@ -945,7 +1052,8 @@ export function initStreamHub({ toast, navigate, projectPath }) {
         } else if (type === "VIDEO_FILE") {
           const file = host.querySelector("#add-source-video").files?.[0];
           if (!file) throw new Error("Выберите видеофайл");
-          await api.uploadStreamVideo(projectId, file, name);
+          const status = document.createElement("div"); status.className = "text-xs text-indigo-300"; button.parentElement.before(status);
+          await api.uploadStreamVideo(projectId, file, name, {projectName: projects.find(p => p.id === projectId)?.name, onProgress: x => { status.textContent = x.total ? `Загрузка видео: ${Math.round(x.processed*100/x.total)}% · не закрывайте вкладку` : "Сервер принимает видео…"; }});
         } else {
           const folder = host.querySelector("#add-source-folder").value.trim();
           if (!folder) throw new Error("Укажите путь к папке или нажмите «Выбрать папку»");
@@ -1161,15 +1269,18 @@ export function initStreamHub({ toast, navigate, projectPath }) {
   document.getElementById("stream-video-input")?.addEventListener("change", async (ev) => {
     const file = ev.target.files?.[0];
     if (!file) return;
+    let status;
     try {
       const projectId = destinationProjectId();
       if (!projectId) throw new Error("Сначала откройте проект");
-      const created = await api.uploadStreamVideo(projectId, file, file.name);
+      status = document.createElement("span"); status.className = "text-xs text-indigo-300"; ev.target.insertAdjacentElement("afterend", status);
+      const created = await api.uploadStreamVideo(projectId, file, file.name, {projectName: projects.find(p => p.id === projectId)?.name, onProgress: x => { status.textContent = x.total ? `Загрузка видео: ${Math.round(x.processed*100/x.total)}% · не закрывайте вкладку` : "Сервер принимает видео…"; }});
       selectedId = created.id;
       await refresh();
     } catch (err) {
       toast(err.message);
     } finally {
+      status?.remove();
       ev.target.value = "";
     }
   });

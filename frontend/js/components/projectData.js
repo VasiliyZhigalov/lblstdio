@@ -5,7 +5,7 @@ import { escapeHtml as esc } from "../utils/dom.js";
 const SECTIONS = [["images", "Изображения"], ["statistics", "Статистика"], ["cameras", "Камеры проекта"], ["imports", "Импорт и модели"], ["classes", "Классы"]];
 const STATUS = { IN_PROGRESS: "В разметке (черновик)", UNANNOTATED: "Без разметки", REQUIRES_REVIEW: "На проверку", VERIFIED: "Проверено", AUTO_VERIFIED: "Автопроверено", REJECTED: "Отклонено" };
 const SOURCE = { MANUAL_UPLOAD: "Загрузка", STREAM_INGEST: "Сбор", DATASET_IMPORT: "Датасет" };
-const JOB_STATUS = { PREVIEW: "Проверен · ждёт запуска", QUEUED: "В очереди", RUNNING: "Импортируется", COMPLETED: "Завершён", FAILED: "Ошибка", CANCELLED: "Остановлен", ROLLED_BACK: "Изображения в корзине" };
+const JOB_STATUS = { CHECKING: "Проверка файлов", PREVIEW: "Проверен · ждёт запуска", QUEUED: "В очереди", RUNNING: "Выполняется", COMPLETED: "Завершён", FAILED: "Ошибка", CANCELLED: "Остановлен", ROLLED_BACK: "Изображения в корзине" };
 const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
 const button = (action, label, cls = "", attrs = "") => `<button type="button" class="pd-btn ${cls}" data-action="${action}" ${attrs}>${label}</button>`;
 const option = (v, text, current) => `<option value="${esc(String(v))}" ${String(current) === String(v) ? "selected" : ""}>${esc(String(text))}</option>`;
@@ -14,8 +14,8 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
   const root = document.getElementById("project-data-root");
   let projectId, section = "images", classes = [], cameras = [], versions = [], stats = null;
   let page = { items: [], total: 0, offset: 0, limit: 24 }, filters = {}, selected = new Set(), allMatching = false;
-  let layout = "grid", dense = false, overlays = true, sequence = 0, jobs = [], pollTimer = null;
-  let modalRoot = null, viewerIndex = -1, importJob = null, savedViews = [], searchTimer;
+  let layout = "grid", dense = false, overlays = true, filterDirty = false, sequence = 0, jobs = [], pollTimer = null;
+  let modalRoot = null, modalCloseHandler = null, viewerIndex = -1, importJob = null, savedViews = [];
   let refreshSequence = 0, sectionSequence = 0;
   const get = (s, host = root) => host?.querySelector(s);
   const all = (s, host = root) => [...(host?.querySelectorAll(s) || [])];
@@ -26,7 +26,12 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
   const cls = (id) => classes.find(c => c.id === id);
   const classSelect = (current, placeholder = "Все классы") => option("", placeholder, current) + classes.map(c => option(c.id, c.name, current)).join("");
 
-  function closeModal() { modalRoot?.remove(); modalRoot = null; viewerIndex = -1; }
+  function closeModal() {
+    const onClose = modalCloseHandler;
+    modalCloseHandler = null;
+    modalRoot?.remove(); modalRoot = null; viewerIndex = -1;
+    onClose?.();
+  }
   function modal(title, body, footer = "", wide = false) {
     closeModal();
     modalRoot = document.createElement("div");
@@ -36,6 +41,23 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
     modalRoot.addEventListener("click", e => { if (e.target === modalRoot || e.target.closest('[data-action="close"]')) closeModal(); });
     get('[data-action="close"]', modalRoot)?.focus();
     return modalRoot;
+  }
+  function askText(title, label, value = "", submitLabel = "Сохранить", maxLength = 255) {
+    return new Promise(resolve => {
+      const host = modal(title, `<label class="pd-field">${esc(label)}<input id="pd-text-input" type="text" maxlength="${maxLength}" value="${esc(value)}" autocomplete="off" required></label><div id="pd-text-error" class="pd-error" role="alert"></div>`, button("text-input-cancel", "Отмена") + button("text-input-submit", submitLabel, "pd-primary"));
+      modalCloseHandler = () => resolve(null);
+      const input = get("#pd-text-input", host);
+      const submit = () => {
+        const text = input.value.trim();
+        if (!text) { get("#pd-text-error", host).textContent = "Введите непустое название."; input.focus(); return; }
+        modalCloseHandler = () => resolve(text);
+        closeModal();
+      };
+      get('[data-action="text-input-submit"]', host).addEventListener("click", submit);
+      get('[data-action="text-input-cancel"]', host).addEventListener("click", closeModal);
+      input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); submit(); } });
+      input.focus(); input.select();
+    });
   }
 
   function header() {
@@ -52,7 +74,6 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
       return;
     }
     sequence++; sectionSequence++;
-    clearTimeout(searchTimer);
     section = next;
     history.replaceState(null, "", `${location.pathname}${location.search}#/projects/${projectId}/data?section=${next}`);
     renderShell();
@@ -66,14 +87,16 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
   function selectFilter(key, label, options) { return `<label class="pd-field">${label}<select data-filter="${key}">${option("", "Все", filters[key])}${options.map(([v, n]) => option(v, n, filters[key])).join("")}</select></label>`; }
   function numberFilter(key, label, max = "") { return `<label class="pd-field">${label}<input data-filter="${key}" type="number" min="0" ${max ? `max="${max}"` : ""} ${(key.includes("conf") || key.includes("area")) ? 'step="0.05"' : 'step="1"'} value="${esc(String(filters[key] ?? ""))}"></label>`; }
   function classFilters() {
-    const ids = String(filters.class_id || "").split(",");
-    return `<label class="pd-field">Найти класс<input id="pd-filter-class-search" placeholder="Название класса…"></label><div class="pd-class-filters">${classes.map(c => `<label class="pd-check" data-class-filter-name="${esc(c.name.toLocaleLowerCase())}"><input type="checkbox" data-class-filter="${c.id}" ${ids.includes(c.id) ? "checked" : ""}>${esc(c.name)}</label>`).join("") || '<span class="pd-muted">Классов пока нет</span>'}</div><p class="pd-muted">Любой из выбранных классов.</p>`;
+    const legacyIds = String(filters.class_id || "").split(",");
+    const included = new Set(String(filters.class_contains || (filters.class_mode === "not_contains" ? "" : filters.class_id) || "").split(",").filter(Boolean));
+    const excluded = new Set(String(filters.class_not_contains || (filters.class_mode === "not_contains" ? filters.class_id : "") || "").split(",").filter(Boolean));
+    return `<label class="pd-field">Найти класс<input id="pd-filter-class-search" placeholder="Название класса…"></label><div class="pd-class-filters">${classes.map(c => { const mode = included.has(c.id) ? "contains" : excluded.has(c.id) || legacyIds.includes(c.id) && filters.class_mode === "not_contains" ? "not_contains" : ""; return `<div class="pd-class-rule" data-class-filter-name="${esc(c.name.toLocaleLowerCase())}"><span title="${esc(c.name)}">${esc(c.name)}</span><div class="pd-class-rule-actions"><button type="button" class="pd-class-icon ${mode === "contains" ? "active contains" : ""}" data-class-rule="${c.id}" data-class-mode="contains" aria-pressed="${mode === "contains"}" aria-label="Кадр содержит класс ${esc(c.name)}" title="Содержит"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.25"/><path d="m6.5 10 2.2 2.2 4.8-5"/></svg></button><button type="button" class="pd-class-icon ${mode === "not_contains" ? "active not-contains" : ""}" data-class-rule="${c.id}" data-class-mode="not_contains" aria-pressed="${mode === "not_contains"}" aria-label="Кадр не содержит класс ${esc(c.name)}" title="Не содержит"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.25"/><path d="m7 7 6 6m0-6-6 6"/></svg></button></div></div>`; }).join("") || '<span class="pd-muted">Классов пока нет</span>'}</div><p class="pd-muted">Условия для выбранных классов применяются одновременно.</p>`;
   }
   function qualityFilters() {
     return `${selectFilter("quality", "Качество", [["dark", "Темно: яркость < 50 / 255"], ["blur", "Возможное размытие"]])}<p class="pd-muted">Проанализировано ${fmt(stats?.analyzed)} кадров. Запуск анализа — в статистике.</p><div class="pd-pair">${numberFilter("min_area", "Площадь рамки от", "1")}${numberFilter("max_area", "До", "1")}</div><p class="pd-muted">Доля площади кадра 0–1. Найдётся рамка в указанном диапазоне.</p>${selectFilter("orientation", "Ориентация", [["landscape", "Горизонтальная"], ["portrait", "Вертикальная"], ["square", "Квадрат"]])}${selectFilter("format", "Формат файла", [["jpg", "JPEG"], ["png", "PNG"], ["webp", "WebP"]])}`;
   }
   function filtersPanel() {
-    return `<aside class="pd-filters"><div class="pd-row"><h3>Фильтры</h3>${button("reset-filters", "Сбросить", "pd-link")}</div><p class="pd-muted">Условия разных групп применяются вместе.</p><details open><summary>Разметка и классы</summary><div class="pd-filter-body">${Object.entries(STATUS).map(([id, name]) => `<label class="pd-check"><input type="checkbox" data-status="${id}" ${String(filters.status || "").split(",").includes(id) ? "checked" : ""}>${name}</label>`).join("")}${classFilters()}${selectFilter("annotation_source", "Кто разметил", [["MANUAL", "Человек / импорт"], ["MODEL_PREDICTION", "Модель"], ["KEYPOINT_PROPAGATION", "Перенос разметки"]])}<label class="pd-check"><input type="checkbox" data-boolean="background" ${filters.background ? "checked" : ""}>Только фон</label><div class="pd-pair">${numberFilter("min_objects", "Объектов от")}${numberFilter("max_objects", "До")}</div><div class="pd-pair">${numberFilter("min_conf", "Уверенность от", "1")}${numberFilter("max_conf", "До", "1")}</div><p class="pd-muted">Уверенность 0–1: только предсказания модели.</p></div></details><details open><summary>Источник и дата</summary><div class="pd-filter-body">${selectFilter("stream_source_id", "Камера", cameras.map(c => [c.id, c.name]))}${selectFilter("source_type", "Тип источника", Object.entries(SOURCE))}<label class="pd-field">С даты<input type="date" data-filter="after" value="${esc(filters.after || "")}"></label><label class="pd-field">До даты (не включая)<input type="date" data-filter="before" value="${esc(filters.before || "")}"></label><label class="pd-field">Тег<input data-filter="tag" value="${esc(filters.tag || "")}" placeholder="Например, ночь"></label></div></details><details><summary>Датасет и качество</summary><div class="pd-filter-body">${qualityFilters()}${selectFilter("split", "Раздел", [["train", "Train"], ["valid", "Validation"], ["test", "Test"]])}${selectFilter("version_id", "Версия", versions.map(v => [v.id, v.name || `v${v.version_number}`]))}<div class="pd-pair">${numberFilter("min_width", "Ширина от")}${numberFilter("min_height", "Высота от")}</div><label class="pd-check"><input type="checkbox" data-boolean="duplicates" ${filters.duplicates ? "checked" : ""}>Одинаковые pHash</label><p class="pd-muted">Сравниваются сохранённые хеши. Неанализированные изображения не входят в результат.</p></div></details><label class="pd-check pd-trash"><input type="checkbox" data-boolean="trash" ${filters.trash ? "checked" : ""}>Корзина · ${fmt(stats?.trash)}</label>${button("apply-filters", "Применить фильтры", "pd-primary pd-full")}</aside>`;
+    return `<aside class="pd-filters"><div class="pd-row"><h3>Фильтры</h3>${button("reset-filters", "Сбросить", "pd-link")}</div><p class="pd-muted">Условия разных групп применяются вместе.</p><details open><summary>Разметка и классы</summary><div class="pd-filter-body">${Object.entries(STATUS).map(([id, name]) => `<label class="pd-check"><input type="checkbox" data-status="${id}" ${String(filters.status || "").split(",").includes(id) ? "checked" : ""}>${name}</label>`).join("")}${classFilters()}${selectFilter("annotation_source", "Кто разметил", [["MANUAL", "Человек / импорт"], ["MODEL_PREDICTION", "Модель"], ["KEYPOINT_PROPAGATION", "Перенос разметки"]])}${selectFilter("background", "Фон", [["true", "Только фоновые кадры"], ["false", "Без фоновых кадров"]])}<div class="pd-pair">${numberFilter("min_objects", "Объектов от")}${numberFilter("max_objects", "До")}</div><div class="pd-pair">${numberFilter("min_conf", "Уверенность от", "1")}${numberFilter("max_conf", "До", "1")}</div><p class="pd-muted">Уверенность 0–1: только предсказания модели.</p></div></details><details open><summary>Источник и дата</summary><div class="pd-filter-body">${selectFilter("stream_source_id", "Камера", cameras.map(c => [c.id, c.name]))}${selectFilter("source_type", "Тип источника", Object.entries(SOURCE))}<label class="pd-field">С даты<input type="date" data-filter="after" value="${esc(filters.after || "")}"></label><label class="pd-field">До даты (не включая)<input type="date" data-filter="before" value="${esc(filters.before || "")}"></label><label class="pd-field">Тег<input data-filter="tag" value="${esc(filters.tag || "")}" placeholder="Например, ночь"></label></div></details><details><summary>Датасет и качество</summary><div class="pd-filter-body">${qualityFilters()}${selectFilter("split", "Раздел", [["train", "Train"], ["valid", "Validation"], ["test", "Test"]])}${selectFilter("version_id", "Версия", versions.map(v => [v.id, v.name || `v${v.version_number}`]))}<div class="pd-pair">${numberFilter("min_width", "Ширина от")}${numberFilter("min_height", "Высота от")}</div><label class="pd-check"><input type="checkbox" data-boolean="duplicates" ${filters.duplicates ? "checked" : ""}>Одинаковые pHash</label><p class="pd-muted">Сравниваются сохранённые хеши. Неанализированные изображения не входят в результат.</p></div></details><label class="pd-check pd-trash"><input type="checkbox" data-boolean="trash" ${filters.trash ? "checked" : ""}>Корзина · ${fmt(stats?.trash)}</label>${button("apply-filters", "Применить", `pd-primary pd-full pd-apply-filters ${filterDirty ? "" : "hidden"}`)}</aside>`;
   }
   function savedViewButtons() { return `<div class="pd-saved">${button("preset-all", "Все")}${button("preset-review", "На проверку")}${button("preset-uncertain", "Уверенность < 50%")}${savedViews.map((v, i) => `<span class="pd-saved-item">${button("load-view", esc(v.name), "", `data-index="${i}"`)}${button("delete-view", "×", "pd-link", `data-index="${i}" aria-label="Удалить сохранённый фильтр"`)}</span>`).join("")}${button("save-view", "+ Сохранить фильтр")}</div>`; }
   function boxes(item) {
@@ -82,17 +105,29 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
   }
   function card(item, i) {
     const label = item.label ? cls(item.label.class_id)?.name || "Класс удалён" : `${item.annotations.length} объектов`;
-    return `<article class="pd-image-card ${selected.has(item.id) || allMatching ? "selected" : ""}"><label class="pd-card-check"><input type="checkbox" data-select="${item.id}" ${selected.has(item.id) || allMatching ? "checked" : ""} aria-label="Выбрать ${esc(item.file_name)}"></label><button class="pd-image-open" data-open="${i}" aria-label="Просмотр ${esc(item.file_name)}"><div class="pd-thumb" style="aspect-ratio:${item.width}/${item.height}"><img src="${api.thumbnailUrl(item.id)}" width="480" height="360" loading="lazy" decoding="async" alt="${esc(item.file_name)}">${boxes(item)}<span class="pd-status ${item.status === "UNANNOTATED" ? "empty" : (item.status.includes("REQUIRES") || item.status === "IN_PROGRESS") ? "warning" : ""}">${esc(STATUS[item.status] || item.status)}</span>${item.confidence != null ? `<span class="pd-confidence">${Math.round(item.confidence*100)}%</span>` : ""}</div><div class="pd-card-info"><strong title="${esc(item.file_name)}">${esc(item.file_name)}</strong><span>${esc(label)} · ${item.width} × ${item.height}</span><small>${esc(cameraName(item.stream_source_id))} · ${esc(item.split)}</small>${item.tags.length ? `<small>${item.tags.map(t => `#${esc(t)}`).join(" ")}</small>` : ""}</div></button></article>`;
+    return `<article class="pd-image-card ${selected.has(item.id) || allMatching ? "selected" : ""}"><label class="pd-card-check"><input type="checkbox" data-select="${item.id}" ${selected.has(item.id) || allMatching ? "checked" : ""} aria-label="Выбрать ${esc(item.file_name)}"></label><button class="pd-image-open" data-open="${i}" aria-label="Просмотр ${esc(item.file_name)}"><div class="pd-thumb" style="aspect-ratio:${item.width}/${item.height}"><img src="${api.thumbnailUrl(item.id)}" width="480" height="360" loading="lazy" decoding="async" alt="${esc(item.file_name)}">${boxes(item)}<span class="pd-status ${item.status === "UNANNOTATED" ? "empty" : (item.status.includes("REQUIRES") || item.status === "IN_PROGRESS") ? "warning" : ""}">${esc(STATUS[item.status] || item.status)}</span>${item.confidence != null ? `<span class="pd-confidence">${Math.round(item.confidence*100)}%</span>` : ""}</div><div class="pd-card-info"><span class="pd-card-count">${esc(label)}</span></div></button></article>`;
   }
   function renderImages() {
     const content = get("#pd-content");
     if (!content) return;
-    content.innerHTML = `${metrics()}${savedViewButtons()}<div class="pd-library">${filtersPanel()}<section class="pd-results"><div class="pd-toolbar"><input id="pd-search" type="search" placeholder="Найти по имени файла…" value="${esc(filters.q || "")}"><select id="pd-sort" aria-label="Порядок">${[["newest", "Сначала новые"], ["oldest", "Сначала старые"], ["uncertainty", "Низкая уверенность"], ["objects", "Больше объектов"], ["name", "По имени"]].map(([v, n]) => option(v, n, filters.sort || "newest")).join("")}</select>${button("toggle-layout", layout === "grid" ? "☷ Список" : "▦ Сетка")}${button("toggle-density", dense ? "Крупнее" : "Компактнее")}</div><div class="pd-result-line"><span>Найдено <strong>${fmt(page.total)}</strong>${Object.keys(filters).filter(k => !["sort", "q"].includes(k)).length ? ` · фильтров: ${Object.keys(filters).filter(k => !["sort", "q"].includes(k)).length}` : ""}</span><label class="pd-check"><input type="checkbox" id="pd-overlays" ${overlays ? "checked" : ""}>Рамки</label></div><div class="pd-selection"><label class="pd-check"><input type="checkbox" id="pd-select-page" ${page.items.length && page.items.every(i => selected.has(i.id) || allMatching) ? "checked" : ""}>Страница</label><span>Выбрано: ${fmt(allMatching ? page.total : selected.size)}</span>${button("select-matching", `Все найденные (${fmt(page.total)})`, "pd-link")}${button("clear-selection", "Снять", "pd-link")}</div>${selected.size || allMatching ? `<div class="pd-bulk">${button("bulk-tag", "Добавить тег")}${filters.trash ? button("bulk-restore", "Восстановить", "pd-primary") : button("bulk-queue", "В очередь разметки", "pd-primary") + button("bulk-review", "На перепроверку") + button("bulk-trash", "В корзину", "pd-danger")}</div>` : ""}<div class="pd-image-grid ${dense ? "pd-dense" : ""} ${layout === "list" ? "pd-list" : ""}">${page.items.map(card).join("") || `<div class="pd-empty"><strong>${filters.trash ? "Корзина пуста" : "Нет изображений"}</strong><p>${Object.keys(filters).length ? "Попробуйте изменить фильтры." : "Загрузите изображения или начните сбор с камеры."}</p>${button("reset-filters", "Сбросить фильтры")}${button("import-images", "Загрузить изображения", "pd-primary")}</div>`}</div><div class="pd-pagination"><span>${page.total ? `${fmt(page.offset+1)}–${fmt(Math.min(page.offset+page.limit, page.total))}` : "0"} из ${fmt(page.total)}</span><select id="pd-page-size" aria-label="Изображений на странице">${[24, 48, 96].map(n => option(n, `${n} на странице`, page.limit)).join("")}</select>${button("previous-page", "←", "", `${page.offset <= 0 ? "disabled" : ""} aria-label="Предыдущая страница"`)}<span>${Math.floor(page.offset/page.limit)+1} / ${Math.max(1, Math.ceil(page.total/page.limit))}</span>${button("next-page", "→", "", `${page.offset+page.limit >= page.total ? "disabled" : ""} aria-label="Следующая страница"`)}</div></section></div>`;
-    get("#pd-search")?.addEventListener("input", e => { clearTimeout(searchTimer); const val = e.target.value; searchTimer = setTimeout(() => { filters.q = val; resetPage(); run(loadPage); }, 350); });
+    content.innerHTML = `${metrics()}${savedViewButtons()}<div class="pd-library">${filtersPanel()}<section class="pd-results"><div class="pd-toolbar"><input id="pd-search" data-filter="q" type="search" placeholder="Найти по имени файла…" value="${esc(filters.q || "")}"><select id="pd-sort" data-filter="sort" aria-label="Порядок">${[["newest", "Сначала новые"], ["oldest", "Сначала старые"], ["uncertainty", "Низкая уверенность"], ["objects", "Больше объектов"], ["name", "По имени"]].map(([v, n]) => option(v, n, filters.sort || "newest")).join("")}</select>${button("toggle-layout", layout === "grid" ? "☷ Список" : "▦ Сетка")}${button("toggle-density", dense ? "Крупнее" : "Компактнее")}</div><div class="pd-result-line"><span>Найдено <strong>${fmt(page.total)}</strong>${Object.keys(filters).filter(k => !["sort", "q"].includes(k)).length ? ` · фильтров: ${Object.keys(filters).filter(k => !["sort", "q"].includes(k)).length}` : ""}</span><label class="pd-check"><input type="checkbox" id="pd-overlays" ${overlays ? "checked" : ""}>Рамки</label></div><div class="pd-selection"><label class="pd-check"><input type="checkbox" id="pd-select-page" ${page.items.length && page.items.every(i => selected.has(i.id) || allMatching) ? "checked" : ""}>Страница</label><span>Выбрано: ${fmt(allMatching ? page.total : selected.size)}</span>${button("select-matching", `Все найденные (${fmt(page.total)})`, "pd-link")}${button("clear-selection", "Снять", "pd-link")}</div>${selected.size || allMatching ? `<div class="pd-bulk">${button("bulk-tag", "Добавить тег")}${filters.trash ? button("bulk-restore", "Восстановить", "pd-primary") : button("bulk-queue", "В очередь разметки", "pd-primary") + button("bulk-clear_annotations", "Очистить аннотации", "pd-danger") + button("bulk-trash", "В корзину", "pd-danger")}</div>` : ""}<div class="pd-image-grid ${dense ? "pd-dense" : ""} ${layout === "list" ? "pd-list" : ""}">${page.items.map(card).join("") || `<div class="pd-empty"><strong>${filters.trash ? "Корзина пуста" : "Нет изображений"}</strong><p>${Object.keys(filters).length ? "Попробуйте изменить фильтры." : "Загрузите изображения или начните сбор с камеры."}</p>${button("reset-filters", "Сбросить фильтры")}${button("import-images", "Загрузить изображения", "pd-primary")}</div>`}</div><div class="pd-pagination"><span>${page.total ? `${fmt(page.offset+1)}–${fmt(Math.min(page.offset+page.limit, page.total))}` : "0"} из ${fmt(page.total)}</span><select id="pd-page-size" aria-label="Изображений на странице">${[24, 48, 96].map(n => option(n, `${n} на странице`, page.limit)).join("")}</select>${button("previous-page", "←", "", `${page.offset <= 0 ? "disabled" : ""} aria-label="Предыдущая страница"`)}<span>${Math.floor(page.offset/page.limit)+1} / ${Math.max(1, Math.ceil(page.total/page.limit))}</span>${button("next-page", "→", "", `${page.offset+page.limit >= page.total ? "disabled" : ""} aria-label="Следующая страница"`)}</div></section></div>`;
     get("#pd-filter-class-search")?.addEventListener("input", e => {
       const term = e.target.value.trim().toLocaleLowerCase();
       all("[data-class-filter-name]").forEach(label => { label.hidden = !label.dataset.classFilterName.includes(term); });
     });
+    all("[data-class-rule]").forEach(btn => btn.addEventListener("click", () => {
+      const row = btn.closest(".pd-class-rule");
+      const wasActive = btn.getAttribute("aria-pressed") === "true";
+      all("[data-class-rule]", row).forEach(control => {
+        control.setAttribute("aria-pressed", "false");
+        control.classList.remove("active", "contains", "not-contains");
+      });
+      if (!wasActive) {
+        btn.setAttribute("aria-pressed", "true");
+        btn.classList.add("active", btn.dataset.classMode === "contains" ? "contains" : "not-contains");
+      }
+      showApplyFilters();
+    }));
   }
   function resetPage() { page.offset = 0; selected.clear(); allMatching = false; }
   async function loadPage() {
@@ -106,11 +141,16 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
     } finally { if (seq === sequence) root.removeAttribute("aria-busy"); }
   }
   function readFilters() {
-    all("[data-filter]").forEach(input => { const k = input.dataset.filter; if (input.value === "") delete filters[k]; else filters[k] = input.type === "number" ? Number(input.value) : input.value; });
+    all("[data-filter]").forEach(input => { const k = input.dataset.filter; if (input.value === "") delete filters[k]; else if (k === "background") filters[k] = input.value === "true"; else filters[k] = input.type === "number" ? Number(input.value) : input.value; });
     const statuses = all("[data-status]:checked").map(e => e.dataset.status);
     if (statuses.length) filters.status = statuses.join(","); else delete filters.status;
-    const classIds = all("[data-class-filter]:checked").map(e => e.dataset.classFilter);
-    if (classIds.length) filters.class_id = classIds.join(","); else delete filters.class_id;
+    const classRules = all('[data-class-rule][aria-pressed="true"]');
+    const included = classRules.filter(e => e.dataset.classMode === "contains").map(e => e.dataset.classRule);
+    const excluded = classRules.filter(e => e.dataset.classMode === "not_contains").map(e => e.dataset.classRule);
+    if (included.length) filters.class_contains = included.join(","); else delete filters.class_contains;
+    if (excluded.length) filters.class_not_contains = excluded.join(","); else delete filters.class_not_contains;
+    delete filters.class_id;
+    delete filters.class_mode;
     all("[data-boolean]").forEach(input => { if (input.checked) filters[input.dataset.boolean] = true; else delete filters[input.dataset.boolean]; });
   }
   async function refreshStats() { stats = await api.projectDataStatistics(projectId); }
@@ -125,7 +165,7 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
   }
   function bar(name, n, total, color = "#a8b1ff") { return `<div class="pd-bar-row"><div><span>${esc(name)}</span><strong>${fmt(n)}</strong></div><div class="pd-bar"><i style="width:${total ? Math.max(1, n/total*100) : 0}%;background:${color}"></i></div></div>`; }
   function renderStatistics() {
-    get("#pd-content").innerHTML = `${metrics()}<div class="pd-two-columns"><section class="pd-panel"><h2>Готовность к разметке</h2>${(stats.statuses || []).map(r => bar(STATUS[r.name] || r.name, r.count, stats.total)).join("") || '<p class="pd-muted">Нет данных</p>'}</section><section class="pd-panel"><h2>Баланс классов</h2><p class="pd-muted">Объектов / изображений с классом</p>${classes.map(c => { const row = stats.classes.find(r => r.id === c.id); return bar(`${c.name} · ${fmt(row?.images)} кадров`, row?.objects || 0, Math.max(1, ...stats.classes.map(r => r.objects)), c.color_hex); }).join("") || '<p class="pd-muted">Добавьте классы проекта</p>'}</section><section class="pd-panel"><h2>Источники изображений</h2>${stats.sources.map(r => bar(cameraName(r.name), r.count, stats.total, "#79cbb2")).join("")}</section><section class="pd-panel"><h2>Разделы датасета</h2>${stats.splits.map(r => bar(r.name, r.count, stats.total)).join("")}<div class="pd-notice">Train — обучение, Validation — оценка в процессе обучения, Test — независимая проверка.</div></section><section class="pd-panel"><h2>Поступление по дням</h2><div class="pd-chart">${stats.days.slice(-30).map(r => `<div title="${esc(r.name)}: ${r.count}"><i style="height:${Math.max(3, r.count/Math.max(1, ...stats.days.map(d => d.count))*115)}px"></i><small>${esc(r.name?.slice(5) || "")}</small><span>${fmt(r.count)}</span></div>`).join("")}</div></section><section class="pd-panel"><h2>Качество и пересечения</h2><div class="pd-check-item">Похожие копии с одинаковым pHash <strong>${fmt(stats.duplicates)}</strong></div><div class="pd-check-item">Группы копий между разделами <strong>${fmt(stats.leakage_groups)}</strong></div><p class="pd-muted">Проверка использует сохранённые pHash. Проанализировано: ${fmt(stats.analyzed)} из ${fmt(stats.total)}. Размытие и темнота — ориентировочные признаки; проверьте кадры визуально.</p>${button("find-duplicates", "Показать копии")}${button("quality-scan", "Анализ качества")}</section></div>`;
+    get("#pd-content").innerHTML = `${metrics()}<div class="pd-two-columns"><section class="pd-panel"><h2>Готовность к разметке</h2>${(stats.statuses || []).map(r => bar(STATUS[r.name] || r.name, r.count, stats.total)).join("") || '<p class="pd-muted">Нет данных</p>'}</section><section class="pd-panel"><h2>Баланс классов</h2><p class="pd-muted">Объектов / изображений с классом</p>${classes.map(c => { const row = stats.classes.find(r => r.id === c.id); return bar(`${c.name} · ${fmt(row?.images)} кадров`, row?.objects || 0, Math.max(1, ...stats.classes.map(r => r.objects)), c.color_hex); }).join("") || '<p class="pd-muted">Добавьте классы проекта</p>'}</section><section class="pd-panel"><h2>Источники изображений</h2>${stats.sources.map(r => bar(cameraName(r.name), r.count, stats.total, "#79cbb2")).join("")}</section><section class="pd-panel"><h2>Разделы датасета</h2>${stats.splits.map(r => bar(r.name, r.count, stats.total)).join("")}<div class="pd-notice">Train — обучение, Validation — оценка в процессе обучения, Test — независимая проверка.</div></section><section class="pd-panel"><h2>Поступление по дням</h2><div class="pd-chart">${stats.days.slice(-30).map(r => `<div title="${esc(r.name)}: ${r.count}"><i style="height:${Math.max(3, r.count/Math.max(1, ...stats.days.map(d => d.count))*115)}px"></i><small>${esc(r.name?.slice(5) || "")}</small><span>${fmt(r.count)}</span></div>`).join("")}</div></section><section class="pd-panel"><h2>Качество и пересечения</h2><div class="pd-check-item">Похожие копии с одинаковым pHash <strong>${fmt(stats.duplicates)}</strong></div><div class="pd-check-item">Группы копий между разделами <strong>${fmt(stats.leakage_groups)}</strong></div><p class="pd-muted">Проверка использует сохранённые pHash. Проанализировано: ${fmt(stats.analyzed)} из ${fmt(stats.total)}. Размытие и темнота — ориентировочные признаки; проверьте кадры визуально.</p>${button("find-duplicates", "Показать копии")}${button("quality-scan", "Анализ качества")}</section>${store.get("currentProject")?.task_type !== "CLASSIFICATION" ? `<section class="pd-panel"><h2>Экспорт кропов</h2><p>Скачать подтверждённые рамки в виде изображений, разложенных по классам.</p>${button("export-crops", "Скачать кропы", "pd-primary")}</section>` : ""}</div>`;
   }
   function renderCameras() {
     get("#pd-content").innerHTML = `<div class="pd-notice">Добавление связывает существующую камеру с проектом. Сбор запускается отдельно в Центре сбора, с выбором проекта назначения.</div><div class="pd-camera-grid">${cameras.map(c => `<section class="pd-panel"><div class="pd-row"><span class="pd-camera-icon">◉</span><span class="pd-badge ${c.is_active ? "pd-good" : ""}">${c.state === "error" ? "Ошибка источника" : c.state === "reconnecting" ? "Переподключение" : c.state === "running" ? "Сбор идёт" : "Не собирает"}</span></div><h2>${esc(c.name)}</h2><p class="pd-muted">${esc(c.source_type)} · ${c.owned ? "Источник этого проекта" : "Связан из другого проекта"}</p><div class="pd-actions">${button("camera-images", "Изображения", "", `data-id="${c.id}"`)}${button("camera-collect", "Настроить сбор", "pd-primary", `data-id="${c.id}"`)}${!c.owned ? button("unlink-camera", "Отвязать", "pd-link", `data-id="${c.id}"`) : ""}</div></section>`).join("") || `<div class="pd-empty"><strong>Камеры ещё не добавлены</strong><p>Подключите RTSP, веб-камеру, видео или выберите источник из другого проекта.</p>${button("add-camera", "+ Добавить камеру", "pd-primary")}</div>`}</div>`;
@@ -138,14 +178,14 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
   }
   function startPolling() {
     clearTimeout(pollTimer);
-    if (!jobs.some(j => ["RUNNING", "QUEUED"].includes(j.status))) return;
+    if (!jobs.some(j => ["CHECKING", "RUNNING", "QUEUED"].includes(j.status))) return;
     const id = projectId;
     pollTimer = setTimeout(async () => {
       if (id !== projectId) return;
       try {
         jobs = await api.listDataImports(id);
         if (section === "imports" && store.get("projectTab") === "data") { const host = get("#pd-import-history"); if (host) host.innerHTML = historyMarkup(); }
-        if (!jobs.some(j => ["RUNNING", "QUEUED"].includes(j.status))) {
+        if (!jobs.some(j => ["CHECKING", "RUNNING", "QUEUED"].includes(j.status))) {
           await refreshStats();
           classes = await api.listClasses(id); store.set("classes", classes);
           const counter = get('[data-section="classes"] small'); if (counter) counter.textContent = String(classes.length);
@@ -184,18 +224,49 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
     input.onchange = () => { if (input.files.length) run(() => callback([...input.files])); };
     input.click();
   }
-  function importModal(kind) {
+  function importModal(kind, initialFiles = null) {
     modal("Импорт · выбор файлов", `<div class="pd-steps"><span class="active">1. Файлы</span><span>2. Проверка</span><span>3. Классы</span><span>4. Запуск</span></div><div class="pd-drop"><strong>${kind === "model" ? "Веса модели .pt" : kind === "dataset" ? "Архив или папка размеченного датасета" : "Изображения или папка"}</strong><p>${kind === "model" ? "Названия классов будут прочитаны из модели. Модель должна соответствовать типу проекта." : kind === "dataset" ? "YOLO: изображения + labels + data.yaml/classes.txt. COCO: JSON и изображения. Классификация: папки с именами классов." : "JPG, PNG, WebP. До 5000 изображений за импорт."}</p><div class="pd-actions">${button("pick-import", kind === "model" ? "Выбрать .pt" : "Выбрать файлы / ZIP", "pd-primary")}${kind !== "model" ? button("pick-folder", "Выбрать папку") : ""}</div></div><div id="pd-upload-status" role="status"></div>`);
-    const choose = (folder) => filePicker({ multiple: kind !== "model", accept: kind === "model" ? ".pt" : ".jpg,.jpeg,.png,.webp,.zip,.txt,.yaml,.yml,.json", folder }, async files => {
+    const processFiles = async files => {
       const host = get("#pd-upload-status", modalRoot); if (!host) return;
-      host.innerHTML = `<div class="pd-notice">Загрузка и проверка ${fmt(files.length)} файлов… Не закрывайте окно до окончания проверки.</div>`;
+      host.innerHTML = `<div class="pd-notice">Передача ${fmt(files.length)} файлов на сервер… Не закрывайте вкладку до окончания передачи.</div>`;
       all("button[data-action^='pick-']", modalRoot).forEach(b => b.disabled = true);
-      try { importJob = await api.previewDataImport(projectId, kind, files); showImportMapping(importJob); }
+      const targetProject = projectId;
+      const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const uploadTask = {id:uploadId, project_id:targetProject, project_name:store.get("currentProject")?.name || "Проект", kind:"upload", title:`Передача ${files.length} файлов`, status:"RUNNING", processed:0, total:0, unit:"байт", created_at:new Date().toISOString()};
+      const emitUpload = task => window.dispatchEvent(new window.CustomEvent("lblstdio:upload-task", {detail:task}));
+      emitUpload(uploadTask);
+      const warn = event => { event.preventDefault(); event.returnValue = ""; };
+      window.addEventListener("beforeunload", warn);
+      try {
+        let currentJob = await api.previewDataImport(targetProject, kind, files, progress => {
+          uploadTask.processed = progress.loaded || 0;
+          uploadTask.total = progress.total || 0;
+          uploadTask.stage = progress.stage;
+          emitUpload({...uploadTask});
+          if (!host.isConnected) return;
+          if (progress.stage === "receiving") host.innerHTML = '<div class="pd-notice">Файлы переданы. Сервер принимает данные…</div>';
+          else {
+            const pct = progress.total ? Math.min(100, Math.round(progress.loaded * 100 / progress.total)) : null;
+            host.innerHTML = `<div class="pd-notice">Передача файлов${pct == null ? '…' : ` · ${pct}%`}<progress ${pct == null ? '' : `max="100" value="${pct}"`}></progress><small>Не закрывайте вкладку до окончания передачи.</small></div>`;
+          }
+        });
+        emitUpload({id:uploadId, remove:true});
+        window.removeEventListener("beforeunload", warn);
+        while (currentJob.status === "CHECKING") {
+          if (host.isConnected) host.innerHTML = `<div class="pd-notice">Проверка файлов${currentJob.total ? ` · ${fmt(currentJob.processed)} из ${fmt(currentJob.total)}` : '…'}<progress ${currentJob.total ? `max="${currentJob.total}" value="${currentJob.processed}"` : ''}></progress><small>Можно перейти в другой раздел: проверка продолжится на сервере.</small></div>`;
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          currentJob = await api.getDataImport(targetProject, currentJob.id);
+        }
+        if (currentJob.status === "FAILED") throw new Error(currentJob.error || "Не удалось проверить файлы");
+        if (host.isConnected && projectId === targetProject) showImportMapping(currentJob);
+      }
       catch (err) { if (host.isConnected) host.innerHTML = `<p class="pd-error">${esc(err.message)}</p>`; }
-      finally { all("button[data-action^='pick-']", modalRoot).forEach(b => b.disabled = false); }
-    });
+      finally { emitUpload({id:uploadId, remove:true}); window.removeEventListener("beforeunload", warn); all("button[data-action^='pick-']", modalRoot).forEach(b => b.disabled = false); }
+    };
+    const choose = folder => filePicker({ multiple: kind !== "model", accept: kind === "model" ? ".pt" : ".jpg,.jpeg,.png,.webp,.zip,.txt,.yaml,.yml,.json", folder }, processFiles);
     get('[data-action="pick-import"]', modalRoot).onclick = () => choose(false);
     get('[data-action="pick-folder"]', modalRoot)?.addEventListener("click", () => choose(true));
+    if (initialFiles) return processFiles(initialFiles);
   }
   function showImportMapping(job) {
     importJob = job;
@@ -251,7 +322,7 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
           const name = get("#pd-camera-name", modalRoot).value.trim(); if (!name) throw new Error("Введите название камеры");
           if (kind === "rtsp") await api.createRtspStream(projectId, { name, rtsp_url: get("#pd-camera-uri", modalRoot).value.trim() });
           if (kind === "device") await api.createDeviceStream(projectId, { name, device_index: Number(get("#pd-camera-device", modalRoot).value) });
-          if (kind === "video") { const file = get("#pd-camera-video", modalRoot).files[0]; if (!file) throw new Error("Выберите видео"); await api.uploadStreamVideo(projectId, file, name); }
+          if (kind === "video") { const file = get("#pd-camera-video", modalRoot).files[0]; if (!file) throw new Error("Выберите видео"); await api.uploadStreamVideo(projectId, file, name, { projectName: store.get("currentProject")?.name, onProgress: x => { const status=get("#pd-camera-error",modalRoot); if(status) status.textContent=x.total ? `Загрузка видео: ${Math.round(x.processed*100/x.total)}% · не закрывайте вкладку` : "Сервер принимает видео…"; } }); }
         }
         closeModal(); await go("cameras");
       } catch (err) { get("#pd-camera-error", modalRoot).textContent = err.message; btn.disabled = false; }
@@ -260,7 +331,13 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
   async function bulk(action, confirmed = false) {
     if (!selected.size && !allMatching) return;
     const payload = { action, filters, ids: [...selected], all_matching: allMatching };
-    if (action === "tag") { const tag = prompt("Тег для выбранных изображений"); if (!tag?.trim()) return; payload.tag = tag.trim(); }
+    if (action === "tag") { const tag = await askText("Добавить тег", "Название тега", "", "Добавить тег", 80); if (!tag) return; payload.tag = tag; }
+    if (action === "clear_annotations" && !confirmed) {
+      const count = allMatching ? page.total : selected.size;
+      modal("Очистить аннотации", `<p>Проверены и очищены будут выбранные кадры: <strong>${fmt(count)}</strong>.</p><div class="pd-notice">Все рамки и классы на этих изображениях удалятся. Сами изображения и файлы останутся в проекте, статус станет «Без разметки». Кадры без аннотаций не изменятся.</div>`, button("confirm-clear-annotations", "Очистить аннотации", "pd-danger"));
+      get('[data-action="confirm-clear-annotations"]', modalRoot).onclick = () => { closeModal(); run(() => bulk("clear_annotations", true)); };
+      return;
+    }
     let result;
     if(action === "queue") {
       const count = allMatching ? page.total : selected.size;
@@ -281,12 +358,12 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
     const action = btn.dataset.action;
     run(async () => {
       if (SECTIONS.some(([id]) => id === action)) return go(action);
-      if (action === "apply-filters") { readFilters(); resetPage(); return loadPage(); }
-      if (action === "reset-filters" || action === "preset-all" || action === "all-images") { filters = {}; resetPage(); return go("images"); }
+      if (action === "apply-filters") { readFilters(); filterDirty = false; resetPage(); return loadPage(); }
+      if (action === "reset-filters" || action === "preset-all" || action === "all-images") { filters = {}; filterDirty = false; resetPage(); return go("images"); }
       if (["preset-review", "review", "unannotated", "verified", "preset-uncertain", "find-duplicates"].includes(action)) {
-        filters = action === "unannotated" ? { status: "UNANNOTATED" } : action === "verified" ? { status: "VERIFIED,AUTO_VERIFIED" } : action === "preset-uncertain" ? { max_conf: .5, sort: "uncertainty" } : action === "find-duplicates" ? { duplicates: true } : { status: "REQUIRES_REVIEW,REQUIRES_RECHECK" }; resetPage(); return go("images");
+        filters = action === "unannotated" ? { status: "UNANNOTATED" } : action === "verified" ? { status: "VERIFIED,AUTO_VERIFIED" } : action === "preset-uncertain" ? { max_conf: .5, sort: "uncertainty" } : action === "find-duplicates" ? { duplicates: true } : { status: "REQUIRES_REVIEW,REQUIRES_RECHECK" }; filterDirty = false; resetPage(); return go("images");
       }
-      if (action === "save-view") { readFilters(); const name = prompt("Название фильтра"); if (name?.trim()) { savedViews.push({ name: name.trim().slice(0, 80), filters: { ...filters } }); localStorage.setItem(dataKey(), JSON.stringify(savedViews)); renderImages(); } }
+      if (action === "save-view") { readFilters(); const name = await askText("Сохранить фильтр", "Название фильтра", "", "Сохранить", 80); if (name) { savedViews.push({ name, filters: { ...filters } }); localStorage.setItem(dataKey(), JSON.stringify(savedViews)); renderImages(); } }
       if (action === "load-view") { filters = { ...savedViews[Number(btn.dataset.index)].filters }; resetPage(); return loadPage(); }
       if (action === "delete-view") { savedViews.splice(Number(btn.dataset.index), 1); localStorage.setItem(dataKey(), JSON.stringify(savedViews)); renderImages(); }
       if (action === "toggle-layout") { layout = layout === "grid" ? "list" : "grid"; renderImages(); }
@@ -310,7 +387,7 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
         addClassesModal(names);
       });
       if (action === "export-dictionary") { const indices = classes.map(c => c.index_id); if (indices.some((n, i) => n !== i)) { const blob = new Blob([JSON.stringify({ names: Object.fromEntries(classes.map(c => [c.index_id, c.name])) }, null, 2)], { type: "application/json" }); download(blob, "classes.json"); } else download(new Blob([classes.map(c => c.name).join("\n")], { type: "text/plain" }), "classes.txt"); }
-      if (action === "rename-class") { const c = cls(btn.dataset.id); const name = prompt("Новое название класса", c.name); if (name?.trim() && name.trim() !== c.name) { await api.renameClass(projectId, c.id, name.trim()); await syncClasses(); renderClasses(); } }
+      if (action === "rename-class") { const c = cls(btn.dataset.id); if (!c) return; const name = await askText("Переименовать класс", "Новое название", c.name, "Сохранить", 255); if (name && name !== c.name) { await api.renameClass(projectId, c.id, name); await syncClasses(); renderShell(); renderClasses(); showMessage(`Класс «${c.name}» переименован в «${name}».`); } }
       if (action === "delete-class") {
         const c = cls(btn.dataset.id); const count = stats.classes.find(r => r.id === c.id);
         if ((count?.objects || 0) > 0) throw new Error("Класс используется в разметке. Сначала переназначьте объекты.");
@@ -321,22 +398,22 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
       if (action === "unlink-camera") { await api.linkProjectCamera(projectId, btn.dataset.id, false); return go("cameras"); }
       if (action === "camera-images") { filters = { stream_source_id: btn.dataset.id }; resetPage(); return go("images"); }
       if (action === "camera-collect") { location.hash = `/streams?project=${projectId}&source=${btn.dataset.id}`; }
+      if (action === "export-crops") { const exportButton = btn; exportButton.disabled = true; try { const result = await api.exportCrops(projectId); download(result.blob, result.filename || "crops.zip"); showMessage("Экспорт кропов скачан."); } finally { if (exportButton.isConnected) exportButton.disabled = false; } }
       if (action === "quality-scan") { const result = await api.analyzeProjectData(projectId); showMessage(result.message); }
     });
   });
   function download(blob, name) { const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+  const isFilterControl = target => target.matches("[data-filter], [data-status], [data-class-rule], [data-boolean]");
+  function showApplyFilters() { filterDirty = true; get('[data-action="apply-filters"]')?.classList.remove("hidden"); }
+  root.addEventListener("input", e => { if (e.target.closest(".pd-filters") && isFilterControl(e.target)) showApplyFilters(); });
   root.addEventListener("change", e => run(async () => {
     const t = e.target;
+    if (t.closest(".pd-filters") && isFilterControl(t)) showApplyFilters();
     if (t.dataset.select) { if (allMatching) { allMatching = false; page.items.forEach(i => selected.add(i.id)); } t.checked ? selected.add(t.dataset.select) : selected.delete(t.dataset.select); renderImages(); }
     if (t.id === "pd-select-page") { allMatching = false; page.items.forEach(i => t.checked ? selected.add(i.id) : selected.delete(i.id)); renderImages(); }
     if (t.id === "pd-overlays") { overlays = t.checked; renderImages(); }
-    if (t.id === "pd-sort") { filters.sort = t.value; resetPage(); await loadPage(); }
     if (t.id === "pd-page-size") { page.limit = Number(t.value); resetPage(); await loadPage(); }
   }));
-  document.getElementById("btn-open-upload")?.addEventListener("click", e => {
-    if (store.get("projectTab") !== "data") return;
-    e.preventDefault(); e.stopImmediatePropagation(); importModal("images");
-  }, true);
   document.addEventListener("keydown", e => {
     if (!modalRoot) return;
     if (e.key === "Escape") { e.stopPropagation(); closeModal(); }
@@ -352,7 +429,6 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
     const project = store.get("currentProject"); if (!project || !root) return;
     const id = project.id, switched = projectId !== id, seq = ++refreshSequence;
     sequence++; sectionSequence++;
-    clearTimeout(searchTimer);
     if (switched) { clearTimeout(pollTimer); closeModal(); jobs = []; }
     projectId = id;
     if (switched) { filters = {}; page.offset = 0; selected.clear(); allMatching = false; try { savedViews = JSON.parse(localStorage.getItem(dataKey()) || "[]"); } catch { savedViews = []; } }
@@ -365,14 +441,17 @@ export function initDataHub({ onOpenImage, onStartAnnotate, onError }) {
       if (projectId !== id || refreshSequence !== seq) return;
       [stats, cameras, versions] = results;
       await loadSection();
+      const importId = query.get("import");
+      if (section === "imports" && importId && projectId === id) {
+        const job = jobs.find(item => item.id === importId && item.status === "PREVIEW");
+        if (job) showImportMapping(job);
+      }
     } catch (err) { if (projectId !== id || refreshSequence !== seq) return; get("#pd-content").innerHTML = `<div class="pd-empty pd-error">${esc(err.message)}${button("all-images", "Повторить")}</div>`; error(err); }
   }
   return { refresh, async previewModel(file) {
     projectId = store.get("currentProject")?.id;
     if (!projectId) throw new Error("Сначала откройте проект");
     classes = await api.listClasses(projectId);
-    modal("Проверка модели", '<p class="pd-muted">Загрузка весов, проверка типа задачи и названий классов…</p>');
-    try { const job = await api.previewDataImport(projectId, "model", [file]); showImportMapping(job); }
-    catch (err) { closeModal(); throw err; }
+    return importModal("model", [file]);
   } };
 }

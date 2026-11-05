@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select, func, or_, update, literal, cast
+from sqlalchemy import select, func, or_, update, delete, literal, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from app.infrastructure.db.dialect import dialect_insert
 from app.infrastructure.db.tables import (
@@ -41,9 +41,22 @@ class SqliteProjectDataRepository:
         if f.get("q"):
             term = str(f["q"]).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             q = q.where(I.file_name.ilike(f"%{term}%", escape="\\"))
-        if f.get("class_id"):
+        def class_presence(class_id):
+            return or_(
+                select(A.id).where(A.image_id == I.id, A.class_id == class_id).exists(),
+                select(L.id).where(L.image_id == I.id, L.class_id == class_id).exists(),
+            )
+        if f.get("class_contains"):
+            for class_id in str(f["class_contains"]).split(","):
+                q = q.where(class_presence(class_id))
+        if f.get("class_not_contains"):
+            for class_id in str(f["class_not_contains"]).split(","):
+                q = q.where(~class_presence(class_id))
+        # Read older saved filters which used one shared include/exclude mode.
+        if f.get("class_id") and not (f.get("class_contains") or f.get("class_not_contains")):
             ids = str(f["class_id"]).split(",")
-            q = q.where(or_(select(A.id).where(A.image_id == I.id, A.class_id.in_(ids)).exists(), select(L.id).where(L.image_id == I.id, L.class_id.in_(ids)).exists()))
+            legacy_presence = or_(select(A.id).where(A.image_id == I.id, A.class_id.in_(ids)).exists(), select(L.id).where(L.image_id == I.id, L.class_id.in_(ids)).exists())
+            q = q.where(~legacy_presence if f.get("class_mode") == "not_contains" else legacy_presence)
         if f.get("annotation_source"):
             q = q.where(or_(select(A.id).where(A.image_id == I.id, A.source == f["annotation_source"]).exists(), select(L.id).where(L.image_id == I.id, L.source == f["annotation_source"]).exists()))
         if f.get("min_area") is not None or f.get("max_area") is not None:
@@ -148,27 +161,46 @@ class SqliteProjectDataRepository:
         if action != "tag":
             from app.infrastructure.db.tables import AnnotationTaskRow
             q = q.where(~select(AnnotationTaskRow.image_id).where(AnnotationTaskRow.image_id == I.id, AnnotationTaskRow.state == "WORKING", AnnotationTaskRow.lease_until > datetime.now(timezone.utc)).exists())
+        if action == "clear_annotations":
+            q = q.where(or_(
+                select(A.id).where(A.image_id == I.id).exists(),
+                select(L.id).where(L.image_id == I.id).exists(),
+                I.is_background == 1,
+            ))
         targets = q.with_only_columns(I.id)
-        count = await self.session.scalar(select(func.count()).select_from(targets.subquery()))
-        if action == "tag":
-            tag = str(payload.get("tag", "")).strip()[:64]
-            if not tag: raise DomainValidationException("Введите тег")
-            await self.session.execute(dialect_insert(self.session, D).from_select(
-                ["image_id", "tags"], targets.add_columns(literal([], type_=D.__table__.c.tags.type))
-            ).on_conflict_do_nothing(index_elements=["image_id"]))
-            if self.session.get_bind().dialect.name == "postgresql":
-                await self.session.execute(update(D).where(
-                    D.image_id.in_(targets), ~cast(D.tags, JSONB).contains([tag])
-                ).values(tags=D.tags.op("||")(cast([tag], JSONB))))
-            else:
-                existing = func.json_each(D.tags).table_valued("value")
-                await self.session.execute(update(D).where(
-                    D.image_id.in_(targets), ~select(existing.c.value).where(existing.c.value == tag).exists()
-                ).values(tags=func.json_insert(D.tags, "$[#]", tag)))
-        elif action in ("trash", "restore"):
-            await self.session.execute(update(I).where(I.id.in_(targets)).values(deleted_at=datetime.now(timezone.utc) if action == "trash" else None))
-        elif action == "review":
-            await self.session.execute(update(I).where(I.id.in_(targets)).values(status="REQUIRES_RECHECK"))
-        else: raise DomainValidationException("Неизвестное действие")
+        if action == "clear_annotations":
+            count, last_id = 0, ""
+            while True:
+                batch = targets.where(I.id > last_id).order_by(I.id).limit(400)
+                target_ids = list((await self.session.scalars(batch)).all())
+                if not target_ids:
+                    break
+                last_id = target_ids[-1]
+                count += len(target_ids)
+                await self.session.execute(delete(A).where(A.image_id.in_(target_ids)))
+                await self.session.execute(delete(L).where(L.image_id.in_(target_ids)))
+                await self.session.execute(update(I).where(I.id.in_(target_ids)).values(status="UNANNOTATED", is_background=0))
+        else:
+            count = await self.session.scalar(select(func.count()).select_from(targets.subquery()))
+            if action == "tag":
+                tag = str(payload.get("tag", "")).strip()[:64]
+                if not tag: raise DomainValidationException("Введите тег")
+                await self.session.execute(dialect_insert(self.session, D).from_select(
+                    ["image_id", "tags"], targets.add_columns(literal([], type_=D.__table__.c.tags.type))
+                ).on_conflict_do_nothing(index_elements=["image_id"]))
+                if self.session.get_bind().dialect.name == "postgresql":
+                    await self.session.execute(update(D).where(
+                        D.image_id.in_(targets), ~cast(D.tags, JSONB).contains([tag])
+                    ).values(tags=D.tags.op("||")(cast([tag], JSONB))))
+                else:
+                    existing = func.json_each(D.tags).table_valued("value")
+                    await self.session.execute(update(D).where(
+                        D.image_id.in_(targets), ~select(existing.c.value).where(existing.c.value == tag).exists()
+                    ).values(tags=func.json_insert(D.tags, "$[#]", tag)))
+            elif action in ("trash", "restore"):
+                await self.session.execute(update(I).where(I.id.in_(targets)).values(deleted_at=datetime.now(timezone.utc) if action == "trash" else None))
+            elif action == "review":
+                await self.session.execute(update(I).where(I.id.in_(targets)).values(status="REQUIRES_RECHECK"))
+            else: raise DomainValidationException("Неизвестное действие")
         await self.session.commit()
         return {"updated": count}
